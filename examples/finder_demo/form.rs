@@ -146,16 +146,18 @@ pub(crate) const COMPACT: Density = Density {
 impl Density {
     pub(crate) fn label(self, id: &'static str, text: &str) -> NativeLabel {
         let label = native_label(id, text);
-        match self == REGULAR {
-            true => label,
-            false => label.font_size(px(self.font)),
+        if self == REGULAR {
+            label
+        } else {
+            label.font_size(px(self.font))
         }
     }
 
     pub(crate) fn controls(self) -> ControlSize {
-        match self == REGULAR {
-            true => ControlSize::Regular,
-            false => ControlSize::Small,
+        if self == REGULAR {
+            ControlSize::Regular
+        } else {
+            ControlSize::Small
         }
     }
 

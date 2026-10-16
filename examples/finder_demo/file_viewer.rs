@@ -277,9 +277,10 @@ pub(crate) fn toggle_default(cx: &mut App) {
     };
     let (bundle, turn_on) = (own_bundle(), !is_default());
     let toggled = cx.background_executor().spawn(async move {
-        match turn_on {
-            true => viewer::on(&id, &bundle),
-            false => viewer::off(&id),
+        if turn_on {
+            viewer::on(&id, &bundle)
+        } else {
+            viewer::off(&id)
         }
     });
     cx.spawn(async move |_| {

@@ -206,9 +206,10 @@ define_class!(
 
         #[unsafe(method(draggingExited:))]
         fn dragging_exited(&self, info: Option<&ProtocolObject<dyn NSDraggingInfo>>) {
-            match self.ivars().handed.get() {
-                true => unsafe { msg_send![super(self), draggingExited: info] },
-                false => self.highlight(false),
+            if self.ivars().handed.get() {
+                unsafe { msg_send![super(self), draggingExited: info] }
+            } else {
+                self.highlight(false);
             }
         }
 
@@ -226,9 +227,10 @@ define_class!(
 
         #[unsafe(method(concludeDragOperation:))]
         fn conclude_drag_operation(&self, info: Option<&ProtocolObject<dyn NSDraggingInfo>>) {
-            match self.ivars().handed.get() {
-                true => unsafe { msg_send![super(self), concludeDragOperation: info] },
-                false => self.highlight(false),
+            if self.ivars().handed.get() {
+                unsafe { msg_send![super(self), concludeDragOperation: info] }
+            } else {
+                self.highlight(false);
             }
         }
 
@@ -536,9 +538,10 @@ fn pasted(board: &NSPasteboard) -> Option<Retained<NSImage>> {
         .filter(|url| conforms(url, IMAGE))
         .and_then(|url| {
             let image = NSImage::initWithContentsOfURL(NSImage::alloc(), &url)?;
-            match conforms(&url, ICNS) {
-                true => Some(image),
-                false => fitted(&image),
+            if conforms(&url, ICNS) {
+                Some(image)
+            } else {
+                fitted(&image)
             }
         });
     picture
@@ -688,7 +691,7 @@ fn in_aqua<T>(draw: impl Fn() -> T) -> T {
     let slot = RefCell::new(None);
     let block = StackBlock::new(|| *slot.borrow_mut() = Some(draw()));
     aqua.performAsCurrentDrawingAppearance(&block);
-    slot.into_inner().unwrap_or_else(|| draw())
+    slot.into_inner().unwrap_or_else(draw)
 }
 
 fn put(board: &NSPasteboard, icns: &[u8]) {

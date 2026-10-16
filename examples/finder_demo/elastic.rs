@@ -47,13 +47,13 @@ impl Bands {
 
 pub(crate) fn shifted(item: AnyElement, by: Pixels) -> AnyElement {
     // The list lays each item out as a root, and a root's own relative offset is ignored.
-    match by == px(0.) {
-        true => item,
-        false => div()
-            .w_full()
-            .child(div().w_full().relative().top(by).child(item))
-            .into_any_element(),
+    if by == px(0.) {
+        return item;
     }
+    div()
+        .w_full()
+        .child(div().w_full().relative().top(by).child(item))
+        .into_any_element()
 }
 
 /// Must run after the scroller's own wheel listener: `wheel` reads the offset it wrote.
@@ -137,9 +137,10 @@ impl Elastic {
             now,
         };
         let (offset, max, size) = (handle.offset(), handle.max_offset(), handle.bounds().size);
-        let x = match max.x > px(0.) {
-            true => px(self.x.follow(offset.x, max.x, size.width, turn)),
-            false => offset.x.clamp(-max.x, px(0.)),
+        let x = if max.x > px(0.) {
+            px(self.x.follow(offset.x, max.x, size.width, turn))
+        } else {
+            offset.x.clamp(-max.x, px(0.))
         };
         let y = px(self.y.follow(offset.y, max.y, size.height, turn));
         handle.set_offset(point(x, y));
@@ -230,9 +231,10 @@ impl Band {
     }
 
     fn speed_to(&self, offset: f32, turn: Turn) -> f32 {
-        match turn.apart < APART {
-            true => (offset - self.rest) / turn.apart.max(0.001),
-            false => 0.,
+        if turn.apart < APART {
+            (offset - self.rest) / turn.apart.max(0.001)
+        } else {
+            0.
         }
     }
 }

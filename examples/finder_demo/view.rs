@@ -143,9 +143,10 @@ impl FinderDemo {
             GALLERY_VIEW => width / self.gallery_look.thumb,
             _ => height / self.row_h(),
         };
-        match fits >= 1. {
-            true => (fits as usize + 1).min(FIRST_ROWS),
-            false => FIRST_ROWS,
+        if fits >= 1. {
+            (fits as usize + 1).min(FIRST_ROWS)
+        } else {
+            FIRST_ROWS
         }
     }
 
@@ -178,9 +179,10 @@ impl FinderDemo {
 
     pub(crate) fn list_content_w(&self) -> f32 {
         let columns: f32 = self.list_columns.iter().map(|spec| spec.width).sum();
-        let extra = match self.list_columns.is_empty() {
-            true => 0.,
-            false => LAST_EXTRA,
+        let extra = if self.list_columns.is_empty() {
+            0.
+        } else {
+            LAST_EXTRA
         };
         self.name_w + columns + extra + PANE_INSET
     }
@@ -190,16 +192,18 @@ impl FinderDemo {
     }
 
     pub(crate) fn icon_room(&self, width: f32) -> Size<f32> {
-        let pane = match self.preview_shown() {
-            true => self.preview_w,
-            false => 0.,
+        let pane = if self.preview_shown() {
+            self.preview_w
+        } else {
+            0.
         };
         let height = f32::from(self.icons.scroll.bounds().size.height - self.under_bars());
         size(
             width - f32::from(self.metrics().left) - pane - 4.,
-            match height > 0. {
-                true => height,
-                false => f32::from(self.viewport.height),
+            if height > 0. {
+                height
+            } else {
+                f32::from(self.viewport.height)
             },
         )
     }
@@ -212,15 +216,12 @@ impl FinderDemo {
     pub(crate) fn columns(&self, window: &Window) -> usize {
         let sorted = matches!(self.arrangement(), Some(Arrangement::By(_)));
         // Finder arranges a folder when its items first show, not while its window opens.
-        match sorted || self.metrics() == SidebarMetrics::default() || self.lines(false).is_empty()
-        {
-            true => self.fits(window),
-            false => {
-                let options = self.icon_options();
-                let now = f32::from(window.viewport_size().width);
-                let first = self.icon_room(self.icons.first_width(now));
-                self.icons.hold(options.lanes(first), options)
-            }
+        if sorted || self.metrics() == SidebarMetrics::default() || self.lines(false).is_empty() {
+            return self.fits(window);
         }
+        let options = self.icon_options();
+        let now = f32::from(window.viewport_size().width);
+        let first = self.icon_room(self.icons.first_width(now));
+        self.icons.hold(options.lanes(first), options)
     }
 }

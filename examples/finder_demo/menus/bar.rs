@@ -455,23 +455,32 @@ fn titled(action: &dyn Action) -> Option<SharedString> {
             _ if action.partial_eq(&ShowPreviewOptions) => {
                 flip(crate::preview::options::is_open(), "Preview Options")
             }
-            _ if action.partial_eq(&Trash) => match mirror.in_trash {
-                true => "Put Back".into(),
-                false => "Move to Trash".into(),
-            },
+            _ if action.partial_eq(&Trash) => {
+                if mirror.in_trash {
+                    "Put Back".into()
+                } else {
+                    "Move to Trash".into()
+                }
+            }
             _ if action.partial_eq(&NewFolderWithSelection) => match chosen.count {
                 0 => "New Folder with Selection".into(),
                 1 => format!("New Folder with \u{201c}{}\u{201d}", chosen.name),
                 many => format!("New Folder with Selection ({many} Items)"),
             },
-            _ if action.partial_eq(&OpenInNewTab) => match crate::prefs::opens_folders_in_tabs() {
-                true => "Open in New Tab".into(),
-                false => "Open in New Window".into(),
-            },
-            _ if action.partial_eq(&OpenAndClose) => match chosen.count > chosen.folders {
-                true => "Open and Close Window".into(),
-                false => "Open in New Window and Close".into(),
-            },
+            _ if action.partial_eq(&OpenInNewTab) => {
+                if crate::prefs::opens_folders_in_tabs() {
+                    "Open in New Tab".into()
+                } else {
+                    "Open in New Window".into()
+                }
+            }
+            _ if action.partial_eq(&OpenAndClose) => {
+                if chosen.count > chosen.folders {
+                    "Open and Close Window".into()
+                } else {
+                    "Open in New Window and Close".into()
+                }
+            }
             _ if action.partial_eq(&CompressNamed) => match chosen.count {
                 0 => "Compress".into(),
                 1 => format!("Compress \u{201c}{}\u{201d}", chosen.name),
@@ -868,7 +877,7 @@ fn go_head() -> Vec<MenuCommand> {
         rows.extend(
             known
                 .iter()
-                .map(|(title, path)| MenuCommand::new(title.clone(), GoLocation(*path))),
+                .map(|(title, path)| MenuCommand::new(title.clone(), GoLocation(path))),
         );
     });
     rows
@@ -953,11 +962,12 @@ impl FinderDemo {
                 if folders.is_empty() {
                     folders.push(this.here());
                 }
-                match crate::prefs::opens_folders_in_tabs() {
-                    true => folders
+                if crate::prefs::opens_folders_in_tabs() {
+                    folders
                         .into_iter()
-                        .for_each(|id| this.open_tab(id, window, cx)),
-                    false => open_windows(folders, cx),
+                        .for_each(|id| this.open_tab(id, window, cx))
+                } else {
+                    open_windows(folders, cx)
                 }
             }))
             .on_action(cx.listener(|this, _: &OpenAndClose, window, cx| {

@@ -68,14 +68,13 @@ const FINDER_WAIT: Duration = Duration::from_millis(30);
 
 pub(crate) fn slider_size(step: f64) -> f32 {
     let step = step.clamp(0., SIZE_STEPS) as f32;
-    let size = match step <= FINE_STEPS {
-        true => SMALLEST_ICON + FINE_STEP * step,
-        false => {
-            let at = (step - FINE_STEPS) / STEPS_PER_STOP;
-            let low = at.floor() as usize;
-            let high = (at.ceil() as usize).min(SIZE_STOPS.len() - 1);
-            SIZE_STOPS[low] + (SIZE_STOPS[high] - SIZE_STOPS[low]) * at.fract()
-        }
+    let size = if step <= FINE_STEPS {
+        SMALLEST_ICON + FINE_STEP * step
+    } else {
+        let at = (step - FINE_STEPS) / STEPS_PER_STOP;
+        let low = at.floor() as usize;
+        let high = (at.ceil() as usize).min(SIZE_STOPS.len() - 1);
+        SIZE_STOPS[low] + (SIZE_STOPS[high] - SIZE_STOPS[low]) * at.fract()
     };
     (size / SIZE_GRAIN).round() * SIZE_GRAIN
 }
@@ -181,18 +180,17 @@ impl Options {
             * ((even_line + LABEL_LINE_PAD) * (spacing + LABEL_SPACING_OFFSET)
                 / LABEL_SPACING_UNIT)
                 .round();
-        let cell = match bottom {
-            true => {
-                let under = line + line.min(SECOND_LINE_PER_SPACING * (spacing - 1.)) + info_line;
-                size(
-                    (frame + MARGIN).max(label),
-                    2. * ((frame + MARGIN + under) / 2.).floor(),
-                )
-            }
-            false => size(
+        let cell = if bottom {
+            let under = line + line.min(SECOND_LINE_PER_SPACING * (spacing - 1.)) + info_line;
+            size(
+                (frame + MARGIN).max(label),
+                2. * ((frame + MARGIN + under) / 2.).floor(),
+            )
+        } else {
+            size(
                 frame + label + LABEL_GAP,
                 (frame + SIDE_FRAME_PAD).max(2. * line + info_line + SIDE_TEXT_PAD),
-            ),
+            )
         };
         Self {
             size: icon,
@@ -218,9 +216,10 @@ impl Options {
     }
 
     fn image_centre(self) -> Point<f32> {
-        match self.bottom {
-            true => point(self.cell.width / 2., self.frame() / 2.),
-            false => point(self.frame() / 2., self.cell.height / 2.),
+        if self.bottom {
+            point(self.cell.width / 2., self.frame() / 2.)
+        } else {
+            point(self.frame() / 2., self.cell.height / 2.)
         }
     }
 
@@ -245,18 +244,20 @@ impl Options {
     }
 
     pub(crate) fn lanes(self, room: Size<f32>) -> usize {
-        let (room, cell) = match self.bottom {
-            true => (room.width, self.cell.width),
-            false => (room.height, self.cell.height),
+        let (room, cell) = if self.bottom {
+            (room.width, self.cell.width)
+        } else {
+            (room.height, self.cell.height)
         };
         (((room - 2. * MARGIN) / cell).floor() as usize).max(1)
     }
 
     fn slot_at(self, index: usize, lanes: usize) -> Slot {
         let (along, across) = ((index % lanes) as i32, (index / lanes) as i32);
-        match self.bottom {
-            true => (along, across),
-            false => (across, along),
+        if self.bottom {
+            (along, across)
+        } else {
+            (across, along)
         }
     }
 
@@ -273,33 +274,29 @@ impl Options {
 
     fn flowed(self, index: usize, count: usize, room: Size<f32>) -> Point<Pixels> {
         let (cell, at, gap) = (self.cell, self.image_centre(), self.pad());
-        let (x, y) = match self.bottom {
-            true => {
-                let across = (((room.width - 2. * FLOW_INSET + FLOW_GAP) / (cell.width + FLOW_GAP))
-                    .floor() as usize)
-                    .max(1);
-                let (spread, step) = match count > across {
-                    true => {
-                        let spread = ((room.width - 2. * FLOW_INSET - across as f32 * cell.width)
-                            / (across + 1) as f32)
-                            .max(0.);
-                        (spread, cell.width + spread)
-                    }
-                    false => (0., cell.width + FLOW_GAP),
-                };
-                (
-                    FLOW_INSET + spread + at.x + (index % across) as f32 * step,
-                    (index / across) as f32 * (cell.height + gap),
-                )
-            }
-            false => {
-                let down =
-                    (((room.height - 2. * MARGIN) / (cell.height + gap)).floor() as usize).max(1);
-                (
-                    FLOW_INSET + at.x + (index / down) as f32 * (cell.width + gap),
-                    (index % down) as f32 * (cell.height + gap),
-                )
-            }
+        let (x, y) = if self.bottom {
+            let across = (((room.width - 2. * FLOW_INSET + FLOW_GAP) / (cell.width + FLOW_GAP))
+                .floor() as usize)
+                .max(1);
+            let (spread, step) = if count > across {
+                let spread = ((room.width - 2. * FLOW_INSET - across as f32 * cell.width)
+                    / (across + 1) as f32)
+                    .max(0.);
+                (spread, cell.width + spread)
+            } else {
+                (0., cell.width + FLOW_GAP)
+            };
+            (
+                FLOW_INSET + spread + at.x + (index % across) as f32 * step,
+                (index / across) as f32 * (cell.height + gap),
+            )
+        } else {
+            let down =
+                (((room.height - 2. * MARGIN) / (cell.height + gap)).floor() as usize).max(1);
+            (
+                FLOW_INSET + at.x + (index / down) as f32 * (cell.width + gap),
+                (index % down) as f32 * (cell.height + gap),
+            )
         };
         point(px(x.floor()), px((2. * MARGIN + at.y + y).floor()))
     }
@@ -561,10 +558,7 @@ impl Grid {
     }
 
     pub(crate) fn first_width(&self, now: f32) -> f32 {
-        match self.sized {
-            true => now,
-            false => crate::WINDOW_W,
-        }
+        if self.sized { now } else { crate::WINDOW_W }
     }
 
     pub(crate) fn forget(&mut self) {
@@ -628,9 +622,10 @@ impl Grid {
             .zip(centres)
             .map(|(line, centre)| (line.key.clone(), options.origin(centre)))
             .collect();
-        let across = match options.bottom {
-            true => lanes as f32 * cell.width,
-            false => cell.width,
+        let across = if options.bottom {
+            lanes as f32 * cell.width
+        } else {
+            cell.width
         };
         let width = tiles
             .iter()
@@ -799,9 +794,10 @@ impl Grid {
             }
         };
         for (name, spot) in names.into_iter().zip(spots) {
-            match lines.iter().any(|line| line.row.name == name) {
-                true => places.own.insert(name, spot),
-                false => places.incoming.insert(name, spot),
+            if lines.iter().any(|line| line.row.name == name) {
+                places.own.insert(name, spot)
+            } else {
+                places.incoming.insert(name, spot)
             };
         }
         places.keep(&lines);
@@ -947,9 +943,10 @@ fn tile(
     let icon = icon.child(art_at(art, size, anchor));
 
     let dots = tag_dots_w(tags);
-    let room = match options.bottom {
-        true => cell.width - 2. * LABEL_INSET,
-        false => cell.width - frame - LABEL_GAP,
+    let room = if options.bottom {
+        cell.width - 2. * LABEL_INSET
+    } else {
+        cell.width - frame - LABEL_GAP
     } - if dots > 0. { dots + 2. } else { 0. };
     let caption = match editor {
         Some(editor) => {
@@ -964,9 +961,10 @@ fn tile(
             .text_size(px(options.text))
             .line_height(px(options.line))
             .line_clamp(((cell.height / options.line) as usize).clamp(1, LABEL_LINES))
-            .text_align(match options.bottom {
-                true => TextAlign::Center,
-                false => TextAlign::Left,
+            .text_align(if options.bottom {
+                TextAlign::Center
+            } else {
+                TextAlign::Left
             })
             .text_color(if lit { look.selection_text } else { look.label })
             .when(lit, |label| label.bg(pill))
@@ -1008,9 +1006,10 @@ fn tile(
         .h(px(cell.height))
         .flex()
         .gap(px(pad + LABEL_GAP));
-    match options.bottom {
-        true => tile.flex_col().items_center().pt(px(pad)),
-        false => tile.items_center().pl(px(pad)),
+    if options.bottom {
+        tile.flex_col().items_center().pt(px(pad))
+    } else {
+        tile.items_center().pl(px(pad))
     }
     .child(icon)
     .child(label)
@@ -1056,9 +1055,10 @@ impl FinderDemo {
             self.icons.dragging = None;
         }
 
-        let lines = match self.know_places(cx) {
-            true => self.lines(false),
-            false => Arc::default(),
+        let lines = if self.know_places(cx) {
+            self.lines(false)
+        } else {
+            Arc::default()
         };
         let lanes = self.columns(window);
         let room = self.icon_room(f32::from(window.viewport_size().width));
@@ -1207,15 +1207,16 @@ impl FinderDemo {
                         cx.notify();
                         return;
                     }
-                    let group: Vec<SharedString> = match selected.contains(&drag.key) {
-                        true => dropped
+                    let group: Vec<SharedString> = if selected.contains(&drag.key) {
+                        dropped
                             .tiles
                             .iter()
                             .map(|(key, _)| key)
                             .filter(|key| selected.contains(*key))
                             .cloned()
-                            .collect(),
-                        false => vec![drag.key.clone()],
+                            .collect()
+                    } else {
+                        vec![drag.key.clone()]
                     };
                     this.icons
                         .shift(&group, window.mouse_position() - this.pressed_at);

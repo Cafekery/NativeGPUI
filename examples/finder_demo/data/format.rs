@@ -161,7 +161,7 @@ pub(crate) fn stamp(seconds: f64, room: f32) -> SharedString {
 
 pub(crate) fn small_text_width(text: &str) -> f32 {
     tokens::appkit_string_width(
-        &tokens::system_font_family(),
+        tokens::system_font_family(),
         tokens::small_system_font_size(),
         FontWeight::NORMAL,
         text,
@@ -170,11 +170,10 @@ pub(crate) fn small_text_width(text: &str) -> f32 {
 }
 
 fn appkit_width(text: &str, size: f32, tabular: bool) -> f32 {
-    let font = match tabular {
-        true => NSFont::monospacedDigitSystemFontOfSize_weight(size.into(), unsafe {
-            NSFontWeightRegular
-        }),
-        false => NSFont::systemFontOfSize(size.into()),
+    let font = if tabular {
+        NSFont::monospacedDigitSystemFontOfSize_weight(size.into(), unsafe { NSFontWeightRegular })
+    } else {
+        NSFont::systemFontOfSize(size.into())
     };
     let font: &AnyObject = font.as_ref();
     let attrs = NSDictionary::from_slices(&[unsafe { NSFontAttributeName }], &[font]);
@@ -346,10 +345,7 @@ impl Bands {
     pub(crate) fn new(group: Column) -> Self {
         Self {
             group,
-            days: match group.dated() {
-                true => midnights(),
-                false => [0.; 6],
-            },
+            days: if group.dated() { midnights() } else { [0.; 6] },
             months: Vec::new(),
         }
     }
@@ -363,10 +359,7 @@ impl Bands {
     }
 
     pub(crate) fn size_place(folder: bool, bytes: u64) -> f64 {
-        match folder {
-            true => -1.,
-            false => size_band(bytes) as f64,
-        }
+        if folder { -1. } else { size_band(bytes) as f64 }
     }
 
     pub(crate) fn place(&mut self, at: f64) -> f64 {
@@ -397,13 +390,19 @@ impl Bands {
             Column::Kind => {
                 let kind = row.kind.as_ref();
                 let plural = kind.ends_with('s');
-                let same = band.is_some_and(|band| match plural {
-                    true => band.as_ref() == kind,
-                    false => band.strip_suffix('s') == Some(kind),
+                let same = band.is_some_and(|band| {
+                    if plural {
+                        band.as_ref() == kind
+                    } else {
+                        band.strip_suffix('s') == Some(kind)
+                    }
                 });
-                (!same).then(|| match plural {
-                    true => row.kind.clone(),
-                    false => format!("{kind}s").into(),
+                (!same).then(|| {
+                    if plural {
+                        row.kind.clone()
+                    } else {
+                        format!("{kind}s").into()
+                    }
                 })
             }
             Column::Size if row.face == Face::Folder => finder("GROUP_DIRECTORIES", "Folders", &[]),

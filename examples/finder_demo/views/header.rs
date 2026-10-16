@@ -146,9 +146,10 @@ fn cell_body(
         Column::Name => HEADER_LABEL_X,
         _ => LABEL_PAD,
     };
-    let (weight, color) = match sorted {
-        true => (FontWeight::SEMIBOLD, SystemColor::Label),
-        false => (FontWeight::NORMAL, SystemColor::SecondaryLabel),
+    let (weight, color) = if sorted {
+        (FontWeight::SEMIBOLD, SystemColor::Label)
+    } else {
+        (FontWeight::NORMAL, SystemColor::SecondaryLabel)
     };
     let arrow = if ascending {
         "chevron.up"
@@ -196,9 +197,10 @@ impl FinderDemo {
         if self.list_span.is_nan() {
             self.name_w = (span - content + self.name_w).max(self.name_min_w());
         } else if span != self.list_span {
-            let change = match overflows(content, self.list_span) {
-                true => (span - content).max(0.),
-                false => span - self.list_span,
+            let change = if overflows(content, self.list_span) {
+                (span - content).max(0.)
+            } else {
+                span - self.list_span
             };
             self.name_w = (self.name_w + change).max(self.name_min_w());
         }
@@ -361,9 +363,10 @@ impl FinderDemo {
     }
 
     fn columns_home(&self) -> &'static str {
-        match self.in_search() {
-            true => prefs::SEARCH_RESULTS,
-            false => self.here(),
+        if self.in_search() {
+            prefs::SEARCH_RESULTS
+        } else {
+            self.here()
         }
     }
 

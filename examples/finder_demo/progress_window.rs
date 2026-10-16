@@ -113,9 +113,10 @@ impl Progress {
             loop {
                 cx.background_executor().timer(TICK).await;
                 let running = this.update(cx, |this, cx| {
-                    let running = demos(cx).into_iter().fold(false, |running, demo| {
-                        demo.update(cx, |demo, _| demo.poll_jobs()) || running
-                    });
+                    let mut running = false;
+                    for demo in demos(cx) {
+                        running |= demo.update(cx, |demo, _| demo.poll_jobs());
+                    }
                     this.ticking = running;
                     cx.notify();
                     running

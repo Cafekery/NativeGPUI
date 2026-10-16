@@ -75,9 +75,10 @@ pub(crate) fn follow_quit(cx: &mut App) {
     }
     cx.on_app_quit(|cx| {
         let always = defaults().boolForKey(&NSString::from_str("NSQuitAlwaysKeepsWindows"));
-        match always != QUIT_ALTERNATE.get().unwrap_or(false) {
-            true => save(cx),
-            false => clear(),
+        if always != QUIT_ALTERNATE.get().unwrap_or(false) {
+            save(cx);
+        } else {
+            clear();
         }
         async {}
     })

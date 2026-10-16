@@ -49,10 +49,7 @@ pub(crate) fn typed_path(text: &str) -> PathBuf {
         None => text.to_string(),
     };
     let trimmed = full.trim_end_matches('/');
-    PathBuf::from(match trimmed.is_empty() {
-        true => "/",
-        false => trimmed,
-    })
+    PathBuf::from(if trimmed.is_empty() { "/" } else { trimmed })
 }
 
 fn display_name(path: &'static str) -> String {

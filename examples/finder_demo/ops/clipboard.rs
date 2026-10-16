@@ -77,9 +77,10 @@ impl FinderDemo {
             .iter()
             .map(|path| path.to_string_lossy().into_owned())
             .collect();
-        let text = match paths.is_empty() {
-            true => self.target().to_owned(),
-            false => paths.join("\n"),
+        let text = if paths.is_empty() {
+            self.target().to_owned()
+        } else {
+            paths.join("\n")
         };
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
     }

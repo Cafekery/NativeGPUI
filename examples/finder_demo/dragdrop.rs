@@ -50,16 +50,18 @@ impl KeyDrag for RowDrag {
 
 impl<D: KeyDrag> Grabbed for D {
     fn carries(&self, selected: &HashSet<SharedString>, key: &SharedString) -> bool {
-        match selected.contains(self.key()) {
-            true => selected.iter().any(|held| under(key, held)),
-            false => under(key, self.key()),
+        if selected.contains(self.key()) {
+            selected.iter().any(|held| under(key, held))
+        } else {
+            under(key, self.key())
         }
     }
 
     fn keys(&self, selected: &HashSet<SharedString>) -> Vec<SharedString> {
-        match selected.contains(self.key()) {
-            true => selected.iter().cloned().collect(),
-            false => vec![self.key().clone()],
+        if selected.contains(self.key()) {
+            selected.iter().cloned().collect()
+        } else {
+            vec![self.key().clone()]
         }
     }
 
@@ -218,9 +220,10 @@ fn springing_delay() -> Option<Duration> {
         let delay: f32 = global_default("com.apple.springing.delay")
             .and_then(|delay| delay.parse().ok())
             .unwrap_or(SPRING_DELAY);
-        let held = match delay < SPRING_NONE {
-            true => SPRING_FLOOR + delay + FLASH.as_secs_f32() * FLASHES as f32,
-            false => SPRING_FLOOR + delay,
+        let held = if delay < SPRING_NONE {
+            SPRING_FLOOR + delay + FLASH.as_secs_f32() * FLASHES as f32
+        } else {
+            SPRING_FLOOR + delay
         };
         // A user default: it can be negative or infinite.
         Duration::try_from_secs_f32(held)
@@ -298,21 +301,24 @@ impl FinderDemo {
         }
         spring.spent = true;
         let (key, into, twist) = (spring.key.clone(), spring.into, spring.twist);
-        match twist {
-            true => {
-                self.disclose(&key, true);
-                cx.notify();
-            }
-            false if self.view == COLUMN_VIEW => self.column_open(&key, window, cx),
-            false => self.go(into, window, cx),
+        if twist {
+            self.disclose(&key, true);
+            cx.notify();
+        } else if self.view == COLUMN_VIEW {
+            self.column_open(&key, window, cx);
+        } else {
+            self.go(into, window, cx);
         }
     }
 
     pub(crate) fn drop_fill(&self, key: &SharedString, fill: Hsla) -> Option<Hsla> {
         let hold = self.spring.as_ref()?;
-        (hold.key == *key).then(|| match self.spring_flash() == Some(key) {
-            true => flashed(fill),
-            false => fill,
+        (hold.key == *key).then(|| {
+            if self.spring_flash() == Some(key) {
+                flashed(fill)
+            } else {
+                fill
+            }
         })
     }
 

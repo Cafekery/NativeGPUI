@@ -265,9 +265,10 @@ fn weigh_tree(path: &Path, weight: &mut Weight, linked: &mut HashSet<u64>) {
             if let Some(items) = &mut weight.items {
                 *items += 1;
             }
-            match meta.is_dir() {
-                true => pending.push(entry.path()),
-                false => weight.bytes += meta.len(),
+            if meta.is_dir() {
+                pending.push(entry.path());
+            } else {
+                weight.bytes += meta.len();
             }
         }
     }
@@ -280,9 +281,10 @@ fn weigh_all(paths: &[PathBuf]) -> Weight {
         let Ok(meta) = std::fs::symlink_metadata(path) else {
             continue;
         };
-        let inner = match meta.is_dir() {
-            true => weigh_folder(path, true),
-            false => Weight::file(&meta),
+        let inner = if meta.is_dir() {
+            weigh_folder(path, true)
+        } else {
+            Weight::file(&meta)
         };
         total.bytes += inner.bytes;
         total.on_disk += inner.on_disk;
@@ -318,9 +320,10 @@ fn weight_rows(weight: Option<Weight>) -> Vec<(&'static str, SharedString)> {
 }
 
 fn size_text(bytes: u64) -> String {
-    match bytes < 1000 {
-        true => byte_string(bytes),
-        false => format!("{} ({} bytes)", byte_string(bytes), count(bytes as usize)),
+    if bytes < 1000 {
+        byte_string(bytes)
+    } else {
+        format!("{} ({} bytes)", byte_string(bytes), count(bytes as usize))
     }
 }
 
@@ -580,9 +583,12 @@ fn fits(form: &Form, label: &str, value: &str) -> bool {
 
 fn values_height(form: &Form, rows: &[(&str, SharedString)]) -> f32 {
     rows.iter()
-        .map(|(label, value)| match fits(form, label, value) {
-            true => ROW,
-            false => ROW + 8. + lines_height(value, form.inner),
+        .map(|(label, value)| {
+            if fits(form, label, value) {
+                ROW
+            } else {
+                ROW + 8. + lines_height(value, form.inner)
+            }
         })
         .sum()
 }
@@ -936,9 +942,10 @@ impl Pick {
         match self {
             Pick::App(app) => {
                 let name = finder_fs::name::of_path(app);
-                match default == Some(app.as_path()) {
-                    true => format!("{name} (default)"),
-                    false => name,
+                if default == Some(app.as_path()) {
+                    format!("{name} (default)")
+                } else {
+                    name
                 }
             }
             Pick::Separator => String::new(),
@@ -1867,13 +1874,15 @@ fn grant_row(
         .iter()
         .position(|&choice| choice == grant.privilege)
         .unwrap_or(0);
-    let symbol = match grant.group {
-        true => "person.2.fill",
-        false => "person.crop.circle",
+    let symbol = if grant.group {
+        "person.2.fill"
+    } else {
+        "person.crop.circle"
     };
-    let name = match grant.me {
-        true => format!("{} (Me)", grant.name),
-        false => grant.name.clone(),
+    let name = if grant.me {
+        format!("{} (Me)", grant.name)
+    } else {
+        grant.name.clone()
     };
     let popup = native_popup("privilege", chosen)
         .items(choices.iter().map(|&choice| privilege_title(choice)))

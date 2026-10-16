@@ -208,9 +208,10 @@ fn finder_window(
             ..window_options()
         },
         |window, cx| {
-            match remember {
-                true => remember_frame(window, FRAME),
-                false => save_frame(window, FRAME),
+            if remember {
+                remember_frame(window, FRAME);
+            } else {
+                save_frame(window, FRAME);
             }
             native_gpui::window_tabs(window, menus::NewTab, cx);
             cx.new(|cx| {

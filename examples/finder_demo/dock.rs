@@ -34,9 +34,10 @@ fn tile(path: &Path) -> Option<Tile> {
     let url = NSURL::fileURLWithPath_isDirectory(&file, folder);
     let address = url.absoluteString()?.to_string();
     let app = folder && path.extension().is_some_and(|ext| ext == "app");
-    let label = match app {
-        true => path.file_stem(),
-        false => path.file_name(),
+    let label = if app {
+        path.file_stem()
+    } else {
+        path.file_name()
     }?
     .to_string_lossy()
     .into_owned();

@@ -614,7 +614,6 @@ impl Render for GoPanel {
                 .left_0()
                 .right_0()
         };
-        // Gray fills the sheet; the white band takes its top corners, a gray strip squares its bottom.
         native_root(
             div()
                 .relative()

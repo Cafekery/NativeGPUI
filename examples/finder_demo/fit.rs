@@ -90,9 +90,10 @@ fn keys(text: &str) -> impl Iterator<Item = Option<u128>> + '_ {
             if c == ':' { d } else { '\0' },
         ]
         .map(u128::from);
-        let key = match w | z == 0 && x < 128 && y < 128 {
-            true => x << 7 | y,
-            false => w << 63 | x << 42 | y << 21 | z,
+        let key = if w | z == 0 && x < 128 && y < 128 {
+            x << 7 | y
+        } else {
+            w << 63 | x << 42 | y << 21 | z
         };
         let plain = plain(b);
         (a, b, c) = (b, c, d);

@@ -74,9 +74,10 @@ pub(crate) enum Act {
 
 pub(super) fn original_of(path: &Path) -> Option<PathBuf> {
     if let Ok(target) = std::fs::read_link(path) {
-        let joined = match target.is_absolute() {
-            true => target,
-            false => path.parent()?.join(target),
+        let joined = if target.is_absolute() {
+            target
+        } else {
+            path.parent()?.join(target)
         };
         return joined.canonicalize().ok();
     }

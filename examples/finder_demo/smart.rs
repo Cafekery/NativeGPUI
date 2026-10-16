@@ -34,10 +34,10 @@ fn raw_query(field_clause: Option<&str>, text: &str, criteria: &[Criterion]) -> 
         .into_iter()
         .chain(criteria.iter().filter_map(Criterion::raw_query))
         .collect();
-    match clauses.is_empty() {
-        true => "false".to_string(),
-        false => clauses.join(" && "),
+    if clauses.is_empty() {
+        return "false".to_owned();
     }
+    clauses.join(" && ")
 }
 
 pub(crate) fn name_clause(before: &str, text: &str, after: &str) -> String {
@@ -74,19 +74,18 @@ fn save(name: &str, raw: &str, folders: &[String]) -> Result<PathBuf, String> {
 
 fn plist(raw: &str, folders: &[String]) -> String {
     let string = |text: &str| format!("<string>{}</string>", xml(text));
-    let (code, scopes, paths) = match folders.is_empty() {
-        true => {
-            let everywhere = string("kMDQueryScopeComputer");
-            (THIS_MAC, everywhere.clone(), everywhere)
-        }
-        false => (
+    let (code, scopes, paths) = if folders.is_empty() {
+        let everywhere = string("kMDQueryScopeComputer");
+        (THIS_MAC, everywhere.clone(), everywhere)
+    } else {
+        (
             FOLDERS,
             folders
                 .iter()
                 .map(|folder| format!("<array>{}</array>", string(folder)))
                 .collect(),
             folders.iter().map(|folder| string(folder)).collect(),
-        ),
+        )
     };
     format!(
         concat!(
@@ -176,10 +175,10 @@ fn roots(file: &Path) -> Vec<PathBuf> {
             path => PathBuf::from(unxml(path)),
         })
         .collect();
-    match roots.is_empty() {
-        true => vec![PathBuf::from("/")],
-        false => roots,
+    if roots.is_empty() {
+        return vec![PathBuf::from("/")];
     }
+    roots
 }
 
 fn plutil(file: &Path, key: &str, format: &str) -> Option<String> {

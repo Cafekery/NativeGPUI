@@ -148,9 +148,10 @@ impl FinderDemo {
         if kept.is_empty() {
             return None;
         }
-        Some(match deleting {
-            true => Op::DeleteImmediately(kept),
-            false => Op::Trash(kept),
+        Some(if deleting {
+            Op::DeleteImmediately(kept)
+        } else {
+            Op::Trash(kept)
         })
     }
 
@@ -304,15 +305,15 @@ impl FinderDemo {
     }
 }
 
-/// Returns the answer and whether it stands for every other locked item.
 fn ask_unlock(item: &Path, deleting: bool, offer_all: bool) -> (bool, bool) {
     let Some(mtm) = MainThreadMarker::new() else {
         return (false, false);
     };
     let name = item.file_name().unwrap_or_default().to_string_lossy();
-    let (question, action) = match deleting {
-        true => ("delete it", "Delete"),
-        false => ("move it to the Trash", "Move to Trash"),
+    let (question, action) = if deleting {
+        ("delete it", "Delete")
+    } else {
+        ("move it to the Trash", "Move to Trash")
     };
     let alert = NSAlert::new(mtm);
     alert.setMessageText(&NSString::from_str(&format!(

@@ -223,7 +223,6 @@ fn stack_image(images: &[Arc<RenderImage>], side: u32) -> Option<Arc<RenderImage
     Some(Arc::new(RenderImage::new(vec![Frame::new(raster)])))
 }
 
-/// `image` is `None` while the stack is being made.
 struct Stacked {
     from: Vec<Arc<RenderImage>>,
     side: u32,
@@ -419,9 +418,10 @@ pub(crate) fn duration(seconds: f64) -> Option<SharedString> {
         };
     }
     let seconds = seconds.max(0.).round();
-    let units = match seconds >= 3600. {
-        true => NSCalendarUnit::Hour | NSCalendarUnit::Minute | NSCalendarUnit::Second,
-        false => NSCalendarUnit::Minute | NSCalendarUnit::Second,
+    let units = if seconds >= 3600. {
+        NSCalendarUnit::Hour | NSCalendarUnit::Minute | NSCalendarUnit::Second
+    } else {
+        NSCalendarUnit::Minute | NSCalendarUnit::Second
     };
     FORMATTER.with(|formatter| {
         formatter.setAllowedUnits(units);
@@ -505,9 +505,10 @@ impl FinderDemo {
             let (rows, show_more) =
                 info_rows(row, kind, meta.as_deref(), self.preview_expanded, content);
             Card {
-                hero: match self.view == GALLERY_VIEW {
-                    true => Hero::Row(row.clone()),
-                    false => Hero::Poster(row.clone()),
+                hero: if self.view == GALLERY_VIEW {
+                    Hero::Row(row.clone())
+                } else {
+                    Hero::Poster(row.clone())
                 },
                 title: row.display.clone(),
                 subtitle: kind_line(row, self.fresh_stats().map(|stats| stats.bytes)),
@@ -678,9 +679,10 @@ fn hero_h(pane_h: f32, content: f32) -> f32 {
 }
 
 fn stack_side(view: usize, pane_h: f32, content: f32) -> f32 {
-    match view == GALLERY_VIEW {
-        true => HEADER_ICON,
-        false => content.min(hero_h(pane_h, content)),
+    if view == GALLERY_VIEW {
+        HEADER_ICON
+    } else {
+        content.min(hero_h(pane_h, content))
     }
 }
 
@@ -760,9 +762,10 @@ impl Shown {
         let (card, content) = (&self.card, self.content);
         let body = tokens::system_font_size();
         let small = tokens::small_system_font_size();
-        let ink = match self.view == COLUMN_VIEW {
-            true => Ink::plain(),
-            false => Ink::now(self.key),
+        let ink = if self.view == COLUMN_VIEW {
+            Ink::plain()
+        } else {
+            Ink::now(self.key)
         };
         let rows = card.rows.len();
         let title: AnyElement = match &self.renaming {
@@ -982,9 +985,10 @@ impl Shown {
                                 ("action.tip", at),
                                 label,
                                 slot.on_click(move |event, _, cx| {
-                                    let act = match event.modifiers().alt {
-                                        true => act.alternate().unwrap_or(act),
-                                        false => act,
+                                    let act = if event.modifiers().alt {
+                                        act.alternate().unwrap_or(act)
+                                    } else {
+                                        act
                                     };
                                     finder.update(cx, |demo, cx| demo.run_quick(act, cx)).ok();
                                 }),

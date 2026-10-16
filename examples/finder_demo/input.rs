@@ -69,10 +69,13 @@ impl FinderDemo {
             "left" | "right" | "up" | "down" if self.view == GALLERY_VIEW => {
                 let first = matches!(key, "left" | "up");
                 let next = match current {
-                    _ if modifiers.alt => match first {
-                        true => 0,
-                        false => last,
-                    },
+                    _ if modifiers.alt => {
+                        if first {
+                            0
+                        } else {
+                            last
+                        }
+                    }
                     _ if matches!(key, "up" | "down") => return,
                     Some(at) if first => at.saturating_sub(1),
                     Some(at) => (at + 1).min(last),

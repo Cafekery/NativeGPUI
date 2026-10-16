@@ -187,9 +187,10 @@ impl Row {
     }
 
     pub(crate) fn size_shown(&self, sizes: bool) -> SharedString {
-        match sizes || !self.is_folder() {
-            true => self.size.clone(),
-            false => SharedString::new_static("--"),
+        if sizes || !self.is_folder() {
+            self.size.clone()
+        } else {
+            SharedString::new_static("--")
         }
     }
 }
@@ -334,9 +335,10 @@ pub(crate) fn kind_at(path: &str, entry: &Entry) -> kind::Kind {
 }
 
 pub(crate) fn bytes_of(entry: &Entry, size: Option<u64>) -> Option<u64> {
-    match entry.kind == EntryKind::Directory {
-        true => size.filter(|bytes| *bytes > 0 || entry.package),
-        false => Some(entry.size),
+    if entry.kind == EntryKind::Directory {
+        size.filter(|bytes| *bytes > 0 || entry.package)
+    } else {
+        Some(entry.size)
     }
 }
 
@@ -369,9 +371,10 @@ fn row_of(dir: &'static str, entry: &Entry, (size, seen): Facts) -> Row {
         added_at: entry.added.map(reference_seconds),
         kind: (&kind.label).into(),
         uti: (&kind.uti).into(),
-        face: match app {
-            true => Face::Program,
-            false => face_of(&kind.uti),
+        face: if app {
+            Face::Program
+        } else {
+            face_of(&kind.uti)
         },
         hidden: entry.hidden,
         opens,
@@ -392,9 +395,10 @@ pub(crate) fn rows_of<'a>(
     folders: &HashMap<String, Facts>,
     extras: bool,
 ) -> Vec<Arc<Row>> {
-    let mut comments = match extras {
-        true => finder_fs::ds_store::comments(Path::new(dir)),
-        false => HashMap::new(),
+    let mut comments = if extras {
+        finder_fs::ds_store::comments(Path::new(dir))
+    } else {
+        HashMap::new()
     };
     entries
         .into_iter()
@@ -441,16 +445,18 @@ pub(crate) fn hit_row(path: &Path, entry: &Entry) -> Arc<Row> {
 }
 
 fn mdfind(args: &[&OsStr]) -> String {
-    match Command::new("/usr/bin/mdfind").args(args).output() {
-        Ok(found) => String::from_utf8_lossy(&found.stdout).into_owned(),
-        Err(_) => String::new(),
-    }
+    Command::new("/usr/bin/mdfind")
+        .args(args)
+        .output()
+        .map(|found| String::from_utf8_lossy(&found.stdout).into_owned())
+        .unwrap_or_default()
 }
 
 pub(crate) fn tagged_rows(tag: &str, limit: usize) -> Vec<Arc<Row>> {
-    let query = match tag.is_empty() {
-        true => "kMDItemUserTags == '*'".to_string(),
-        false => format!("kMDItemUserTags == '{tag}'"),
+    let query = if tag.is_empty() {
+        "kMDItemUserTags == '*'".to_string()
+    } else {
+        format!("kMDItemUserTags == '{tag}'")
     };
     let found = mdfind(&["-onlyin".as_ref(), "/".as_ref(), query.as_ref()]);
     let mut rows = rows_at(found.lines().take(limit));

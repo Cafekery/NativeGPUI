@@ -699,9 +699,10 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
             .child(bar),
     )
     .when(pausable, |row| {
-        let (name, run): (_, fn(&Queue, JobId)) = match paused {
-            true => ("play.circle.fill", Queue::resume),
-            false => ("pause.circle.fill", Queue::pause),
+        let (name, run): (_, fn(&Queue, JobId)) = if paused {
+            ("play.circle.fill", Queue::resume)
+        } else {
+            ("pause.circle.fill", Queue::pause)
         };
         row.child(glyph(
             ("ng.finder.progress.pause", id),

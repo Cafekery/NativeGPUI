@@ -205,16 +205,14 @@ pub(crate) fn lines_of(rows: &[Arc<Row>], hidden: bool) -> Vec<Line> {
 }
 
 pub(crate) fn folds_to(name: &str, folded: &str) -> bool {
-    match name.is_ascii() && folded.is_ascii() {
-        true => {
-            folded.is_empty()
-                || name
-                    .as_bytes()
-                    .windows(folded.len())
-                    .any(|at| at.eq_ignore_ascii_case(folded.as_bytes()))
-        }
-        false => fold(name).contains(folded),
+    if !(name.is_ascii() && folded.is_ascii()) {
+        return fold(name).contains(folded);
     }
+    folded.is_empty()
+        || name
+            .as_bytes()
+            .windows(folded.len())
+            .any(|at| at.eq_ignore_ascii_case(folded.as_bytes()))
 }
 
 impl Shape {
@@ -343,10 +341,7 @@ impl FinderDemo {
 
     fn slotted(&self, lines: &Arc<Vec<Line>>) -> Option<(Arc<Vec<Slot>>, Arc<Vec<usize>>)> {
         let group = self.banded?;
-        let day = match group.dated() {
-            true => today(),
-            false => 0.,
-        };
+        let day = if group.dated() { today() } else { 0. };
         let mut listings = self.listings();
         if let Some(banded) = listings
             .slots
@@ -391,10 +386,7 @@ impl FinderDemo {
         let rows = self.appendable();
         let fresh = {
             let listings = self.listings();
-            let built = match tree {
-                true => &listings.tree,
-                false => &listings.flat,
-            };
+            let built = if tree { &listings.tree } else { &listings.flat };
             built
                 .as_ref()
                 .filter(|_| !tree || listings.edits.is_empty())
@@ -404,9 +396,10 @@ impl FinderDemo {
         if let Some(lines) = fresh {
             return lines;
         }
-        let mut edits = match tree {
-            true => std::mem::take(&mut self.listings().edits),
-            false => Vec::new(),
+        let mut edits = if tree {
+            std::mem::take(&mut self.listings().edits)
+        } else {
+            Vec::new()
         };
         edits.sort_by_key(|(at, _, _)| *at);
         let taken = self.take(tree);
@@ -419,12 +412,11 @@ impl FinderDemo {
         .unwrap_or_else(|| self.walked(self.shape(tree).build(&self.held()), rows));
         let lines = built.lines.clone();
         let mut listings = self.listings();
-        match tree {
-            true => {
-                listings.edited = listings.expanded;
-                listings.tree = Some(built);
-            }
-            false => listings.flat = Some(built),
+        if tree {
+            listings.edited = listings.expanded;
+            listings.tree = Some(built);
+        } else {
+            listings.flat = Some(built);
         }
         lines
     }
@@ -478,9 +470,10 @@ impl FinderDemo {
             tagged: self.tag_listing.is_some(),
             results,
             expanded: self.expanded.clone(),
-            hits: match results {
-                true => self.hits.clone(),
-                false => Vec::new(),
+            hits: if results {
+                self.hits.clone()
+            } else {
+                Vec::new()
             },
             criteria: self.criteria.clone(),
         }
@@ -541,9 +534,10 @@ impl FinderDemo {
         let mut listings = self.listings();
         let listings = &mut *listings;
         listings.slots = None;
-        let (taken, twin) = match tree {
-            true => (listings.tree.take(), &mut listings.flat),
-            false => (listings.flat.take(), &mut listings.tree),
+        let (taken, twin) = if tree {
+            (listings.tree.take(), &mut listings.flat)
+        } else {
+            (listings.flat.take(), &mut listings.tree)
         };
         if twin
             .as_ref()

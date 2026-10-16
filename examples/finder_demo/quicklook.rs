@@ -52,10 +52,10 @@ impl FinderDemo {
     }
 
     fn quick_look_subject(&self) -> Option<(SharedString, Option<Bounds<Pixels>>)> {
-        match self.selected.is_empty() {
-            true => Some((self.here().into(), None)),
-            false => Some((self.cursor.clone()?, self.ql_icon.bounds())),
+        if self.selected.is_empty() {
+            return Some((self.here().into(), None));
         }
+        Some((self.cursor.clone()?, self.ql_icon.bounds()))
     }
 
     fn quick_look_items(&self, shown: &SharedString) -> Option<(Vec<PathBuf>, usize)> {

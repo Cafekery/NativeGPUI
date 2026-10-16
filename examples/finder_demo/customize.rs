@@ -349,9 +349,10 @@ impl Customizer {
             _ => None,
         };
         for (name, button) in &parts.symbols {
-            let tint = match chosen == Some(*name) {
-                true => NSColor::controlAccentColor(),
-                false => NSColor::secondaryLabelColor(),
+            let tint = if chosen == Some(*name) {
+                NSColor::controlAccentColor()
+            } else {
+                NSColor::secondaryLabelColor()
             };
             button.setContentTintColor(Some(&tint));
         }
@@ -359,9 +360,10 @@ impl Customizer {
         for (tag, button) in &parts.swatches {
             let on = held(tag);
             button.setImage(Some(&tag_disc(tag.color, 26., 4., on)));
-            button.setToolTip(Some(&ns(&match on {
-                true => said("Remove tag from folder", "Remove tag from folder"),
-                false => said("Add tag to folder", "Add tag to folder"),
+            button.setToolTip(Some(&ns(&if on {
+                said("Remove tag from folder", "Remove tag from folder")
+            } else {
+                said("Add tag to folder", "Add tag to folder")
             })));
         }
         for (at, tag) in parts.more_tags.iter().enumerate() {

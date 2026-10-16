@@ -73,10 +73,10 @@ fn trouble(id: &'static str, error: io::Error) -> Trouble {
         let above = now.parent()?;
         (finder_fs::list::identity(above) == parent).then_some(())?;
         // Renamed where it stood: keep the path the window was given, not the kernel's.
-        match dir.parent().and_then(finder_fs::list::real_path).as_deref() == Some(above) {
-            true => Some(dir.with_file_name(now.file_name()?)),
-            false => Some(now),
+        if dir.parent().and_then(finder_fs::list::real_path).as_deref() != Some(above) {
+            return Some(now);
         }
+        Some(dir.with_file_name(now.file_name()?))
     });
     match renamed {
         Some(now) => Trouble::Renamed(intern_path(&now)),
@@ -105,9 +105,10 @@ fn by(keys: &[Key], order: Order) -> impl Fn(usize, usize) -> Ordering + '_ {
             sort if sort.dated() => a.at.total_cmp(&b.at),
             _ => a.rank.cmp(&b.rank),
         };
-        let folders = match first {
-            true => b.discloses.cmp(&a.discloses),
-            false => Ordering::Equal,
+        let folders = if first {
+            b.discloses.cmp(&a.discloses)
+        } else {
+            Ordering::Equal
         };
         // Finder lists what a column says nothing for last, whichever way it sorts.
         band.then(folders)
@@ -197,9 +198,12 @@ pub(crate) fn sort_rows(rows: &mut Vec<Arc<Row>>, order: Order, extras: bool, si
     let ranks = match sort {
         Column::Size => rows
             .iter()
-            .map(|row| match sizes || !row.is_folder() {
-                true => row.bytes,
-                false => 0,
+            .map(|row| {
+                if sizes || !row.is_folder() {
+                    row.bytes
+                } else {
+                    0
+                }
             })
             .collect(),
         sort if sort == Column::Name || sort.dated() => vec![0; rows.len()],
@@ -249,15 +253,16 @@ fn first_screen(
     let listed: Vec<usize> = (0..entries.len())
         .filter(|&at| hidden || !entries[at].hidden)
         .collect();
-    let kinds: Vec<_> = match sort == Column::Kind || group == Some(Column::Kind) {
-        true => listed
+    let kinds: Vec<_> = if sort == Column::Kind || group == Some(Column::Kind) {
+        listed
             .iter()
             .map(|&at| data::kind_at(&data::join(id, &entries[at].name), entries[at]).label)
-            .collect(),
-        false => Vec::new(),
+            .collect()
+    } else {
+        Vec::new()
     };
-    let bytes: Vec<u64> = match sort == Column::Size || group == Some(Column::Size) {
-        true => listed
+    let bytes: Vec<u64> = if sort == Column::Size || group == Some(Column::Size) {
+        listed
             .iter()
             .map(|&at| {
                 let entry = entries[at];
@@ -267,8 +272,9 @@ fn first_screen(
                     bytes => Some(bytes.unwrap_or(0)),
                 }
             })
-            .collect::<Option<_>>()?,
-        false => Vec::new(),
+            .collect::<Option<_>>()?
+    } else {
+        Vec::new()
     };
     let bands = match group {
         None => vec![None; listed.len()],
@@ -437,16 +443,13 @@ fn indexed_screen(
     let dir = Path::new(id);
     let seconds = |at: SystemTime| Some(at.duration_since(UNIX_EPOCH).ok()?.as_secs());
     let named = by_name(order);
-    let known = match named {
-        true => {
-            let now = std::fs::metadata(dir).ok()?.modified().ok()?;
-            (seconds(fsearch::modified(dir)?)? == seconds(now)?).then_some(())?;
-            fsearch::children(dir)?
-        }
-        false => {
-            (fsearch::visible(dir)? >= BIG).then_some(())?;
-            fsearch::current_children(dir)?
-        }
+    let known = if named {
+        let now = std::fs::metadata(dir).ok()?.modified().ok()?;
+        (seconds(fsearch::modified(dir)?)? == seconds(now)?).then_some(())?;
+        fsearch::children(dir)?
+    } else {
+        (fsearch::visible(dir)? >= BIG).then_some(())?;
+        fsearch::current_children(dir)?
     };
     let coarse = order.sort == Column::Modified;
     let listed: Vec<&Entry> = known.iter().collect();
@@ -537,10 +540,7 @@ fn list(
                     let mut theirs = rows_in(twin, &facts, false).into_iter();
                     chosen
                         .iter()
-                        .filter_map(|&at| match at < own {
-                            true => ours.next(),
-                            false => theirs.next(),
-                        })
+                        .filter_map(|&at| if at < own { ours.next() } else { theirs.next() })
                         .collect()
                 }
             };
@@ -685,24 +685,29 @@ impl FinderDemo {
             .get(id)
             .is_some_and(|folder| folder.rows.is_empty());
         let headed = self.headed_for() == Some(id);
-        let (order, plain, extras, sizes) = match headed {
-            true => (
+        let (order, plain, extras, sizes) = if headed {
+            (
                 self.order_for(id),
                 self.plain_on_arrival(),
                 self.extras_in(id),
                 ListLook::of(id).sizes,
-            ),
-            false => (
+            )
+        } else {
+            (
                 self.order(),
                 self.plain(),
                 self.wants_extras(),
                 self.list_look.sizes,
-            ),
+            )
         };
         // A disclosed folder shows its rows at once: rows landing later would push down those below.
         let first = plain.filter(|_| empty && (headed || id == self.here()));
         let screen = ((self.on_screen(), self.art_size()), extras);
-        let arts = headed.then(|| self.crumb_arts(id)).unwrap_or_default();
+        let arts = if headed {
+            self.crumb_arts(id)
+        } else {
+            Default::default()
+        };
         let executor = cx.background_executor().clone();
         let listed = cx.background_executor().spawn(async move {
             let crumbs = icons::begin(arts, CRUMB_ART);
@@ -1027,9 +1032,10 @@ impl FinderDemo {
     fn read_changed(&mut self, dirs: &[PathBuf], cx: &mut Context<Self>) {
         for dir in dirs {
             if let Some(id) = self.folders.known(&dir.to_string_lossy()) {
-                match self.folders.shown(id) {
-                    true => self.read_folder(id, cx),
-                    false => self.folders.stale(id),
+                if self.folders.shown(id) {
+                    self.read_folder(id, cx);
+                } else {
+                    self.folders.stale(id);
                 }
             }
             let holders: Vec<&'static str> = (dir.ancestors().skip(1))

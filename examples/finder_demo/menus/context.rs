@@ -67,15 +67,17 @@ pub(crate) fn background(demo: &FinderDemo) -> Menu {
     menu.submenu("View", view_rows(demo));
     let groups = MenuEntry::item("Use Groups").checked(demo.group().is_some());
     menu.item(
-        match demo.view == GALLERY_VIEW {
-            true => groups.disabled(),
-            false => groups,
+        if demo.view == GALLERY_VIEW {
+            groups.disabled()
+        } else {
+            groups
         },
         Act::Groups,
     );
-    match demo.view == ICON_VIEW {
-        true => icon_rows(&mut menu, demo),
-        false => menu.submenu("Sort By", sort_rows(demo)),
+    if demo.view == ICON_VIEW {
+        icon_rows(&mut menu, demo)
+    } else {
+        menu.submenu("Sort By", sort_rows(demo))
     }
     menu.item(MenuEntry::item("Show View Options"), Act::ViewOptions);
     menu
@@ -97,17 +99,22 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     }
     match folder {
         Some(folder) => {
-            let (tab, window) = match many {
-                true => (Act::OpenTabs, Act::OpenWindow),
-                false => (Act::OpenTab(folder), Act::OpenWindowAt(folder)),
+            let (tab, window) = if many {
+                (Act::OpenTabs, Act::OpenWindow)
+            } else {
+                (Act::OpenTab(folder), Act::OpenWindowAt(folder))
             };
-            let refused = match many {
-                true => selected_lines(selected).all(|line| unlistable_folder(&line)),
-                false => unlistable_folder(line),
+            let refused = if many {
+                selected_lines(selected).all(|line| unlistable_folder(&line))
+            } else {
+                unlistable_folder(line)
             };
-            let open = |title| match refused {
-                true => MenuEntry::item(title).disabled(),
-                false => MenuEntry::item(title),
+            let open = |title| {
+                if refused {
+                    MenuEntry::item(title).disabled()
+                } else {
+                    MenuEntry::item(title)
+                }
             };
             menu.item(open(plural("Open in New Tab", many)), tab);
             menu.item(
@@ -168,9 +175,10 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     let unlistable = !many && unlistable_folder(line);
     if !unlistable {
         let compress = subject("Compress", &line.row.display, many, chosen);
-        let plain = match many {
-            true => "Compress".to_string(),
-            false => compress.clone(),
+        let plain = if many {
+            "Compress".to_string()
+        } else {
+            compress.clone()
         };
         menu.item(MenuEntry::item(plain), Act::Compress);
         menu.item(MenuEntry::item(compress).option_alternate(), Act::Compress);
@@ -178,9 +186,10 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     menu.item(MenuEntry::item("Duplicate"), Act::Duplicate);
     menu.item(exactly("Duplicate Exactly"), Act::Duplicate);
     menu.item(MenuEntry::item("Make Alias"), Act::MakeAlias);
-    let look = match unlistable {
-        true => subject("Quick Look", &line.row.display, false, chosen),
-        false => "Quick Look".to_string(),
+    let look = if unlistable {
+        subject("Quick Look", &line.row.display, false, chosen)
+    } else {
+        "Quick Look".to_string()
     };
     menu.item(MenuEntry::item(look), Act::QuickLook);
     menu.item(
@@ -202,27 +211,30 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         menu.item(MenuEntry::item("Share…"), Act::Share);
         menu.separator();
     }
-    let carried: Vec<Vec<RowTag>> = match in_selection {
-        true => selected
+    let carried: Vec<Vec<RowTag>> = if in_selection {
+        selected
             .iter()
             .map(|key| crate::tags::row_tags(key))
-            .collect(),
-        false => vec![crate::tags::row_tags(&line.key)],
+            .collect()
+    } else {
+        vec![crate::tags::row_tags(&line.key)]
     };
     menu.view(
         swatch_row(&carried, !many && line.row.opens.is_some()),
         Act::Swatch,
     );
     menu.separator();
-    let options = match crate::preview::options::is_open() {
-        true => "Hide Preview Options",
-        false => "Show Preview Options",
+    let options = if crate::preview::options::is_open() {
+        "Hide Preview Options"
+    } else {
+        "Show Preview Options"
     };
     menu.item(MenuEntry::item(options), Act::PreviewOptions);
     menu.separator();
-    let faces: Vec<_> = match in_selection {
-        true => selected_lines(selected).map(|line| line.row.face).collect(),
-        false => vec![line.row.face],
+    let faces: Vec<_> = if in_selection {
+        selected_lines(selected).map(|line| line.row.face).collect()
+    } else {
+        vec![line.row.face]
     };
     menu.submenu(
         "Quick Actions",
@@ -233,9 +245,10 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
 
 pub(super) fn swatch_row(carried: &[Vec<RowTag>], lone_folder: bool) -> MenuView {
     let picked = !carried.is_empty();
-    let button = match lone_folder {
-        true => "Customize Folder…",
-        false => "Tags…",
+    let button = if lone_folder {
+        "Customize Folder…"
+    } else {
+        "Tags…"
     };
     MenuView::swatches_with_button(
         tag_swatches(carried),
@@ -294,14 +307,16 @@ fn open_with(menu: &mut Menu, line: &Line) {
     let rows = |always: bool| {
         apps.iter()
             .map(|app| {
-                let title = match app.default {
-                    true => format!("{} (default)", app.name),
-                    false => app.name.clone(),
+                let title = if app.default {
+                    format!("{} (default)", app.name)
+                } else {
+                    app.name.clone()
                 };
                 let at = intern(&app.path.to_string_lossy());
-                let act = match always {
-                    true => Act::AlwaysOpenWith(at),
-                    false => Act::OpenWith(at),
+                let act = if always {
+                    Act::AlwaysOpenWith(at)
+                } else {
+                    Act::OpenWith(at)
                 };
                 (MenuEntry::item(title), act)
             })
@@ -479,16 +494,18 @@ pub(crate) fn header(columns: &[ColumnSpec], here: &str) -> Menu {
 }
 
 fn plural(title: &str, many: bool) -> String {
-    match many {
-        true => format!("{title}s"),
-        false => title.to_string(),
+    if many {
+        format!("{title}s")
+    } else {
+        title.to_string()
     }
 }
 
 fn subject(verb: &str, name: &SharedString, many: bool, chosen: usize) -> String {
-    match many {
-        true => format!("{verb} {chosen} Items"),
-        false => format!("{verb} “{name}”"),
+    if many {
+        format!("{verb} {chosen} Items")
+    } else {
+        format!("{verb} “{name}”")
     }
 }
 

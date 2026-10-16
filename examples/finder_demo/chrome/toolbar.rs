@@ -58,7 +58,6 @@ const DEFAULTS: [&str; 10] = [
 ];
 
 type Run = fn(&mut FinderDemo, &mut Window, &mut Context<FinderDemo>);
-/// Identifier, SF Symbol, label, tooltip and action.
 type Tool = (&'static str, &'static str, &'static str, &'static str, Run);
 
 const EJECT: Tool = (
@@ -448,9 +447,11 @@ impl FinderDemo {
 
     pub(crate) fn toolbar_state(&self) -> ToolbarState {
         let picked = !self.selected.is_empty();
-        let (_, shareable, cloud) = picked
-            .then(|| crate::menus::chosen_state(self))
-            .unwrap_or_default();
+        let (_, shareable, cloud) = if picked {
+            crate::menus::chosen_state(self)
+        } else {
+            Default::default()
+        };
         (
             self.at,
             self.history.len(),

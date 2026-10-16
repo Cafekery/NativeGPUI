@@ -205,9 +205,10 @@ fn ask(path: &Path, modified: Option<SystemTime>, key: Thumb, size: f32, scale: 
         return;
     }
     let ask = (path.to_path_buf(), modified, key, size, scale);
-    match INFLIGHT.load(Ordering::Relaxed) < LANES {
-        true => send(ask),
-        false => HELD.with_borrow_mut(|held| held.push(ask)),
+    if INFLIGHT.load(Ordering::Relaxed) < LANES {
+        send(ask);
+    } else {
+        HELD.with_borrow_mut(|held| held.push(ask));
     }
 }
 

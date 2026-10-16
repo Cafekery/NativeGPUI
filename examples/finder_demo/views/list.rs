@@ -254,11 +254,11 @@ impl Faces {
             }
         };
         let view = AnyView::from(paint);
-        match cached {
-            true => view
-                .cached(StyleRefinement::default().w_full().h(px(row_h)))
-                .into_any_element(),
-            false => view.into_any_element(),
+        if cached {
+            view.cached(StyleRefinement::default().w_full().h(px(row_h)))
+                .into_any_element()
+        } else {
+            view.into_any_element()
         }
     }
 }
@@ -368,10 +368,11 @@ impl FinderDemo {
             selection: palette.selection,
             selection_text: palette.selection_text,
             selection_detail: palette.selection_text.opacity(SELECTION_DETAIL_ALPHA),
-            selection_join: match palette.focused {
-                true => tokens::system_color(SystemColor::AlternateSelectedControlText)
-                    .opacity(SELECTION_JOIN_ALPHA),
-                false => tokens::system_color(SystemColor::Shadow).opacity(SELECTION_JOIN_SHADE),
+            selection_join: if palette.focused {
+                tokens::system_color(SystemColor::AlternateSelectedControlText)
+                    .opacity(SELECTION_JOIN_ALPHA)
+            } else {
+                tokens::system_color(SystemColor::Shadow).opacity(SELECTION_JOIN_SHADE)
             },
             focused: palette.focused,
             dates: DATES.with(Font::clone),
@@ -518,9 +519,10 @@ impl FinderDemo {
 }
 
 fn edge(bleed: bool) -> (f32, f32) {
-    match bleed {
-        true => (0., 0.),
-        false => (PANE_INSET, ROW_PILL_RADIUS),
+    if bleed {
+        (0., 0.)
+    } else {
+        (PANE_INSET, ROW_PILL_RADIUS)
     }
 }
 
@@ -685,9 +687,10 @@ fn drop_band(line: &Line, look: &Look, window: &Window) -> (f32, f32) {
 fn painted(drawn: &Drawn, rename: Option<AnyElement>) -> Div {
     let look = &drawn.look;
     let over = drawn.selected && look.focused;
-    let detail = match drawn.lit() {
-        true => look.selection_detail,
-        false => look.secondary,
+    let detail = if drawn.lit() {
+        look.selection_detail
+    } else {
+        look.secondary
     };
     let fill = match (drawn.selected, drawn.at % 2 == 1) {
         (true, _) => Some((look.selection, drawn.run)),
@@ -741,9 +744,10 @@ fn row(
 ) -> AnyElement {
     let selected = marks.selected.contains(&line.key);
     let dropping = (marks.dropping.as_ref() == Some(&line.key)).then(|| {
-        match marks.springing.as_ref() == Some(&line.key) {
-            true => flashed(look.selection),
-            false => look.selection,
+        if marks.springing.as_ref() == Some(&line.key) {
+            flashed(look.selection)
+        } else {
+            look.selection
         }
     });
     let ring = marks

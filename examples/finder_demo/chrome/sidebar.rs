@@ -255,7 +255,6 @@ fn is_standard(listed: &Listed, which: Standard) -> bool {
             && path.parent().and_then(Path::parent) == Some(Path::new("/Users"))
 }
 
-/// Each row's state as Finder shows it, then as the demo does.
 fn visibility(
     favourites: &[Listed],
     locations: &[Listed],
@@ -411,14 +410,12 @@ pub(crate) fn groups() -> Vec<Group> {
     let shows = |shown| on(shown).1;
     for &(shown, which) in &FOLDERS {
         let here = |listed: &Listed| is_standard(listed, which);
-        match shows(shown) {
-            false => favourites.retain(|listed| !here(listed)),
-            true if !favourites.iter().any(here) => {
-                if let Some(path) = finder_fs::volumes::standard(which) {
-                    favourites.push(listed(finder_fs::name::of_path(&path), Some(path), None));
-                }
+        if !shows(shown) {
+            favourites.retain(|listed| !here(listed));
+        } else if !favourites.iter().any(here) {
+            if let Some(path) = finder_fs::volumes::standard(which) {
+                favourites.push(listed(finder_fs::name::of_path(&path), Some(path), None));
             }
-            true => {}
         }
     }
     let wanted = |listed: &Listed| match listed.special {

@@ -276,7 +276,7 @@ impl FinderDemo {
                             if !last {
                                 return Some((Vec::new(), false));
                             }
-                            if fsearch::wait_ready_unless(&stale) {
+                            if fsearch::wait_ready_unless(stale) {
                                 hits = gathered();
                             }
                         }

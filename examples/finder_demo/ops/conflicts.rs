@@ -218,9 +218,10 @@ impl FinderDemo {
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy(),
-            match both_folders {
-                true => "merge it with the folder you're moving",
-                false => "replace it with the one you're moving",
+            if both_folders {
+                "merge it with the folder you're moving"
+            } else {
+                "replace it with the one you're moving"
             }
         );
         div()

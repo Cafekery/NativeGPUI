@@ -124,10 +124,7 @@ pub(crate) fn rename(old: &str, new: &str) {
     let listed = all();
     let order: Vec<&str> = listed
         .iter()
-        .map(|tag| match tag.name == old {
-            true => new,
-            false => &tag.name,
-        })
+        .map(|tag| if tag.name == old { new } else { &tag.name })
         .collect();
     set_order(&order);
 }

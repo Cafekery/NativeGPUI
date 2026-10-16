@@ -261,9 +261,10 @@ impl FinderDemo {
                         let line = &rows[row];
                         let is_selected = picked(row);
                         let dropping = resting.as_ref() == Some(&line.key);
-                        let drop_fill = match springing.as_ref() == Some(&line.key) {
-                            true => flashed(highlight),
-                            false => highlight,
+                        let drop_fill = if springing.as_ref() == Some(&line.key) {
+                            flashed(highlight)
+                        } else {
+                            highlight
                         };
                         let joins_above = !dropping && row > 0 && picked(row - 1);
                         let joins_below = !dropping && picked(row + 1);
@@ -391,12 +392,13 @@ impl FinderDemo {
         let bars = native_scroll_bars(("ng.finder.column.scroll_bars", index))
             .vertical(&handle.0.borrow().base_handle);
         // Under the rows, so a folder row's own drop lands first.
-        let edge = match self.spring.is_some() {
-            true => transparent_black(),
-            false => Hsla {
+        let edge = if self.spring.is_some() {
+            transparent_black()
+        } else {
+            Hsla {
                 a: AREA_ALPHA,
                 ..system_color(SystemColor::ControlAccent)
-            },
+            }
         };
         let area = div()
             .id(("ng.finder.column.area", index))
@@ -494,23 +496,22 @@ impl FinderDemo {
         }
         let names: Vec<SharedString> = lines.iter().map(|line| line.row.display.clone()).collect();
         let listing = Arc::downgrade(&lines);
-        let width = match names.len() <= FIT_NOW {
-            true => browser_fit_width(window.text_system(), &names, look),
-            false => {
-                let listed = listing.clone();
-                fit::in_background(
-                    cx,
-                    move |texts| browser_fit_width(texts, &names, look),
-                    move |this, width, cx| {
-                        let fit = this.column_fits.get_mut(folder);
-                        if let Some(fit) = fit.filter(|fit| fit.lines.ptr_eq(&listed)) {
-                            fit.width = width;
-                            cx.notify();
-                        }
-                    },
-                );
-                self.column_fits.get(folder).map_or(COL_W, |fit| fit.width)
-            }
+        let width = if names.len() <= FIT_NOW {
+            browser_fit_width(window.text_system(), &names, look)
+        } else {
+            let listed = listing.clone();
+            fit::in_background(
+                cx,
+                move |texts| browser_fit_width(texts, &names, look),
+                move |this, width, cx| {
+                    let fit = this.column_fits.get_mut(folder);
+                    if let Some(fit) = fit.filter(|fit| fit.lines.ptr_eq(&listed)) {
+                        fit.width = width;
+                        cx.notify();
+                    }
+                },
+            );
+            self.column_fits.get(folder).map_or(COL_W, |fit| fit.width)
         };
         let fit = ColumnFit {
             lines: listing,
@@ -577,9 +578,12 @@ impl FinderDemo {
         let shift = self.bands.browser.shown().x;
         div()
             .when(shift != px(0.), |wrap| wrap.relative().left(shift))
-            .map(|wrap| match grow {
-                true => wrap.flex_1(),
-                false => wrap.flex_none(),
+            .map(|wrap| {
+                if grow {
+                    wrap.flex_1()
+                } else {
+                    wrap.flex_none()
+                }
             })
             .flex()
             .child(column)
@@ -651,16 +655,13 @@ impl FinderDemo {
         let picked = self.column_cursor != self.cursor;
         self.column_cursor = self.cursor.clone();
         if depth != self.column_depth {
-            match self.column_depth != 0 && picked {
-                false => {
-                    self.column_reveal = None;
-                    // The browser's first child is the grip canvas, so the last column is `depth`.
-                    self.column_scroll.scroll_to_item(depth);
-                }
-                true => {
-                    let from = f32::from(self.column_scroll.offset().x);
-                    self.column_reveal = Some((from, Instant::now()));
-                }
+            if self.column_depth != 0 && picked {
+                let from = f32::from(self.column_scroll.offset().x);
+                self.column_reveal = Some((from, Instant::now()));
+            } else {
+                self.column_reveal = None;
+                // The browser's first child is the grip canvas, so the last column is `depth`.
+                self.column_scroll.scroll_to_item(depth);
             }
             self.column_depth = depth;
         }
@@ -669,9 +670,10 @@ impl FinderDemo {
             let to = -f32::from(self.column_scroll.max_offset().x);
             let x = from + (to - from) * gpui::ease_in_out(t);
             self.column_scroll.set_offset(gpui::point(px(x), px(0.)));
-            match t < 1. {
-                true => window.request_animation_frame(),
-                false => self.column_reveal = None,
+            if t < 1. {
+                window.request_animation_frame()
+            } else {
+                self.column_reveal = None
             }
         }
 

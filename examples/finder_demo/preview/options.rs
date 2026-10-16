@@ -329,9 +329,12 @@ fn choose(kind: &'static Kind, keys: &[&str], shown: bool, cx: &mut App) {
     let on: Vec<&str> = [TAGS, QUICK_ACTIONS]
         .into_iter()
         .chain(kind.groups.iter().flat_map(Group::keys))
-        .filter(|key| match keys.contains(key) {
-            true => shown,
-            false => shows(kind, key),
+        .filter(|key| {
+            if keys.contains(key) {
+                shown
+            } else {
+                shows(kind, key)
+            }
         })
         .collect();
     crate::prefs::set_preview_options(kind.name, &on);

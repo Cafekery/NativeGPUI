@@ -100,7 +100,7 @@ fn as_string(object: &AnyObject) -> Option<String> {
 }
 
 fn strings(list: &NSArray) -> Vec<String> {
-    list.iter().filter_map(|item| as_string(&*item)).collect()
+    list.iter().filter_map(|item| as_string(&item)).collect()
 }
 
 static FINDER: LazyLock<Finder> = LazyLock::new(|| {
@@ -147,7 +147,7 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
             .filter(|column| text(column, "identifier").as_deref() == Some(id))
             .find_map(|column| flagged(column, "ascending"))
     });
-    let flag = |key: &str| read(key).and_then(|on| as_bool(&*on)) == Some(true);
+    let flag = |key: &str| read(key).and_then(|on| as_bool(&on)) == Some(true);
     let width = |key: &str| Some(as_f64(&*read(key)?)? as f32);
     Finder {
         posix_title: flag("_FXShowPosixPathInTitle"),
@@ -222,10 +222,10 @@ pub(crate) fn setting_on(key: &str, default: bool) -> bool {
     let Some(value) = setting(key) else {
         return default;
     };
-    if let Some(on) = as_bool(&*value) {
+    if let Some(on) = as_bool(&value) {
         return on;
     }
-    as_string(&*value).map_or(default, |text| {
+    as_string(&value).map_or(default, |text| {
         matches!(
             text.trim().chars().next(),
             Some('Y' | 'y' | 'T' | 't' | '1'..='9')
@@ -339,7 +339,7 @@ fn sidebar_file() -> HashMap<String, Vec<String>> {
     map.keys()
         .filter_map(|key| {
             let list = map.objectForKey(&key)?.downcast::<NSArray>().ok()?;
-            Some((as_string(&*key)?, strings(&list)))
+            Some((as_string(&key)?, strings(&list)))
         })
         .collect()
 }
@@ -586,9 +586,10 @@ pub(crate) fn set_search_scope(scope: usize) {
 }
 
 pub(crate) fn pane_width(gallery: bool) -> Option<f32> {
-    let (key, finder) = match gallery {
-        true => (GALLERY_PANE, finder().pane_widths.1),
-        false => (PANE, finder().pane_widths.0),
+    let (key, finder) = if gallery {
+        (GALLERY_PANE, finder().pane_widths.1)
+    } else {
+        (PANE, finder().pane_widths.0)
     };
     read(key).map(|v| v as f32).or(finder)
 }
@@ -835,12 +836,13 @@ pub(crate) fn share_folder_looks() {
                     continue;
                 };
                 let name = key.to_string();
-                match SORT_KEYS.contains(&name.as_str()) {
-                    true => sort.insert(&*key, &*value),
-                    false => looks
+                if SORT_KEYS.contains(&name.as_str()) {
+                    sort.insert(&*key, &*value);
+                } else {
+                    looks
                         .entry(name)
                         .or_default()
-                        .extend(value.downcast::<NSObject>().ok()),
+                        .extend(value.downcast::<NSObject>().ok());
                 }
             }
             let at = look_key(view, Some(folder));

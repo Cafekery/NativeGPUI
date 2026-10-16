@@ -270,9 +270,10 @@ fn start(demo: WeakEntity<FinderDemo>, cx: &mut App) {
         let finder = finder.read(cx);
         let list = finder.view == LIST_VIEW;
         // The size a list settles at, not the one its zoom is passing through.
-        let size = match list {
-            true => finder.list_look.icon,
-            false => finder.art_size(),
+        let size = if list {
+            finder.list_look.icon
+        } else {
+            finder.art_size()
         };
         let lines = finder.lines(list);
         STATE.with_borrow_mut(|state| state.ahead.follow(finder.here(), &lines, size));
@@ -282,9 +283,10 @@ fn start(demo: WeakEntity<FinderDemo>, cx: &mut App) {
         cx.spawn(async move |cx| {
             let mut next = Some(job);
             while let Some(job) = next {
-                let priority = match job.shown {
-                    true => Priority::High,
-                    false => Priority::Low,
+                let priority = if job.shown {
+                    Priority::High
+                } else {
+                    Priority::Low
                 };
                 let (generation, for_screen) = (job.generation, job.shown);
                 let drawn = cx
@@ -397,22 +399,21 @@ impl State {
             .filter(|(key, _)| self.busy.get(key) != Some(&true))
             .map(|(&key, &stamp)| (key, stamp))
             .collect();
-        let job = match shown.is_empty() {
-            false => {
-                shown.sort_unstable_by_key(|(_, (frame, order))| (Reverse(*frame), *order));
-                // Dealt like cards: the service renders cold icons in arrival order, top down.
-                let keys = shown
-                    .into_iter()
-                    .step_by(free)
-                    .take(BATCH)
-                    .map(|(key, _)| key);
-                Some(Job {
-                    keys: keys.collect(),
-                    shown: true,
-                    generation: self.generation,
-                })
-            }
-            true => self.ahead_job(),
+        let job = if shown.is_empty() {
+            self.ahead_job()
+        } else {
+            shown.sort_unstable_by_key(|(_, (frame, order))| (Reverse(*frame), *order));
+            // Dealt like cards: the service renders cold icons in arrival order, top down.
+            let keys = shown
+                .into_iter()
+                .step_by(free)
+                .take(BATCH)
+                .map(|(key, _)| key);
+            Some(Job {
+                keys: keys.collect(),
+                shown: true,
+                generation: self.generation,
+            })
         };
         if let Some(job) = &job {
             self.busy
@@ -443,7 +444,7 @@ impl State {
                 keys.push(key);
             }
         }
-        (!keys.is_empty()).then(|| Job {
+        (!keys.is_empty()).then_some(Job {
             keys,
             shown: false,
             generation: self.generation,
@@ -473,9 +474,10 @@ impl State {
                 self.ahead.back.push(key);
             }
         }
-        let dropped = match shown && self.per_file_bytes > KEPT_BYTES {
-            true => self.evict(),
-            false => Vec::new(),
+        let dropped = if shown && self.per_file_bytes > KEPT_BYTES {
+            self.evict()
+        } else {
+            Vec::new()
         };
         (shown, dropped)
     }
@@ -488,10 +490,11 @@ impl State {
             kept.clear();
         }
         for key in self.kept_changed.drain(..) {
-            match self.held.contains_key(&key) {
-                true => kept.insert(key),
-                false => kept.remove(&key),
-            };
+            if self.held.contains_key(&key) {
+                kept.insert(key);
+            } else {
+                kept.remove(&key);
+            }
         }
     }
 

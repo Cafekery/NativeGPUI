@@ -28,9 +28,10 @@ fn run_pill(fill: Hsla, inset: f32, radius: f32, (above, below): (bool, bool)) -
 }
 
 fn chevron(symbol: &str, size: f32, weight: FontWeight, lit: bool) -> Option<AnyElement> {
-    let color = match lit {
-        true => SystemColor::AlternateSelectedControlText,
-        false => SystemColor::SecondaryLabel,
+    let color = if lit {
+        SystemColor::AlternateSelectedControlText
+    } else {
+        SystemColor::SecondaryLabel
     };
     small_glyph(symbol, size, weight, color)
 }
