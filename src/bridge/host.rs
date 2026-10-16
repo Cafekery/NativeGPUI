@@ -401,10 +401,10 @@ impl NativeHost {
             let found = state.slots.iter().find_map(|(key, slot)| {
                 (Retained::as_ptr(&slot.view) == Retained::as_ptr(&current)).then_some(*key)
             });
-            match found {
-                Some(key) => keys.push(key),
-                None => break,
-            }
+            let Some(key) = found else {
+                break;
+            };
+            keys.push(key);
             view = unsafe { current.nextKeyView() };
         }
         keys
@@ -470,7 +470,7 @@ impl NativeHost {
                 view: view.as_ref().retain(),
                 typed: Box::new(view),
                 layer,
-                parent: parent.map(|parent| parent.retain()),
+                parent: parent.map(Message::retain),
                 clip_frame,
                 view_frame: NSRect::ZERO,
                 hidden: false,

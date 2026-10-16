@@ -477,10 +477,10 @@ fn observe_inspector(
         if sliding.get() {
             return;
         }
-        match item.isCollapsed() {
-            true if dragged.is_some() => resized.set(Some(0.)),
-            true => {}
-            false => resized.set(Some(view.frame().size.width)),
+        if !item.isCollapsed() {
+            resized.set(Some(view.frame().size.width));
+        } else if dragged.is_some() {
+            resized.set(Some(0.));
         }
     })
 }
@@ -997,7 +997,7 @@ impl NativeSidebar {
         let item = outline.itemAtRow(row)?;
         let view = outline.viewAtColumn_row_makeIfNecessary(0, row, false)?;
         let cell = unsafe { Retained::cast_unchecked::<SidebarCell>(view) };
-        let frame = |view: Option<&NSView>| view.map_or(NSRect::ZERO, |v| v.frame());
+        let frame = |view: Option<&NSView>| view.map_or(NSRect::ZERO, NSView::frame);
         let icon = unsafe { cell.imageView() };
         let title = unsafe { cell.textField() };
         Some(RowLayout {

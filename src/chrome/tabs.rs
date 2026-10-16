@@ -92,11 +92,23 @@ fn restore_appkit_tabs(window: &NSWindow) {
     }
     if let Some(method) = class.instance_method(sel!(toggleTabBar:)) {
         let toggle: extern "C" fn(&AnyObject, Sel, *mut AnyObject) = toggle_tab_bar;
-        unsafe { objc2::ffi::method_setImplementation(method, transmute(toggle)) };
+        unsafe {
+            objc2::ffi::method_setImplementation(
+                method,
+                transmute::<extern "C" fn(&AnyObject, Sel, *mut AnyObject), Imp>(toggle),
+            )
+        };
     }
     answer_new_tab(class);
     let validate: extern "C" fn(&AnyObject, Sel, *mut AnyObject) -> Bool = validate_tab_item;
-    unsafe { add_method(class, sel!(validateMenuItem:), transmute(validate), c"B@:@") };
+    unsafe {
+        add_method(
+            class,
+            sel!(validateMenuItem:),
+            transmute::<extern "C" fn(&AnyObject, Sel, *mut AnyObject) -> Bool, Imp>(validate),
+            c"B@:@",
+        )
+    };
 }
 
 unsafe fn add_method(class: &AnyClass, selector: Sel, imp: Imp, types: &CStr) {
@@ -159,7 +171,14 @@ pub(crate) fn teach_new_tab(mtm: MainThreadMarker) {
 
 fn answer_new_tab(class: &AnyClass) {
     let imp: extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) = new_window_for_tab;
-    unsafe { add_method(class, sel!(newWindowForTab:), transmute(imp), c"v@:@") };
+    unsafe {
+        add_method(
+            class,
+            sel!(newWindowForTab:),
+            transmute::<extern "C" fn(*mut AnyObject, Sel, *mut AnyObject), Imp>(imp),
+            c"v@:@",
+        )
+    };
 }
 
 extern "C" fn new_window_for_tab(_: *mut AnyObject, _: Sel, _: *mut AnyObject) {

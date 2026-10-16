@@ -560,7 +560,7 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
                     .map_or(sel!(ngMenuCommand:), TextCommand::selector);
                 menu_item(mtm, &command.title, selector, &key, mask)
             };
-            // The index lives in `representedObject`, never the tag: see `reserve_gpui_menu_slot`.
+            // The index lives in `representedObject`, never the tag, which gpui reads.
             let index = NSNumber::new_isize(CommandSink::register(action, command.text));
             unsafe { row.setRepresentedObject(Some(index.as_ref())) };
             let Some(sink) = SHARED.with_borrow(Option::clone) else {

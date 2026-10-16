@@ -1699,10 +1699,8 @@ impl ToolbarDelegate {
                         Some((self.as_ref(), sel!(ngToolbarMenu:))),
                     );
                 }
-                ToolbarItem::Symbol { label, .. } => {
-                    if item.label().to_string() != *label {
-                        item.setLabel(&NSString::from_str(label));
-                    }
+                ToolbarItem::Symbol { label, .. } if item.label().to_string() != *label => {
+                    item.setLabel(&NSString::from_str(label));
                 }
                 _ => {}
             }

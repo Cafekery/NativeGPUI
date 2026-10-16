@@ -194,10 +194,8 @@ define_class!(
             let Some(content) = self.contentView() else {
                 return ptr::null_mut();
             };
-            let local = match unsafe { self.superview() } {
-                Some(parent) => self.convertPoint_fromView(point, Some(&parent)),
-                None => point,
-            };
+            let local = unsafe { self.superview() }
+                .map_or(point, |parent| self.convertPoint_fromView(point, Some(&parent)));
             unsafe { msg_send![&*content, hitTest: local] }
         }
     }

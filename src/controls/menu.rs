@@ -532,10 +532,10 @@ fn add_dots(mtm: MainThreadMarker, row: &NSView, colors: &[Hsla], enabled: bool,
         dot.setTitlePosition(NSTitlePosition::NoTitle);
         dot.setBorderWidth(0.);
         dot.setCornerRadius(SWATCH_DIAMETER / 2.);
-        let fill = match enabled {
-            true => to_nscolor(*color),
-            false => to_nscolor(*color).colorWithSystemEffect(NSColorSystemEffect::Disabled),
-        };
+        let mut fill = to_nscolor(*color);
+        if !enabled {
+            fill = fill.colorWithSystemEffect(NSColorSystemEffect::Disabled);
+        }
         dot.setFillColor(&fill);
         row.addSubview(&dot);
     }
@@ -926,9 +926,10 @@ impl NativePopup {
 
     // A transparent pop-up still draws its chevron at the automatic bezel style.
     fn drawn_bezel(&self) -> ButtonBezel {
-        match self.tinted {
-            true => ButtonBezel::Push,
-            false => self.bezel,
+        if self.tinted {
+            ButtonBezel::Push
+        } else {
+            self.bezel
         }
     }
 
@@ -1041,7 +1042,7 @@ impl NativePopup {
         if face.font() != font {
             face.setFont(font.as_deref());
         }
-        let title = popup.titleOfSelectedItem().unwrap_or_else(NSString::new);
+        let title = popup.titleOfSelectedItem().unwrap_or_default();
         if face.title() != title {
             face.setTitle(&title);
         }

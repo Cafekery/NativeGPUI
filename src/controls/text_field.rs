@@ -274,9 +274,12 @@ impl NativeTextField {
         host.on_change_channel(slot.key, submit, ValueKind::Text, self.on_submit.take());
         host.on_change_channel(slot.key, cancel, ValueKind::Text, self.on_cancel.take());
         let address = Retained::as_ptr(&field) as usize;
-        COMMANDS.with(|taken| match self.on_command.is_some() {
-            true => taken.borrow_mut().insert(address, self.commands),
-            false => taken.borrow_mut().remove(&address),
+        COMMANDS.with_borrow_mut(|taken| {
+            if self.on_command.is_some() {
+                taken.insert(address, self.commands);
+            } else {
+                taken.remove(&address);
+            }
         });
         host.on_event_channel(
             slot.key,

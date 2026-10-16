@@ -450,9 +450,10 @@ impl NativePathControl {
                 }
             }
         }
-        let background = match self.emphasized {
-            true => NSBackgroundStyle::Emphasized,
-            false => NSBackgroundStyle::Normal,
+        let background = if self.emphasized {
+            NSBackgroundStyle::Emphasized
+        } else {
+            NSBackgroundStyle::Normal
         };
         if let Some(cell) = control.cell() {
             if cell.backgroundStyle() != background {

@@ -110,8 +110,7 @@ fn largest_cached(path: &Path) -> Option<Arc<RenderImage>> {
         .map(|(_, image)| image)
 }
 
-/// `icon` is Finder's icon rendering. A hit calls `done` at once on this thread; past eight in
-/// flight the newest goes first; a file Quick Look can't preview gets `None`, not a stand-in.
+/// `icon` is Finder's icon rendering; a hit calls `done` at once on this thread, a failure gets `None`.
 pub fn thumbnail(
     path: &Path,
     modified: Option<SystemTime>,

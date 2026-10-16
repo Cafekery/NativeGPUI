@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use block2::RcBlock;
 use gpui::{Bounds, Pixels, Window};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyClass, AnyObject, Bool, NSObjectProtocol, ProtocolObject, Sel};
+use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{NSEvent, NSEventType, NSWindow, NSWindowDelegate};
 use objc2_foundation::{
@@ -381,19 +381,21 @@ fn answer_panel_control(class: &AnyClass) {
         objc2::ffi::class_addMethod(
             class,
             sel!(acceptsPreviewPanelControl:),
-            std::mem::transmute(accepts),
+            std::mem::transmute::<extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) -> Bool, Imp>(
+                accepts,
+            ),
             c"B@:@".as_ptr(),
         );
         objc2::ffi::class_addMethod(
             class,
             sel!(beginPreviewPanelControl:),
-            std::mem::transmute(begin),
+            std::mem::transmute::<extern "C" fn(*mut AnyObject, Sel, *mut AnyObject), Imp>(begin),
             c"v@:@".as_ptr(),
         );
         objc2::ffi::class_addMethod(
             class,
             sel!(endPreviewPanelControl:),
-            std::mem::transmute(end),
+            std::mem::transmute::<extern "C" fn(*mut AnyObject, Sel, *mut AnyObject), Imp>(end),
             c"v@:@".as_ptr(),
         );
     }

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use gpui::Window;
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyClass, AnyObject, Bool, ProtocolObject, Sel};
+use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, ProtocolObject, Sel};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardWriting, NSWindow,
@@ -93,7 +93,10 @@ fn offer_files(window: &NSWindow) {
         objc2::ffi::class_addMethod(
             class as *const AnyClass as *mut AnyClass,
             sel!(validRequestorForSendType:returnType:),
-            std::mem::transmute(valid),
+            std::mem::transmute::<
+                extern "C" fn(&AnyObject, Sel, *mut NSString, *mut NSString) -> *mut AnyObject,
+                Imp,
+            >(valid),
             c"@@:@@".as_ptr(),
         )
     };
