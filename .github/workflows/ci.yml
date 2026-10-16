@@ -21,6 +21,6 @@ jobs:
       - run: cargo build --release --examples
       - run: cargo build --release --examples --features private-api
       - run: cargo test --release --lib
-      - run: cargo test --release -p finder-fs -p fsearch -p convert -p founder-cli
+      - run: cargo test --release -p finder-fs -p fsearch -p convert -p founder-cli -p finder-sftp
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
       - run: ./scripts/surface.sh
