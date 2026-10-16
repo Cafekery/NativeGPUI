@@ -20,18 +20,13 @@ pub struct Token {
     pub mask: u64,
     pub mode: Mode,
     pub negate: bool,
-    /// Char classes a typo may leave out of a matching name: all but the
-    /// first letter's, or none when the token takes no typos.
+    /// Char classes a typo may leave out of a matching name.
     pub loose: u64,
     /// `index::start_bit` of the first letter when the token takes typos.
     pub start: u64,
 }
 
 impl Token {
-    /// Can a name with mask `m` (`index::name_mask`) match? Cleanly it has
-    /// every char class; with a typo, a word in it starts with this token's
-    /// first letter and at most one `loose` class is missing. Branchless, so
-    /// the scan over every name stays vectorized.
     #[inline(always)]
     fn fits(&self, m: u64) -> bool {
         let miss = self.mask & !m;
@@ -40,23 +35,17 @@ impl Token {
 }
 
 impl Token {
-    /// A token for a lowercase literal a name must contain.
     fn literal(text: Vec<u8>) -> Token {
         let mask = text.iter().fold(0, |m, &b| m | char_bit(b));
         Token { text, mask, mode: Mode::Exact, negate: false, loose: 0, start: 0 }
     }
 
-    /// A stand-in for a name's mask (see `token_score`) from what the name
-    /// bitmaps tell: whether the name can hold this token cleanly, whether a
-    /// word in it starts like the token, whether it has a space. Each bit is
-    /// set unless the work it gates is sure to fail.
     #[inline(always)]
     fn known_mask(&self, clean: bool, start: bool, spaced: bool) -> u64 {
         (if clean { self.mask } else { 0 }) | (if start { self.start } else { 0 }) | (if spaced { char_bit(b' ') } else { 0 })
     }
 }
 
-/// A name `Searcher::ranked` scored, and the bound on its entries' scores.
 struct Cand {
     bound: i32,
     k: u32,
@@ -64,26 +53,16 @@ struct Cand {
     flags: u8,
 }
 
-/// A value alone on its cache line: per-thread scratch that is written in a
-/// hot loop must not share a line with another thread's.
+/// Alone on its cache line, so one thread's hot scratch doesn't share a line with another's.
 #[derive(Clone, Copy)]
 #[repr(align(128))]
 struct Line<T>(T);
 
-/// A token's `TokenBits::words` for a pair of words, on its own line.
 type Pair = Line<[(u64, u64, u64); 2]>;
 
-/// One token's view of the name bitmaps (`index::BM_FIRST` and on): which
-/// of 64 names at a time it can match, before any name is read.
 struct TokenBits<'a> {
-    /// Each char's class: (first-half, second-half) bitmaps.
     seq: Vec<[&'a [u64]; 2]>,
-    /// The first char's class, then the token's other classes and the ones
-    /// it has twice (as the bitmap of names with them twice, in both
-    /// slots), rarest first.
     classes: Vec<[&'a [u64]; 2]>,
-    /// Typo-taking tokens: names with a word starting with the token's
-    /// first letter (or one hashing alike).
     start: Option<&'a [u64]>,
 }
 
@@ -93,8 +72,6 @@ impl<'a> TokenBits<'a> {
         let pair = |c: usize| [idx.bitmap(BM_FIRST + c), idx.bitmap(BM_SECOND + c)];
         let first = class(t.text[0]);
         let (counts, doubles) = (idx.class_counts(), idx.double_counts());
-        // The other classes, and the classes the token has twice (which a
-        // name needs twice too), rarest first.
         let twice = crate::index::doubled(&t.text);
         let mut rest: Vec<(u32, [&[u64]; 2])> =
             (0..CLASSES).filter(|&c| c != first && t.mask & (1 << c) != 0).map(|c| (counts[c], pair(c))).collect();
@@ -107,30 +84,17 @@ impl<'a> TokenBits<'a> {
         }
     }
 
-    /// For the 64 names of word `w`: (can match: `Token::fits`, narrowed by
-    /// the halves test; can match cleanly; may match with a typo). Cleanly,
-    /// the name has every class of the token (twice where the token has it
-    /// twice), and some prefix of the token fits the classes of its first
-    /// half and the rest its second half. With a typo, a word starts with
-    /// the first letter, at most one other of these is missing (an edit
-    /// costs the name one char of the token at most), and so does the
-    /// halves test with one char after the first left out: every edit
-    /// `typo_score` takes leaves the rest of the token in order in the name.
     #[inline]
     fn word(&self, w: usize) -> (u64, u64, u64) {
         self.words::<1>(w)[0]
     }
 
-    /// `word` for words `w..w + B`, side by side: a pair fills a NEON
-    /// register, and the loops exit when both words are done, which is
-    /// easier to predict than each word on its own.
     #[inline(always)]
     fn words<const B: usize>(&self, w: usize) -> [(u64, u64, u64); B] {
         let has = |b: &[&[u64]; 2], j: usize| b[0][w + j] | b[1][w + j];
         let none = |x: &[[u64; B]]| x.iter().flatten().fold(0, |a, &b| a | b) == 0;
         let mut all: [u64; B] = std::array::from_fn(|j| has(&self.classes[0], j));
         let typo: [u64; B] = self.start.map_or([0; B], |s| std::array::from_fn(|j| s[w + j] & all[j]));
-        // Names with every class so far, and typo-able ones missing one.
         let mut one = [0; B];
         for b in &self.classes[1..] {
             if none(&[all, one]) {
@@ -142,9 +106,6 @@ impl<'a> TokenBits<'a> {
                 all[j] &= x;
             }
         }
-        // Names whose first half holds the token so far, and names where
-        // the token so far ends in the second half; then the same with one
-        // char left out, for typo-able names.
         let (mut first, mut second): ([u64; B], _) = (std::array::from_fn(|j| all[j] | one[j]), [0; B]);
         let (mut first1, mut second1) = ([0; B], [0; B]);
         for (k, b) in self.seq.iter().enumerate() {
@@ -168,8 +129,6 @@ impl<'a> TokenBits<'a> {
     }
 }
 
-/// What `score_names` holds for name `k`, scored on its own (from its mask
-/// rather than the bitmaps): the same hit, or None for the same names.
 fn name_hit(idx: &Index, q: &Query, pos: &[&Token], neg: &[&Token], re: Option<&regex::bytes::Regex>, k: u32) -> Option<NameHit> {
     let name = idx.uname(k);
     let m = crate::index::name_mask(name);
@@ -199,8 +158,6 @@ fn name_hit(idx: &Index, q: &Query, pos: &[&Token], neg: &[&Token], re: Option<&
     (ok || h.bits != 0 || h.flags & NF_NEG != 0).then_some(h)
 }
 
-/// Lowercased literals one of which starts every match of `re` (so a name
-/// it matches contains it), if the regex has a short list of them.
 fn re_literals(re: &regex::bytes::Regex) -> Option<Vec<Vec<u8>>> {
     let hir = regex_syntax::ParserBuilder::new().utf8(false).build().parse(re.as_str()).ok()?;
     let mut lits: Vec<Vec<u8>> =
@@ -210,9 +167,6 @@ fn re_literals(re: &regex::bytes::Regex) -> Option<Vec<Vec<u8>>> {
     lits.iter().all(|l| !l.is_empty()).then_some(lits)
 }
 
-/// Lowercased literals one of which ends every path `re` matches, if it is
-/// anchored at the end ("swift$") and they hold no '/': then a match's own
-/// name, the path's last part, ends with one of them.
 fn path_suffixes(re: &regex::bytes::Regex) -> Option<Vec<Vec<u8>>> {
     use regex_syntax::hir::{Look, literal::ExtractKind};
     let hir = regex_syntax::ParserBuilder::new().utf8(false).build().parse(re.as_str()).ok()?;
@@ -226,14 +180,11 @@ fn path_suffixes(re: &regex::bytes::Regex) -> Option<Vec<Vec<u8>>> {
     lits.iter().all(|l| !l.is_empty() && !l.contains(&b'/')).then_some(lits)
 }
 
-/// Does `name` end with `s` (lowercase), ignoring ASCII case?
 fn ends_with_fold(name: &[u8], s: &[u8]) -> bool {
     name.len() >= s.len() && name[name.len() - s.len()..].iter().zip(s).all(|(&a, &b)| fold(a) == b)
 }
 
-/// Fuzzy words this long forgive one typo (see `typo_score`).
 const TYPO_MIN_LEN: usize = 5;
-/// What a typo costs, so clean matches of the same quality rank first.
 const TYPO_COST: i32 = 60;
 
 fn takes_typos(text: &[u8], mode: Mode) -> bool {
@@ -244,8 +195,7 @@ fn takes_typos(text: &[u8], mode: Mode) -> bool {
 pub struct Query {
     pub tokens: Vec<Token>,
     pub kind: Option<u8>,
-    /// `type:app`: a folder kind also takes symlinks, since the system apps
-    /// in /Applications link into the cryptex (/Applications/Safari.app).
+    /// `type:app` also takes symlinks: the system apps in /Applications link into the cryptex.
     pub apps: bool,
     pub exts: Vec<Vec<u8>>,
     pub scope: Option<Vec<u8>>,
@@ -254,8 +204,7 @@ pub struct Query {
     pub name_re: Option<regex::bytes::Regex>,
     pub path_re: Option<regex::bytes::Regex>,
     pub limit: usize,
-    /// Content search: handled by the content layer, carried here so one
-    /// query string can say everything.
+    /// Content search, handled by the content layer.
     pub grep: Option<String>,
     pub grep_mode: GrepMode,
 }
@@ -287,9 +236,7 @@ const TYPES: &[(&str, &[&str])] = &[
 ];
 
 impl Query {
-    /// Parse the human query language. Plain words are fuzzy tokens;
-    /// `'x` exact, `^x` prefix, `x$` suffix, `!x` negate; filters are
-    /// `ext: type: kind: in: size: mtime: re: path: limit: grep: regex: sym:`.
+    /// Parse the query language: fuzzy words, `'x` exact, `^x` prefix, `x$` suffix, `!x` negate, and `ext: type: kind: in: size: mtime: re: path: limit: grep: regex: sym:` filters.
     pub fn parse(s: &str, home: &str) -> Result<Query, String> {
         let mut q = Query { size: (0, u64::MAX), mtime: (0, u32::MAX), limit: 50, ..Default::default() };
         for word in split_words(s) {
@@ -389,14 +336,12 @@ impl Query {
         }
     }
 
-    /// Does a full path pass every filter and token? Returns the match score.
-    /// Used where there is no dir memo: the overlay and content-search docs.
+    /// The score of a full path that passes every filter and token.
     pub fn match_path(&self, path: &[u8], kind: u8, size: u64, mtime: u32) -> Option<i32> {
         self.match_path_with(path, kind, size, mtime, |dirs| self.dir_match(dirs))
     }
 
-    /// `match_path`, with the folder half (`dir_match` of the path's folder
-    /// part) supplied by the caller, who can memoize it per folder.
+    /// `match_path`, with the folder half (`dir_match`) supplied by the caller so it can memoize per folder.
     pub fn match_path_with(&self, path: &[u8], kind: u8, size: u64, mtime: u32, dirs: impl FnOnce(&[u8]) -> DirMatch) -> Option<i32> {
         if let Some(s) = &self.scope
             && !(path.starts_with(s) && path.get(s.len()) == Some(&b'/'))
@@ -419,8 +364,6 @@ impl Query {
             let re_ok = self.name_re.as_ref().is_none_or(|re| re.is_match(name)) && self.path_re.as_ref().is_none_or(|re| re.is_match(path));
             return re_ok.then_some(0);
         }
-        // A hit needs some token in its own name; most paths fail here,
-        // before the folders are looked at.
         let mut pos = self.tokens.iter().filter(|t| !t.negate).peekable();
         let m = crate::index::name_mask(name);
         if pos.peek().is_some() && !pos.any(|t| t.fits(m) && token_score(name, None, m, t).is_some()) {
@@ -454,8 +397,7 @@ impl Query {
         Some(score)
     }
 
-    /// How the folders of a path (`/a/b` for `/a/b/name`) match the tokens:
-    /// the best score per positive token, and whether a negated one hits.
+    /// How the folders of a path (`/a/b` for `/a/b/name`) match the tokens.
     pub fn dir_match(&self, dirs: &[u8]) -> DirMatch {
         let comps = || dirs.split(|&b| b == b'/').filter(|c| !c.is_empty());
         let mut d = DirMatch { negated: false, best: [None; 8] };
@@ -467,18 +409,13 @@ impl Query {
     }
 }
 
-/// See `Query::dir_match`.
 #[derive(Clone, Copy)]
 pub struct DirMatch {
     negated: bool,
     best: [Option<i32>; 8],
 }
 
-/// The real path of `p` (the index holds real paths: /etc is
-/// /private/etc), or `p` if it has none. Resolving costs a few syscalls
-/// (~4 us), as much as a whole search in a small folder, and searches in
-/// one folder come in a row (typing): the last answer holds for a second,
-/// less than the index takes to see most changes anyway.
+/// The real path of `p`, or `p`: the index holds real paths (/etc is /private/etc).
 fn real_path(p: String) -> String {
     static LAST: std::sync::Mutex<Option<(String, String, std::time::Instant)>> = std::sync::Mutex::new(None);
     let mut last = LAST.lock().unwrap();
@@ -493,7 +430,6 @@ fn real_path(p: String) -> String {
     to
 }
 
-/// Split on spaces, keeping "double quoted" runs together.
 fn split_words(s: &str) -> Vec<String> {
     let (mut out, mut cur, mut quoted) = (Vec::new(), String::new(), false);
     for c in s.chars() {
@@ -627,17 +563,13 @@ fn bonus(prev: Class, cur: Class) -> i32 {
     }
 }
 
-/// fzf-v1 style: leftmost-ending match, shrunk from the right, then scored
-/// with boundary/camel/consecutive bonuses. Returns None when no match.
+/// fzf-v1 style fuzzy score; None when no match.
 pub fn fuzzy_score(name: &[u8], q: &[u8]) -> Option<i32> {
     fuzzy_score_capped(name, None, q, 100)
 }
 
-/// A name's 64 bytes in the index from its start, if it is no longer
-/// (`Index::uname_wide`): what follows it is masked off.
 type Wide<'a> = Option<&'a [u8; 64]>;
 
-/// `fuzzy_score` with the whole-name/stem/prefix bonus capped at `cap`.
 fn fuzzy_score_capped(name: &[u8], wide: Wide, q: &[u8], cap: i32) -> Option<i32> {
     if let Some(s) = prefix_score(name, q, cap) {
         return Some(s);
@@ -653,8 +585,6 @@ fn fuzzy_score_capped(name: &[u8], wide: Wide, q: &[u8], cap: i32) -> Option<i32
         buf[..name.len()].copy_from_slice(name);
         return fuzzy_masked(name, &buf, q, cap);
     }
-    // Leftmost-ending match: jump to each query byte in turn (memchr is
-    // SIMD; most names fail on the first or second byte).
     let mut end = 0;
     let mut from = 0;
     for &c in q {
@@ -665,10 +595,6 @@ fn fuzzy_score_capped(name: &[u8], wide: Wide, q: &[u8], cap: i32) -> Option<i32
     fuzzy_from(name, q, cap, end, next, |k, to| rfind_folded(&name[..to], q[k]))
 }
 
-/// `fuzzy_score_capped` past the prefix test, for a name of at most 64
-/// bytes starting `src`: each query byte's places in the name as one
-/// 64-bit mask (NEON compares over the whole name at once) stand in for
-/// memchr's scans, which cost several times more per name tried.
 #[cfg(target_arch = "aarch64")]
 fn fuzzy_masked(name: &[u8], src: &[u8; 64], q: &[u8], cap: i32) -> Option<i32> {
     use std::arch::aarch64::*;
@@ -678,8 +604,6 @@ fn fuzzy_masked(name: &[u8], src: &[u8; 64], q: &[u8], cap: i32) -> Option<i32> 
         let x = vld1q_u8(src.as_ptr().add(16 * i));
         vorrq_u8(x, vandq_u8(vcltq_u8(vsubq_u8(x, vdupq_n_u8(b'A')), vdupq_n_u8(26)), vdupq_n_u8(0x20)))
     });
-    // Byte i of a compare weighed by bit i % 8: pairwise adds then pack
-    // the 64 compares into 64 bits, position p in bit p.
     const W: [u8; 16] = [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
     let weight = unsafe { vld1q_u8(W.as_ptr()) };
     let places = |c: u8| unsafe {
@@ -712,9 +636,6 @@ fn fuzzy_masked(name: &[u8], src: &[u8; 64], q: &[u8], cap: i32) -> Option<i32> 
     fuzzy_from(name, q, cap, end, next, prev)
 }
 
-/// The rest of `fuzzy_score_capped` once the leftmost-ending match ends at
-/// `end`: `next(k, from, to)` finds query byte k's first place in
-/// from..=to, `prev(k, to)` its last one before `to`.
 #[inline(always)]
 fn fuzzy_from(
     name: &[u8],
@@ -727,14 +648,10 @@ fn fuzzy_from(
     if q.len() == 1 {
         return Some(single_score(name, end, cap));
     }
-    // Shrink from the right: the latest start that still ends at `end`.
     let mut start = end + 1;
     for k in (0..q.len()).rev() {
         start = prev(k, start)?;
     }
-    // Score the greedy match from `start`, jumping between matched bytes:
-    // each gap costs GAP_START then GAP_EXT per byte, a run of consecutive
-    // matches carries its strongest boundary bonus along.
     let mut score = 0;
     let (mut at, mut first_bonus) = (start, 0);
     for k in 0..q.len() {
@@ -759,8 +676,6 @@ fn fuzzy_from(
         }
         score += SCORE_MATCH + if k == 0 { b * 2 } else { b };
     }
-    // Whole-name and stem matches are what people mean most of the time. A
-    // leading dot doesn't count: "zshrc" means ~/.zshrc.
     let off = (name.len() > 1 && name[0] == b'.') as usize;
     let at_stem = || end + 1 == name.iter().rposition(|&b| b == b'.').filter(|&p| p > off).unwrap_or(name.len());
     let placed = if start != off || end + 1 - start != q.len() {
@@ -775,9 +690,6 @@ fn fuzzy_from(
     Some(score + placed.min(cap) - (name.len() as i32).min(80) / 3)
 }
 
-/// `fuzzy_score_capped` of a name that starts with the query (past a
-/// leading dot, unless the query starts with one): the match is the prefix,
-/// so the score comes from one pass over it. None if the name does not.
 #[inline]
 fn prefix_score(name: &[u8], q: &[u8], cap: i32) -> Option<i32> {
     let off = (name.len() > 1 && name[0] == b'.') as usize;
@@ -785,8 +697,6 @@ fn prefix_score(name: &[u8], q: &[u8], cap: i32) -> Option<i32> {
     if (off == 1 && q[0] == b'.') || name.len() < end || !name[off..end].iter().zip(q).all(|(&a, &b)| fold(a) == b) {
         return None;
     }
-    // The first byte follows a delimiter (or nothing); each next one runs on
-    // from the one before it.
     let mut first = bonus(Class::Delim, class(name[off]));
     let mut score = SCORE_MATCH + first * 2;
     for i in off + 1..end {
@@ -806,20 +716,16 @@ fn prefix_score(name: &[u8], q: &[u8], cap: i32) -> Option<i32> {
     Some(score + placed.min(cap) - (name.len() as i32).min(80) / 3)
 }
 
-/// First byte of `s` that folds to `c` (an already-lowercased query byte).
 #[inline(always)]
 fn find_folded(s: &[u8], c: u8) -> Option<usize> {
     if c.is_ascii_lowercase() { memchr::memchr2(c, c - 32, s) } else { memchr::memchr(c, s) }
 }
 
-/// Last byte of `s` that folds to `c`.
 #[inline(always)]
 fn rfind_folded(s: &[u8], c: u8) -> Option<usize> {
     if c.is_ascii_lowercase() { memchr::memrchr2(c, c - 32, s) } else { memchr::memrchr(c, s) }
 }
 
-/// `fuzzy_score` for a one-byte query matched at `i`: the general scoring
-/// loop collapses to one step.
 #[inline]
 fn single_score(name: &[u8], i: usize, cap: i32) -> i32 {
     let prev = if i == 0 { Class::Delim } else { class(name[i - 1]) };
@@ -838,12 +744,6 @@ fn single_score(name: &[u8], i: usize, cap: i32) -> i32 {
     score - (name.len() as i32).min(80) / 3
 }
 
-/// Best score for `q` read with one typo (see `one_edit_prefix`) at the
-/// start of `name` or of a space-separated word in it: scored as if the
-/// right letters had been typed, minus TYPO_COST, and never placed above a
-/// prefix: "manif" is "manifest" being typed, not a typo of "manic". `m` is
-/// as for `token_score`. Other word starts (`_`, `-`, camelCase) would cost
-/// a scan of every name per query, ~10x the price.
 fn typo_score(name: &[u8], wide: Wide, m: u64, q: &[u8]) -> Option<i32> {
     let mut best = typo_at(name, wide, (name.len() > 1 && name[0] == b'.') as usize, q);
     if m & char_bit(b' ') != 0 {
@@ -866,12 +766,9 @@ fn typo_at(name: &[u8], wide: Wide, s: usize, q: &[u8]) -> Option<i32> {
     Some(fuzzy_score_capped(name, wide, fixed, 30)? - TYPO_COST)
 }
 
-/// How long a prefix of `w` the query `q` spells with exactly one edit (a
-/// wrong, extra, missing or swapped letter), if it does. Digits are never
-/// edited: "hat_18" is another file than "hat_98", not a typo of it.
+/// Digits are never edited: "hat_18" is not a typo of "hat_98".
 fn one_edit_prefix(w: &[u8], q: &[u8]) -> Option<usize> {
     let starts = |w: &[u8], q: &[u8]| w.len() >= q.len() && w.iter().zip(q).all(|(&a, &b)| fold(a) == b);
-    // The first difference; none means `q` is a clean prefix, not a typo.
     let i = (0..q.len()).find(|&i| i >= w.len() || fold(w[i]) != q[i])?;
     if q[i].is_ascii_digit() || w.get(i).is_some_and(u8::is_ascii_digit) {
         return None;
@@ -890,9 +787,6 @@ fn one_edit_prefix(w: &[u8], q: &[u8]) -> Option<usize> {
     (i < w.len() && starts(after, &q[i..])).then_some(q.len() + 1)
 }
 
-/// Score a token against a name, honoring its mode. `m` is the name's
-/// `index::name_mask`, or any superset of it (`!0` when unknown): it only
-/// skips work.
 #[inline]
 fn token_score(name: &[u8], wide: Wide, m: u64, t: &Token) -> Option<i32> {
     match t.mode {
@@ -918,14 +812,9 @@ fn token_matches(name: &[u8], t: &Token) -> bool {
     }
 }
 
-/// Top k by (score, then lower entry index): a total order, so the result
-/// does not depend on which thread saw which entry first. Candidates above
-/// the floor collect in a buffer that is cut back to k now and then, which
-/// is cheaper than a heap when most of the disk matches.
 struct TopK {
     k: usize,
     buf: Vec<u64>,
-    /// Keys at or below this cannot get in.
     floor: u64,
 }
 
@@ -947,7 +836,6 @@ impl TopK {
             }
         }
     }
-    /// Keep the k best; the k-th becomes the floor.
     fn cut(&mut self) {
         if self.buf.len() > self.k {
             self.buf.select_nth_unstable_by(self.k - 1, |a, b| b.cmp(a));
@@ -957,14 +845,6 @@ impl TopK {
     }
 }
 
-/// `f(state, i)` for each `i` in `0..n`, results in order, on the pool: the
-/// calling thread starts at once, taking items in order from a shared
-/// counter; one helper is queued, and each helper once running queues the
-/// next before it takes items too. Threads asleep wake one after another off
-/// the caller's path, and a helper that runs after the items are gone (the
-/// caller runs any still queued when it is done) returns at once: no one
-/// waits for a thread to wake, and no thread sits on a share of the work
-/// while it does. `state` is each thread's scratch.
 fn par_each<S, T: Send>(n: usize, state: impl Fn() -> S + Sync, f: impl Fn(&mut S, usize) -> T + Sync) -> Vec<T> {
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
     let out = Cells::new((0..n).map(|_| None));
@@ -980,7 +860,6 @@ fn par_each<S, T: Send>(n: usize, state: impl Fn() -> S + Sync, f: impl Fn(&mut 
             unsafe { out.set(i, Some(f(&mut st, i))) };
         }
     };
-    // Helpers still to queue (each one queues the next).
     let left = AtomicUsize::new((rayon::current_num_threads() - 1).min(n.saturating_sub(1)));
     fn helper<'s>(s: &rayon::Scope<'s>, left: &'s AtomicUsize, next: &'s AtomicUsize, n: usize, work: &'s (dyn Fn() + Sync)) {
         s.spawn(move |s| {
@@ -1001,9 +880,6 @@ fn par_each<S, T: Send>(n: usize, state: impl Fn() -> S + Sync, f: impl Fn(&mut 
     out.0.into_iter().map(|x| x.into_inner().unwrap()).collect()
 }
 
-/// One value per index that threads read and write without locks: each
-/// index belongs to one thread at a time (in `par_each`, the one the
-/// counter handed it to).
 struct Cells<T>(Vec<std::cell::UnsafeCell<T>>);
 
 unsafe impl<T: Send> Sync for Cells<T> {}
@@ -1027,11 +903,6 @@ impl<T> Cells<T> {
     }
 }
 
-/// Top `k` over `0..n` items with keys above `floor`: a few contiguous
-/// pieces per thread, each with its own heap, then one selection over their
-/// survivors (merging heaps pairwise costs more than the scan when `k` is
-/// large). Up to INLINE_VISITS entries to `visit` in all take less time
-/// than waking threads.
 fn top_k(n: usize, k: usize, visits: usize, floor: u64, visit: impl Fn(std::ops::Range<usize>, &mut TopK) + Sync) -> Vec<Hit> {
     let piece = |r: std::ops::Range<usize>| {
         let mut top = TopK::new(k, floor);
@@ -1046,7 +917,6 @@ fn top_k(n: usize, k: usize, visits: usize, floor: u64, visit: impl Fn(std::ops:
         let step = n.div_ceil(pieces).max(1);
         par_each(pieces, || (), |_, p| piece((p * step).min(n)..((p + 1) * step).min(n)))
     };
-    // A full piece's k-th best already bounds the overall k-th from below.
     let floor = tops.iter().filter(|t| t.buf.len() == k).map(|t| t.floor).max().unwrap_or(0);
     let mut keys: Vec<u64> = tops.into_iter().flat_map(|t| t.buf).filter(|&x| x >= floor).collect();
     if keys.len() > k {
@@ -1065,37 +935,19 @@ fn ext_ok(name: &[u8], exts: &[Vec<u8>]) -> bool {
     exts.iter().any(|x| x.len() == e.len() && x.iter().zip(e).all(|(&a, &b)| a == fold(b)))
 }
 
-/// Below this many entries carrying a matching name, a query visits just
-/// those entries (via the name -> entries list) instead of every entry.
 const SELECTIVE: usize = 60_000;
-/// Bitset words (64 name ids each) per chunk of a name table: the unit of
-/// parallel scoring and of hit storage (so a chunk's rank fits a u16).
 const CHUNK_WORDS: usize = 64;
-/// Restricted scoring with at most this many words to look at runs on the
-/// calling thread.
 const INLINE_WORDS: usize = 4096;
-/// Entry scoring with at most this many entries to visit runs on the
-/// calling thread.
 const INLINE_VISITS: usize = 4096;
-/// One-token searches expected to match this many names go `ranked`;
-/// below BORDERLINE they do not, in between the bitmaps tell (`rankable`).
 const RANKED_MIN: f64 = 20_000.0;
 const BORDERLINE: f64 = 1_000.0;
-/// `driven` tries a token expected to match at most this many names, the
-/// rarest first, DRIVEN_TRIES of them at most.
 const DRIVEN_NAMES: f64 = 20_000.0;
 const DRIVEN_TRIES: usize = 2;
-/// Cheap bounds `ranked` tells apart: BINS of them from -BIN0.
 const BINS: usize = 1024;
 const BIN0: i32 = 256;
-/// `ranked` scores the names best bound first in batches, the first about
-/// this many names, then four times as many each time up to LAST_BATCH;
-/// batches up to INLINE_NAMES run on the calling thread.
 const FIRST_BATCH: usize = 64;
 const LAST_BATCH: usize = 4096;
 const INLINE_NAMES: usize = 512;
-/// Overlay candidates a thread scores at a time (all of them on the calling
-/// thread if no more).
 const OVERLAY_CHUNK: usize = 256;
 
 pub struct Searcher<'a> {
@@ -1135,12 +987,8 @@ impl Searcher<'_> {
         {
             return hits;
         }
-        // Step 1: every name-only predicate, once per distinct name (~2M)
-        // rather than once per entry (~7.5M); reused while you type.
         let scored = self.names(q, &pos, &neg, lo, hi);
         let s = Scan { q, live: self.live, names: &scored.names, npos: pos.len(), need_dirs: pos.len() > 1 || !neg.is_empty(), now: now_secs() };
-        // Step 2: score entries. Few candidates: just the entries carrying a
-        // matching name. Many: one sequential pass over every entry.
         let fast = !scored.names.all && !FULL_PASS.load(std::sync::atomic::Ordering::Relaxed);
         if fast && scored.names.ok_entries <= SELECTIVE {
             return s.selective(lo, hi);
@@ -1150,22 +998,12 @@ impl Searcher<'_> {
         s.full(lo, hi, memo.map(|m| m.as_slice()))
     }
 
-    /// The query's token if `ranked` can answer it: one fuzzy token (and any
-    /// negated ones), no filter on the entries themselves, and broad enough
-    /// to be worth it, going by how many names have each of its classes.
-    /// That guess misses words whose letters go together ("delivery": 1,349
-    /// names guessed, 25k candidates): an unscoped word (letters only; with
-    /// a dot, digit or delimiter a token names a file) it puts between
-    /// BORDERLINE and RANKED_MIN names gets its candidates counted in every
-    /// 64th bitmap word, and if those are many, a tentative try (true).
     fn rankable<'q>(&self, q: &'q Query, lo: usize, hi: usize) -> Option<(&'q Token, bool)> {
         let mut pos = q.tokens.iter().filter(|t| !t.negate);
         let (Some(t), None) = (pos.next(), pos.next()) else { return None };
         if t.mode != Mode::Fuzzy || q.kind.is_some() || q.size != (0, u64::MAX) || q.mtime != (0, u32::MAX) || q.path_re.is_some() || q.limit == 0 {
             return None;
         }
-        // Typing on from a table (the last query was narrow): narrowing it
-        // is cheaper.
         let scope = (q.scope.is_some() && hi - lo <= self.live.base.u / 4).then_some((lo, hi));
         let key = NameKey::of(q, scope);
         if self.live.names_cache.last.lock().unwrap().as_ref().is_some_and(|p| key.narrows(&p.key)) {
@@ -1185,19 +1023,6 @@ impl Searcher<'_> {
         (found >= RANKED_MIN).then_some((t, true))
     }
 
-    /// A broad one-token search ("a", "de"): its top `limit` comes from a few
-    /// dozen of the million names it matches. Names are scored in batches,
-    /// in falling order of a bound on their entries' scores read without the
-    /// name (`index::NameInfo`): 24 per char + 8, the placement bonus its
-    /// length and stem leave possible if it starts with the token's first
-    /// byte, the best location prior among its folders and the best rank
-    /// tweak. Each batch's entries are visited best prior first, until no
-    /// name left can beat the limit-th entry found. Names that cannot start
-    /// with the token come from a list of the highest keys, or, if the floor
-    /// ends up below it, from a pass over them all.
-    /// None if fewer than `limit` hits turn up among the few thousand names
-    /// with the best bounds: then a name table, which typing can narrow from,
-    /// costs about the same.
     fn ranked(&self, q: &Query, t: &Token, lo: usize, hi: usize, within: Option<&NameSet>, tentative: bool) -> Option<Vec<Hit>> {
         let idx = &self.live.base;
         let (prior, info, ne_off, ne) = (idx.name_prior(), idx.name_info(), idx.name_ents_off(), idx.name_ents());
@@ -1209,8 +1034,6 @@ impl Searcher<'_> {
         let neg: Vec<&Token> = q.tokens.iter().filter(|t| t.negate).collect();
         let scoped = within.is_some();
         let within = |w: usize| within.map_or(!0, |s| s.bits[w]);
-        // Name k, given its word's `TokenBits::word`: its hit and the bound
-        // on its entries.
         let score = |k: u32, (_, clean, typo): (u64, u64, u64), re: Option<&regex::bytes::Regex>| -> Option<Cand> {
             let (w, i) = (k as usize / 64, k % 64);
             let name = idx.uname(k);
@@ -1224,19 +1047,18 @@ impl Searcher<'_> {
             let flags = name_flags(name) | NF_OK;
             Some(Cand { bound: score as i32 + prior[k as usize] as i32 + tweak(flags), k, score, flags })
         };
-        // The cheap bound: 24 per char + 8 (16 less if the token starts with
-        // a delimiter, which takes no boundary bonus), plus the placement
-        // bonus its length and stem leave possible if the name starts with
-        // the token's first byte, plus its key.
         let (m, t0) = (t.text.len() as i32, t.text[0]);
         let base = 24 * m + 8 - if class(t0) == Class::Delim { 16 } else { 0 };
         let cheap = |x: crate::index::NameInfo| {
             base + x.key as i32
-                + match x.head == t0 {
-                    false => 0,
-                    true if x.len as i32 == m => 100,
-                    true if x.stem as i32 == m => 80,
-                    true => 30,
+                + if x.head != t0 {
+                    0
+                } else if x.len as i32 == m {
+                    100
+                } else if x.stem as i32 == m {
+                    80
+                } else {
+                    30
                 }
         };
         let scan = Scan {
@@ -1249,7 +1071,6 @@ impl Searcher<'_> {
         };
         let entries = |k: u32| &ne[ne_off[k as usize] as usize..ne_off[k as usize + 1] as usize];
         let (parent, dir_prior, de, dp, en) = (idx.parent(), idx.dir_prior(), idx.dir_entry(), idx.dir_parent(), idx.ent_name());
-        // Whether a folder on the path to dir `d` has a negated token's name.
         let negated = |d: u32, cache: &mut HashMap<u32, bool, crate::index::Fx>| {
             let mut chain = Vec::new();
             let mut k = d;
@@ -1269,9 +1090,6 @@ impl Searcher<'_> {
             }
             out
         };
-        // The entries of `names` that beat `floor` (a `key`). A name's run
-        // stops once `limit` of its entries are in: that many at most count
-        // as work.
         let visit = |names: &[Cand], floor: u64| {
             let visits = names.iter().map(|x| entries(x.k).len().min(q.limit)).sum();
             top_k(names.len(), q.limit, visits, floor, |r, top| {
@@ -1279,7 +1097,6 @@ impl Searcher<'_> {
                 for c in &names[r] {
                     let nh = NameHit { score: c.score, bits: 1, flags: c.flags, best: [0; 4] };
                     for &e in entries(c.k).iter().filter(|&&e| (lo..hi).contains(&(e as usize))) {
-                        // Entries come best prior first: the rest cannot make it either.
                         if key(c.score as i32 + dir_prior[parent[e as usize] as usize] as i32 + tweak(c.flags), 0) <= top.floor {
                             break;
                         }
@@ -1293,8 +1110,6 @@ impl Searcher<'_> {
                 }
             })
         };
-        // The best `limit` hits so far, the limit-th one's score (i32::MIN if
-        // fewer) and key (0 if fewer).
         let best = |mut hits: Vec<Hit>| {
             hits.sort_by(|a, b| b.score.cmp(&a.score).then(a.idx.cmp(&b.idx)));
             hits.truncate(q.limit);
@@ -1302,9 +1117,6 @@ impl Searcher<'_> {
             let (floor, fkey) = last.unwrap_or((i32::MIN, 0));
             (hits, floor, fkey)
         };
-        // The names that can start with the token (the only ones that can
-        // get a placement bonus), best cheap bound first, with how many fall
-        // in each bin.
         let bin = |b: i32| (b + BIN0).clamp(0, BINS as i32 - 1) as usize;
         let sorted = |got: Vec<(i32, u32)>, h: Vec<u32>| {
             let mut at = vec![0u32; BINS];
@@ -1322,9 +1134,6 @@ impl Searcher<'_> {
             (sorted, h)
         };
         let by_key = idx.by_key();
-        // How far a run of batches got: the best hits so far, the limit-th
-        // one's score and key, the bin from which on every name is scored,
-        // the next batch's size and how much of `by_key.list` is done.
         struct Run {
             hits: Vec<Hit>,
             floor: i32,
@@ -1333,28 +1142,18 @@ impl Searcher<'_> {
             want: usize,
             listed: usize,
         }
-        // Names with their cheap bounds, best first, and how many per bin.
         type Part = (Vec<(i32, u32)>, Vec<u32>);
-        // Score them best bin first, a batch at a time, until no name left
-        // can beat the limit-th entry found. With `complete` false `parts`
-        // holds only some of them, the rest bounded by `cover + 29` over
-        // base: unless that settles the search, how far it got.
         let run = |parts: Vec<Part>, complete: bool, r: Run| -> Result<Option<Vec<Hit>>, Run> {
             let Run { mut hits, mut floor, mut fkey, mut top, mut want, mut listed } = r;
             let mut hist = vec![0usize; BINS];
             for (_, h) in &parts {
                 hist.iter_mut().zip(h).for_each(|(a, &b)| *a += b as usize);
             }
-            // Names that cannot start with the token get no placement bonus:
-            // base + key bounds them. The highest keys come in order, the
-            // rest only matter if the floor ends up below them.
             for (key, &n) in (by_key.cover..=i8::MAX as i32).zip(&by_key.counts) {
                 hist[bin(base + key)] += n as usize;
             }
             let mut taken: Vec<usize> = parts.iter().map(|(items, _)| items.iter().take_while(|x| bin(x.0) >= top).count()).collect();
             let done = |floor: i32, top: usize| floor != i32::MIN && (top == 0 || floor > top as i32 - 1 - BIN0);
-            // Without all of them, names bounded by `cover + 29` over base
-            // cannot settle it.
             let least = if complete { 0 } else { bin(base + by_key.cover + 30) };
             while want <= LAST_BATCH && !done(floor, top) && top > least {
                 let low = if floor == i32::MIN { 0 } else { bin(floor) }.max(least);
@@ -1392,10 +1191,6 @@ impl Searcher<'_> {
                 (hits, floor, fkey) = best(hits.into_iter().chain(visit(&batch, fkey)).collect());
                 top = cut;
                 want *= 4;
-                // A tentative try that one batch does not settle has few good
-                // matches: a name table costs no more and typing can narrow
-                // it. So does any try whose first two batches turn up a
-                // handful of hits.
                 if tentative && !(done(floor, top) && floor >= base + by_key.cover) || hits.len() < q.limit / 4 && want > FIRST_BATCH * 4 {
                     if !complete {
                         break;
@@ -1403,8 +1198,6 @@ impl Searcher<'_> {
                     return Ok(None);
                 }
             }
-            // Then, if the floor is low, every other name that can still
-            // beat it, in one pass.
             if done(floor, top) && floor >= base + by_key.cover && (complete || floor > base + by_key.cover + 29) {
                 return Ok(Some(hits));
             }
@@ -1451,11 +1244,6 @@ impl Searcher<'_> {
             Ok(Some(best(hits.into_iter().chain(visit(&rest, fkey)).collect()).0))
         };
         let mut from = Run { hits: Vec::new(), floor: i32::MIN, fkey: 0, top: BINS, want: FIRST_BATCH, listed: 0 };
-        // A short token first tries the names starting with it that it can
-        // find without a pass over every word: those with the highest keys,
-        // and those it can match whole (`index::ByKey`). Any other such name
-        // has no bonus above 30 and a key below `cover`. If that does not
-        // settle it, the pass goes on from there.
         if t.text.len() <= crate::index::SHORT && !scoped {
             let m = t.text.len();
             let whole = |k: &u32| {
@@ -1475,7 +1263,6 @@ impl Searcher<'_> {
                 Err(r) => from = r,
             }
         }
-        // Otherwise all of them, from a pass over the words in pieces.
         let pieces = if idx.words <= INLINE_WORDS { 1 } else { rayon::current_num_threads() * 2 };
         let step = idx.words.div_ceil(pieces);
         let piece = |p: usize| {
@@ -1502,18 +1289,10 @@ impl Searcher<'_> {
         run(parts, true, from).ok().flatten()
     }
 
-    /// Several tokens: a hit has each in its own name or in a folder above
-    /// it, so the names the rarest token matches and the subtrees of folders
-    /// so named hold every hit. When those are few, they are all that gets
-    /// looked at: their names and folders are scored as they come up, not
-    /// all two million names up front. None if they are many.
     fn driven(&self, q: &Query, pos: &[&Token], neg: &[&Token], lo: usize, hi: usize) -> Option<Vec<Hit>> {
         let idx = &self.live.base;
         let (counts, u) = (idx.class_counts(), idx.u as f64);
         let est = |t: &Token| (0..CLASSES).filter(|&c| t.mask & (1 << c) != 0).fold(u, |e, c| e * counts[c] as f64 / u);
-        // Rarest first. A rare name can still hold too much (a big folder:
-        // "developer" is ~/Developer); found out early, the next one gets a
-        // try.
         let mut order: Vec<usize> = (0..pos.len()).filter(|&t| est(pos[t]) <= DRIVEN_NAMES).collect();
         order.sort_by(|&a, &b| est(pos[a]).total_cmp(&est(pos[b])));
         for t in order.into_iter().take(DRIVEN_TRIES) {
@@ -1526,18 +1305,12 @@ impl Searcher<'_> {
         None
     }
 
-    /// `driven` from token `t`'s names; Err(true) if it gave up within the
-    /// first sixteenth of the names.
     fn drive(&self, q: &Query, pos: &[&Token], neg: &[&Token], lo: usize, hi: usize, t: usize) -> Result<Vec<Hit>, bool> {
         let idx = &self.live.base;
         let tb = TokenBits::new(idx, pos[t]);
         let space = char_bit(b' ').trailing_zeros() as usize;
         let space = [idx.bitmap(BM_FIRST + space), idx.bitmap(BM_SECOND + space)];
         let (ne_off, ne, kind, en, parent) = (idx.name_ents_off(), idx.name_ents(), idx.kind(), idx.ent_name(), idx.parent());
-        // The names' entries, and the subtrees of those that are folders
-        // (from above `lo` too: the scope's own ancestors). Past SELECTIVE
-        // entries in all, give up, or as soon as the chunks so far (handed
-        // out in order; a sixteenth at least) say twice that many are coming.
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
         let chunks = idx.words.div_ceil(CHUNK_WORDS);
         let (seen, quit, early) = (AtomicUsize::new(0), AtomicBool::new(false), AtomicBool::new(false));
@@ -1609,15 +1382,12 @@ impl Searcher<'_> {
                 _ => merged.push((a, b)),
             }
         }
-        // In those subtrees, entries whose name has the token are in `ents`.
         let first = ents.len();
         if first + merged.iter().map(|&(a, b)| (b - a) as usize).sum::<usize>() > SELECTIVE {
             return Err(false);
         }
         ents.extend(merged.iter().flat_map(|&(a, b)| a..b));
         if ents.len() <= INLINE_VISITS {
-            // Few (one thread's worth): names and folders scored as they
-            // come up.
             let scan = Scan {
                 q,
                 live: self.live,
@@ -1641,8 +1411,6 @@ impl Searcher<'_> {
                 }
             }));
         }
-        // Many: score the names of those entries and of the folders above
-        // them once, in one table, rather than per thread as they come up.
         let (de, dp) = (idx.dir_entry(), idx.dir_parent());
         let (mut bits, mut seen_dir) = (vec![0u64; idx.words], vec![0u64; idx.d.div_ceil(64)]);
         for &e in &ents {
@@ -1672,11 +1440,7 @@ impl Searcher<'_> {
         }))
     }
 
-    /// The name table for this query: cached for a repeat of the last one
-    /// (the second, longer page of results), narrowed from the last one when
-    /// this query only extends it (typing), else scored from scratch.
     fn names(&self, q: &Query, pos: &[&Token], neg: &[&Token], lo: usize, hi: usize) -> std::sync::Arc<Scored> {
-        // A small `in:` scope scores just the names found in it.
         let scope = (q.scope.is_some() && hi - lo <= self.live.base.u / 4).then_some((lo, hi));
         let key = NameKey::of(q, scope);
         let prev = self.live.names_cache.last.lock().unwrap().clone();
@@ -1697,9 +1461,6 @@ impl Searcher<'_> {
         scored
     }
 
-    /// Bitset of the names of entries `lo..hi` (a folder's subtree) and of
-    /// the folder and its ancestors, whose names folder tokens match. The
-    /// last one is kept: searches in a folder tend to come in a row.
     fn scope_names(&self, lo: usize, hi: usize) -> std::sync::Arc<NameSet> {
         let mut cache = self.live.names_cache.scope.lock().unwrap();
         if let Some((r, set)) = &*cache
@@ -1724,30 +1485,20 @@ impl Searcher<'_> {
         set
     }
 
-    /// Score distinct names against the query's name-only predicates: every
-    /// name, or only the ones `from` matched and `within` holds.
     fn score_names(&self, q: &Query, pos: &[&Token], neg: &[&Token], from: Option<&NameTable>, within: Option<&NameSet>) -> NameTable {
         let idx = &self.live.base;
-        // A `path:` anchored at the end says how a match's own name ends.
         let tails = q.path_re.as_ref().and_then(path_suffixes);
         if pos.is_empty() && neg.is_empty() && q.exts.is_empty() && q.name_re.is_none() && tails.is_none() {
-            // Every name passes with score 0; only its flags differ.
             return NameTable::new(Vec::new(), Vec::new(), Vec::new(), idx.n, true);
         }
         let ne_off = idx.name_ents_off();
-        // One token, no negation and an `ext:`: no folder memo reads the
-        // table, so only names with an allowed extension matter.
         let by_ext = pos.len() == 1 && neg.is_empty() && !q.exts.is_empty();
         let toks: Vec<TokenBits> = pos.iter().chain(neg).map(|t| TokenBits::new(idx, t)).collect();
         let space = char_bit(b' ').trailing_zeros() as usize;
         let space = [idx.bitmap(BM_FIRST + space), idx.bitmap(BM_SECOND + space)];
-        // Name filters as bitmap prefilters: a name passing `ext:` contains
-        // ".ext"; one passing `re:` contains a literal every match starts with.
         let filter = |lits: Vec<Vec<u8>>| lits.into_iter().map(Token::literal).collect::<Vec<_>>();
         let re_toks = q.name_re.as_ref().and_then(re_literals).map(filter);
         let re_bits = re_toks.as_ref().map(|t| t.iter().map(|t| TokenBits::new(idx, t)).collect::<Vec<_>>());
-        // `ext:` as the extension slots it allows (see `Index::name_ext`):
-        // only a name whose extension is not in the table needs reading.
         let ext_slots = idx.name_ext();
         let mut allow = [0u64; 4];
         for e in &q.exts {
@@ -1758,7 +1509,6 @@ impl Searcher<'_> {
             let s = ext_slots[k] as usize;
             allow[s / 64] >> (s % 64) & 1 != 0 && (s != 255 || ext_ok(name, &q.exts))
         };
-        // The names of word w whose slot the filter allows.
         let ext_word = |w: usize| -> u64 {
             if q.exts.is_empty() {
                 return !0;
@@ -1767,19 +1517,12 @@ impl Searcher<'_> {
             slots.iter().enumerate().fold(0, |m, (i, &s)| m | (allow[s as usize / 64] >> (s % 64) & 1) << i)
         };
         let (dot, app) = (idx.bitmap(crate::index::BM_DOT), idx.bitmap(crate::index::BM_APP));
-        // Name k is bit i of lane j of `per` (each token's
-        // `TokenBits::words`). `re` is the task's own copy of `name_re`:
-        // sharing one regex's cache pool across threads costs more than the
-        // match.
         let score_one =
             |k: usize, i: u32, per: &[Pair], j: usize, spaced: bool, re: Option<&regex::bytes::Regex>, ok_entries: &mut usize| -> Option<NameHit> {
                 let name = idx.uname(k as u32);
                 let (w, bit) = (k / 64, |x: u64| x >> i & 1 != 0);
-                // A filter alone reads no name for its flags.
-                let flags = match pos.is_empty() {
-                    true => (if bit(dot[w]) { NF_DOT } else { 0 }) | (if bit(app[w]) { NF_APP } else { 0 }),
-                    false => name_flags(name),
-                };
+                let flags =
+                    if pos.is_empty() { (if bit(dot[w]) { NF_DOT } else { 0 }) | (if bit(app[w]) { NF_APP } else { 0 }) } else { name_flags(name) };
                 let mut h = NameHit { score: 0, bits: 0, flags, best: [0; 4] };
                 for (t, tok) in pos.iter().enumerate() {
                     let (fits, clean, typo) = per[t].0[j];
@@ -1797,8 +1540,6 @@ impl Searcher<'_> {
                 if neg.iter().zip(&per[pos.len()..]).any(|(t, p)| bit(p.0[j].0) && token_matches(name, t)) {
                     h.flags |= NF_NEG;
                 }
-                // As a file match it must hit a token and pass name filters;
-                // as a folder on someone's path, the raw token bits matter.
                 let ok = (pos.is_empty() || h.bits != 0)
                     && h.flags & NF_NEG == 0
                     && (q.exts.is_empty() || ext_ok_k(k, name))
@@ -1810,14 +1551,9 @@ impl Searcher<'_> {
                 }
                 (ok || h.bits != 0 || h.flags & NF_NEG != 0).then_some(h)
             };
-        // One chunk of name ids: its words of the bitset and rank, and its
-        // hits in id order (into a spare buffer). Words with candidates go
-        // in pairs where they can (see `TokenBits::words`). `per` is the
-        // task's scratch.
         let chunk = |c: usize, bits: &mut [u64], rank: &mut [u16], mut hits: Vec<NameHit>, per: &mut [Pair]| {
             let mut ok = 0;
             let (lo, n) = (c * CHUNK_WORDS, bits.len());
-            // The chunk's words with candidates, as a bitset.
             let mut todo: Todo = std::array::from_fn(|g| 1u64.checked_shl(n.saturating_sub(g * 64) as u32).map_or(!0, |b| b - 1));
             if let Some(f) = from {
                 let words = if f.hits[c].is_empty() { Todo::default() } else { nonzero(&f.bits[lo..lo + n]) };
@@ -1845,13 +1581,9 @@ impl Searcher<'_> {
                         p.0 = if pair { tb.words::<2>(w) } else { [tb.word(w), (0, 0, 0)] };
                     }
                     for j in 0..1 + pair as usize {
-                        // A word's rank counts the chunk's hits before it
-                        // (read only for words with a hit).
                         let (wi, w) = (wi + j, w + j);
                         rank[wi] = hits.len() as u16;
                         let mut any = per.iter().take(toks.len()).fold(0, |a, p| a | p.0[j].0);
-                        // With no positive token every name is a candidate,
-                        // unless a name filter says which can pass.
                         if pos.is_empty() {
                             let re = re_bits.as_ref().map_or(!0, |f| f.iter().fold(0, |a, t| a | t.word(w).0));
                             any |= !0 >> (64 - (idx.u - w * 64).min(64)) & ext_word(w) & re;
@@ -1873,12 +1605,8 @@ impl Searcher<'_> {
             }
             (hits, ok)
         };
-        // A spare pair from the last table (its bits cleared; ranks are only
-        // read where a bit is set), or fresh ones.
         let spare_bits = BITS_POOL.lock().unwrap().pop().filter(|(b, _)| b.len() == idx.words);
         let (mut bits, mut rank) = spare_bits.unwrap_or_else(|| (vec![0; idx.words], vec![0; idx.words]));
-        // A few thousand words to look at (a small index, a scope, a
-        // narrowed table) take less time than waking threads.
         let few = from.map_or(within.map_or(idx.words, |s| if s.busy { s.names } else { s.words }), |f| f.len) <= INLINE_WORDS;
         let mut spare = std::mem::take(&mut *HIT_POOL.lock().unwrap());
         spare.resize_with(idx.words.div_ceil(CHUNK_WORDS), Vec::new);
@@ -1900,13 +1628,9 @@ impl Searcher<'_> {
         NameTable::new(bits, rank, hits, ok_entries, false)
     }
 
-    /// The overlay (entries added since the last compaction) has no dir
-    /// memo: each candidate's path components stand in for it. Its top
-    /// `limit` is all the merge can use.
     fn search_overlay(&self, q: &Query) -> Vec<Hit> {
         let now = now_secs();
         let pos: Vec<&Token> = q.tokens.iter().filter(|t| !t.negate).collect();
-        // A hit needs some positive token in its own name.
         let flat = &self.live.flat;
         let cands: Vec<&(Vec<u8>, crate::live::OEnt)> = flat
             .masks
@@ -1918,8 +1642,6 @@ impl Searcher<'_> {
         if cands.is_empty() {
             return Vec::new();
         }
-        // Overlay entries cluster in a few busy folders: match each folder's
-        // components once per folder, not per entry.
         let score = |items: &[&(Vec<u8>, crate::live::OEnt)]| {
             let mut memo = HashMap::<&[u8], DirMatch, crate::index::Fx>::default();
             let mut out = Vec::new();
@@ -1934,28 +1656,21 @@ impl Searcher<'_> {
             out
         };
         let mut hits = if cands.len() <= OVERLAY_CHUNK { score(&cands) } else { cands.par_chunks(OVERLAY_CHUNK).flat_map_iter(score).collect() };
-        // Best first, equal scores by path (the overlay map's order).
         hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.over.cmp(&b.over)));
         hits.truncate(q.limit);
         hits
     }
 
-    /// For each dir: which tokens its name or an ancestor's matches, with the
-    /// best score per token (first 4); bits == u32::MAX if a negated token does.
     fn dir_tokens(&self, names: &NameTable) -> Vec<DirMemo> {
         let idx = &self.live.base;
         let de = idx.dir_entry();
         let en = idx.ent_name();
-        // Each dir's own name, written in parallel into a spare buffer.
         let mut out = MEMO_POOL.lock().unwrap().pop().unwrap_or_default();
         (0..idx.d)
             .into_par_iter()
             .with_min_len(1 << 12)
             .map(|k| if k > 0 { DirMemo::own(names.get(en[de[k] as usize])) } else { DirMemo::default() })
             .collect_into_vec(&mut out);
-        // Fold ancestors in, parents first. A dir's descendants are one
-        // contiguous id range, so the children of huge dirs go one by one,
-        // then every small subtree in parallel.
         let dp = idx.dir_parent();
         let plan = idx.memo_plan();
         for &k in &plan.upper {
@@ -1984,10 +1699,9 @@ impl Searcher<'_> {
     }
 }
 
-/// Debug switch: always take the full pass (for checking the selective one).
+/// Debug switch: always take the full pass.
 pub static FULL_PASS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// One query's entry scoring, shared by the two strategies.
 struct Scan<'a> {
     q: &'a Query,
     live: &'a Live,
@@ -1998,10 +1712,7 @@ struct Scan<'a> {
 }
 
 impl Scan<'_> {
-    /// Score entry `i` whose name scored `nh`, given its parent's memo.
-    /// `None` if it fails a filter or cannot beat `floor`.
     #[inline(always)]
-    /// `re` is the caller's own copy of `path_re` (see `score_names`).
     fn score(&self, i: usize, nh: NameHit, memo: DirMemo, floor: u64, pbuf: &mut Vec<u8>, re: Option<&regex::bytes::Regex>) -> Option<u64> {
         let idx = &self.live.base;
         let q = self.q;
@@ -2027,7 +1738,6 @@ impl Scan<'_> {
             }
             for t in 0..self.npos {
                 if nh.bits & (1 << t) == 0 {
-                    // Matched by a folder on the path instead.
                     score += memo.best.get(t).map_or(6, |&b| b as i32 * 3 / 4);
                 }
             }
@@ -2050,14 +1760,11 @@ impl Scan<'_> {
         Some(key)
     }
 
-    /// One sequential pass over every entry in `lo..hi`.
     fn full(&self, lo: usize, hi: usize, memo: Option<&[DirMemo]>) -> Vec<Hit> {
         let idx = &self.live.base;
         let (ent_name, parent, zones) = (idx.ent_name(), idx.parent(), idx.zones());
         let dense = self.names.dense(idx);
         let q = self.q;
-        // Runs of entries none of which passes the size/mtime/kind filters
-        // are skipped whole.
         let filtered = q.kind.is_some() || q.size != (0, u64::MAX) || q.mtime != (0, u32::MAX);
         let zone_ok = |z: &Zone| {
             z.max_size >= q.size.0
@@ -2090,8 +1797,6 @@ impl Scan<'_> {
         })
     }
 
-    /// Visit only the entries carrying a matching name; folder tokens are
-    /// checked by walking each candidate's ancestors (memoized per piece).
     fn selective(&self, lo: usize, hi: usize) -> Vec<Hit> {
         let idx = &self.live.base;
         let (ne_off, ne, parent) = (idx.name_ents_off(), idx.name_ents(), idx.parent());
@@ -2114,7 +1819,6 @@ impl Scan<'_> {
         })
     }
 
-    /// The dir memo of `d` (see `dir_tokens`), from its ancestor chain.
     fn memo_of(&self, d: u32, cache: &mut HashMap<u32, DirMemo, crate::index::Fx>, hit: &mut impl FnMut(u32) -> Option<NameHit>) -> DirMemo {
         let idx = &self.live.base;
         let (de, en, dp) = (idx.dir_entry(), idx.ent_name(), idx.dir_parent());
@@ -2138,17 +1842,13 @@ impl Scan<'_> {
     }
 }
 
-/// The dir memo is ~13 MB; reusing it saves a page-fault storm per query.
 static MEMO_POOL: std::sync::Mutex<Vec<Vec<DirMemo>>> = std::sync::Mutex::new(Vec::new());
 
-/// What the name table depends on: two queries with the same key score
-/// every name the same.
 #[derive(PartialEq)]
 struct NameKey {
     tokens: Vec<(Vec<u8>, Mode, bool)>,
     exts: Vec<Vec<u8>>,
     name_re: Option<String>,
-    /// The entry range whose names alone were scored, if not all.
     scope: Option<(usize, usize)>,
 }
 
@@ -2162,8 +1862,6 @@ impl NameKey {
         }
     }
 
-    /// Can only match names `prev` matched: same filters, same tokens, each
-    /// positive token the same or longer in a way that only narrows it.
     fn narrows(&self, prev: &NameKey) -> bool {
         self.exts == prev.exts
             && self.name_re == prev.name_re
@@ -2178,14 +1876,13 @@ impl NameKey {
                     } else if a.1 == Mode::Suffix {
                         a.0.ends_with(&b.0)
                     } else {
-                        // Gaining a typo widens the match: score afresh.
                         a.0.starts_with(&b.0) && takes_typos(&a.0, a.1) == takes_typos(&b.0, b.1)
                     }
             })
     }
 }
 
-/// The last query's name table (and dir memo, built on first use).
+/// The last query's name table, and its dir memo once built.
 pub struct Scored {
     at: std::time::Instant,
     key: NameKey,
@@ -2208,14 +1905,12 @@ impl Drop for Scored {
 #[derive(Default)]
 pub struct NameCache {
     last: std::sync::Mutex<Option<std::sync::Arc<Scored>>>,
-    /// The last `in:` scope's names (see `Searcher::scope_names`).
     #[allow(clippy::type_complexity)]
     scope: std::sync::Mutex<Option<((usize, usize), std::sync::Arc<NameSet>)>>,
 }
 
 impl NameCache {
-    /// Drop the cached table and spare buffers once searching has stopped:
-    /// tens of MB after a broad query, worth keeping only while typing.
+    /// Drop the cached table and spare buffers once searches have been idle for `idle`.
     pub fn trim_if_idle(&self, idle: std::time::Duration) {
         let mut g = self.last.lock().unwrap();
         if g.as_ref().is_some_and(|s| s.at.elapsed() > idle) {
@@ -2234,7 +1929,6 @@ pub struct DirMemo {
 }
 
 impl DirMemo {
-    /// A dir's own name's contribution.
     #[inline]
     fn own(hit: Option<NameHit>) -> DirMemo {
         match hit {
@@ -2244,7 +1938,6 @@ impl DirMemo {
         }
     }
 
-    /// This dir's memo with its parent's folded in.
     #[inline]
     fn under(self, p: DirMemo) -> DirMemo {
         if p.bits == u32::MAX || self.bits == u32::MAX {
@@ -2258,11 +1951,9 @@ impl DirMemo {
     }
 }
 
-/// Spare hit buffers, one per name table chunk (tens of MB after a broad
-/// query), so the next broad query doesn't page-fault fresh ones in.
 static HIT_POOL: std::sync::Mutex<Vec<Vec<NameHit>>> = std::sync::Mutex::new(Vec::new());
 
-/// Free the spare buffers searches keep for speed (after a quiet spell).
+/// Free the spare buffers searches keep for speed.
 pub fn trim_pools() {
     BITS_POOL.lock().unwrap().clear();
     HIT_POOL.lock().unwrap().clear();
@@ -2270,17 +1961,13 @@ pub fn trim_pools() {
     MEMO_POOL.lock().unwrap().clear();
 }
 
-/// A spare name table bitset and rank (344 KB on this disk): allocating
-/// and freeing them each search cost page faults and madvise.
 #[allow(clippy::type_complexity)]
 static BITS_POOL: std::sync::Mutex<Vec<(Vec<u64>, Vec<u16>)>> = std::sync::Mutex::new(Vec::new());
 
-/// Spare `NameTable::dense` views (8.9 MB on this disk).
 static DENSE_POOL: std::sync::Mutex<Vec<Vec<Short>>> = std::sync::Mutex::new(Vec::new());
 
 impl Drop for NameTable {
     fn drop(&mut self) {
-        // Only the chunks holding hits have bits to clear.
         if !self.bits.is_empty() {
             for (chunk, hits) in self.bits.chunks_mut(CHUNK_WORDS).zip(&self.hits) {
                 if !hits.is_empty() {
@@ -2306,24 +1993,16 @@ impl Drop for NameTable {
     }
 }
 
-/// Scored names: which ones (`bits`), and their hits stored per chunk of
-/// CHUNK_WORDS words in id order, `rank[w]` counting the chunk's hits
-/// before word w. Lookups are O(1) and the table is as small as its hits.
 struct NameTable {
     bits: Vec<u64>,
     rank: Vec<u16>,
     hits: Vec<Vec<NameHit>>,
     len: usize,
-    /// Entries carrying a name that passes as a match (NF_OK).
     ok_entries: usize,
-    /// Every name, unscored (no token or name filter): only `dense` works.
     all: bool,
-    /// For a pass over every entry: each name's `Short` (zero if absent), a
-    /// direct index with a quarter of a hit's bytes.
     dense: std::sync::OnceLock<Vec<Short>>,
 }
 
-/// What an entry's score needs of its name's hit.
 #[derive(Clone, Copy, Default)]
 struct Short {
     score: i16,
@@ -2331,14 +2010,12 @@ struct Short {
     flags: u8,
 }
 
-/// `n` default `Short`s, from the allocator's zeroed memory.
 fn zeroed(n: usize) -> Vec<Short> {
     let layout = std::alloc::Layout::array::<Short>(n).expect("dense view size");
     if layout.size() == 0 {
         return Vec::new();
     }
-    // Safety: allocated with Short's layout for `n` of them; a Short is
-    // plain integers, and all zero bytes is its default.
+    // Safety: allocated with Short's layout for `n`; all-zero bytes are a valid Short.
     unsafe {
         let p = std::alloc::alloc_zeroed(layout) as *mut Short;
         if p.is_null() {
@@ -2354,12 +2031,9 @@ impl NameTable {
         NameTable { bits, rank, hits, len, ok_entries, all, dense: std::sync::OnceLock::new() }
     }
 
-    /// The `dense` view, built on first use.
     fn dense(&self, idx: &Index) -> &[Short] {
         self.dense.get_or_init(|| {
             let spare = DENSE_POOL.lock().unwrap().pop().filter(|d| d.len() == idx.words * 64);
-            // A fresh one comes zeroed (all `Short::default()`) from the
-            // allocator, which maps zero pages in without writing them.
             let fresh = spare.is_none();
             let mut d = spare.unwrap_or_else(|| zeroed(idx.words * 64));
             let flags = [idx.bitmap(crate::index::BM_DOT), idx.bitmap(crate::index::BM_APP)];
@@ -2407,7 +2081,6 @@ impl NameTable {
         Some(self.hits[w / CHUNK_WORDS][r])
     }
 
-    /// Every name in the table, ascending.
     fn iter(&self) -> impl Iterator<Item = (u32, NameHit)> + '_ {
         self.hits.iter().enumerate().filter(|(_, hits)| !hits.is_empty()).flat_map(move |(c, hits)| {
             let words = self.bits[c * CHUNK_WORDS..].iter().take(CHUNK_WORDS);
@@ -2427,15 +2100,11 @@ impl NameTable {
     }
 }
 
-/// A set of name ids, and which words of each chunk are not empty.
 struct NameSet {
     bits: Vec<u64>,
     todo: Vec<Todo>,
-    /// Non-zero words, and names.
     words: usize,
     names: usize,
-    /// Most of its names will need scoring (not just their words'
-    /// bitmaps): its names, not its words, say whether threads pay.
     busy: bool,
 }
 
@@ -2448,10 +2117,8 @@ impl NameSet {
     }
 }
 
-/// One bit per word of a chunk (CHUNK_WORDS of them).
 type Todo = [u64; CHUNK_WORDS / 64];
 
-/// Which of a chunk's words are not zero.
 fn nonzero(words: &[u64]) -> Todo {
     let mut out = Todo::default();
     for (o, g) in out.iter_mut().zip(words.chunks(64)) {
@@ -2463,10 +2130,8 @@ fn nonzero(words: &[u64]) -> Todo {
 #[derive(Clone, Copy)]
 struct NameHit {
     score: i16,
-    /// Which positive tokens the name matched.
     bits: u8,
     flags: u8,
-    /// Per-token score, first 4 tokens (for the folder memo).
     best: [i16; 4],
 }
 
@@ -2486,7 +2151,6 @@ fn name_flags(name: &[u8]) -> u8 {
     f
 }
 
-/// Small per-entry nudges on top of match quality and the location prior.
 #[inline]
 fn rank_tweaks(flags: u8, kind: u8, mtime: u32, now: u32) -> i32 {
     let mut s = 0;

@@ -1,7 +1,4 @@
-//! Whole-disk file search for macOS: a fuzzy name index over every entry on
-//! disk, kept live from FSEvents, plus a trigram content index for text
-//! files. `Engine` runs it all in-process; several processes may run one over
-//! the same index directory (one owns the files, the rest follow).
+//! Whole-disk file search for macOS: a fuzzy name index kept live from FSEvents, plus a trigram content index.
 
 pub mod content;
 mod engine;

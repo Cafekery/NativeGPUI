@@ -1,9 +1,4 @@
-//! Parallel whole-disk enumeration with getattrlistbulk(2).
-//!
-//! One syscall returns hundreds of entries with name, type, size, mtime and
-//! flags already attached, so there is no per-file stat. Directories fan out
-//! over a rayon pool; mount points are not crossed, firmlinks are (that is
-//! how /Users etc. on the data volume appear under / exactly once).
+//! Parallel whole-disk enumeration with getattrlistbulk(2); mount points are not crossed, firmlinks are.
 
 use rayon::Scope;
 use std::cell::RefCell;
@@ -13,17 +8,13 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 pub const NONE: u32 = u32::MAX;
 
-/// Folders never to open: set when the daemon runs without Full Disk
-/// Access, where opening a consent-gated folder (Downloads, Desktop, ...)
-/// pops a privacy prompt and blocks the call until someone answers it.
+/// Folders never to open: without Full Disk Access, opening a consent-gated folder blocks on a privacy prompt.
 pub static SKIP: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
 
-/// Folders a scan was refused (EPERM): without Full Disk Access macOS also
-/// silently denies some, like ~/Library/Mail. Recorded only while paths are
-/// tracked, i.e. while SKIP is set.
+/// Folders a scan was refused (EPERM); recorded only while `SKIP` is set.
 pub static DENIED: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
-/// Entries listed by scans so far: the first scan's progress.
+/// Entries listed by scans so far.
 pub static LISTED: AtomicUsize = AtomicUsize::new(0);
 
 pub fn blocked(path: &[u8]) -> bool {
@@ -39,28 +30,25 @@ pub const KIND_DIR: u8 = 1;
 pub const KIND_LINK: u8 = 2;
 pub const KIND_OTHER: u8 = 3;
 
-/// Entry flag bit: UF_HIDDEN set by the Finder.
 pub const FLAG_HIDDEN: u8 = 1 << 2;
-/// Directory that is a mount point we did not descend into.
+/// A mount point not descended into.
 pub const FLAG_MOUNT: u8 = 1 << 3;
-/// Entry flag bit: a file with more than one hard link.
+/// A file with more than one hard link.
 pub const FLAG_HARDLINK: u8 = 1 << 4;
-/// Only while a listing is parsed: a directory its parent reports empty.
-/// Firmlinks report 0 too (their entries live on the data volume), so they
-/// never get it; grafts (MobileAsset images) do, so `finish_dir` checks.
+/// Parse-time only: the parent reports the directory empty, which grafts do falsely, so it is rechecked.
 const MAYBE_EMPTY: u8 = 1 << 7;
 
 #[derive(Clone, Copy)]
 pub struct RawEnt {
     pub name_off: u32,
     pub name_len: u16,
-    /// kind in the low 2 bits, FLAG_* above.
+    /// Kind in the low 2 bits, `FLAG_*` above.
     pub kind: u8,
     pub size: u64,
     /// Bytes allocated on disk.
     pub alloc: u64,
     pub mtime: u32,
-    /// Temp id of the listing for this directory, or NONE.
+    /// Temp id of this directory's listing, or `NONE`.
     pub child: u32,
 }
 
@@ -85,7 +73,6 @@ pub fn scan(root: &[u8], threads: usize) -> Vec<Listing> {
     let ctx = Ctx { next_id: AtomicU32::new(1), out: (0..threads + 1).map(|_| Mutex::new(Vec::new())).collect() };
     raise_fd_limit();
     let fd = if blocked(root) { -1 } else { CString::new(root).map_or(-1, |c| unsafe { libc::open(c.as_ptr(), OPEN_DIR) }) };
-    // Paths are only tracked when there is something to skip.
     let path = SKIP.get().is_some_and(|v| !v.is_empty()).then(|| root.to_vec());
     pool.scope(|s| finish_dir(s, fd, path, 0, &ctx));
     let parts: Vec<Vec<Listing>> = ctx.out.into_iter().map(|m| m.into_inner().unwrap()).collect();
@@ -103,8 +90,7 @@ fn raise_fd_limit() {
     unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &r) };
 }
 
-/// List a single directory (no recursion). Subdirectories come back with
-/// `child == NONE`. Used by the live updater.
+/// List one directory without recursion; subdirectories come back with `child == NONE`.
 pub fn list_one(path: &[u8]) -> Option<Listing> {
     if blocked(path) {
         return None;
@@ -121,7 +107,6 @@ pub fn list_one(path: &[u8]) -> Option<Listing> {
 
 const OPEN_DIR: i32 = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
 
-/// Directory fd shared by the tasks that still need to openat() a child.
 struct Fd(i32);
 impl Drop for Fd {
     fn drop(&mut self) {
@@ -129,12 +114,6 @@ impl Drop for Fd {
     }
 }
 
-// Children are opened with openat() relative to the parent's fd, so paths
-// never get rebuilt and PATH_MAX never bites. Measured on this Mac: open() +
-// close() is ~19us per directory (two Endpoint Security clients tax every
-// open), getattrlistbulk ~14us; past ~8 threads the kernel side stops scaling.
-// 18% of directories are empty: those the parent's listing already says
-// so (rechecked with one lookup) are never opened.
 fn finish_dir<'s>(s: &Scope<'s>, fd: i32, path: Option<Vec<u8>>, id: u32, ctx: &'s Ctx) {
     let mut l = Listing { id, names: Vec::new(), ents: Vec::new() };
     if fd < 0 {
@@ -156,7 +135,7 @@ fn finish_dir<'s>(s: &Scope<'s>, fd: i32, path: Option<Vec<u8>>, id: u32, ctx: &
             }
             e.child = ctx.next_id.fetch_add(1, Ordering::Relaxed);
             let name = CString::new(name).unwrap_or_default();
-            // (With paths tracked, opening is how refusals get recorded.)
+            // With paths tracked, opening is how refusals get recorded.
             if maybe_empty && child_path.is_none() && entry_count(fd, &name) == Some(0) {
                 empty.push(e.child);
             } else {
@@ -184,7 +163,6 @@ fn finish_dir<'s>(s: &Scope<'s>, fd: i32, path: Option<Vec<u8>>, id: u32, ctx: &
     }
 }
 
-/// Entries in the directory `name` (in `dir`) resolves to.
 fn entry_count(dir: i32, name: &CString) -> Option<u32> {
     let mut al: libc::attrlist = unsafe { std::mem::zeroed() };
     al.bitmapcount = libc::ATTR_BIT_MAP_COUNT;
@@ -208,7 +186,6 @@ fn rd64(b: &[u8], at: usize) -> u64 {
     u64::from_ne_bytes(b[at..at + 8].try_into().unwrap())
 }
 
-/// Returns false if the directory could not be opened.
 fn list_into(path: &[u8], l: &mut Listing) -> bool {
     let Ok(cpath) = CString::new(path) else { return false };
     let fd = unsafe { libc::open(cpath.as_ptr(), OPEN_DIR) };
@@ -233,8 +210,7 @@ fn list_fd(fd: i32, l: &mut Listing) {
             if n <= 0 {
                 break;
             }
-            // Size the listing exactly: 8M entries' worth of growth slack
-            // would be ~150 MB at the scan's peak.
+            // Sized exactly: growth slack across a whole-disk scan is its peak memory.
             let (mut p, mut bytes) = (0usize, 0usize);
             for _ in 0..n {
                 let (b, common) = (&buf[p..], rd32(buf, p + 4));

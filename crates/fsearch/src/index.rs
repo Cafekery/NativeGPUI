@@ -1,15 +1,4 @@
-//! The name index: every entry on disk in one flat blob, mmap-able as is.
-//!
-//! Layout trick: entries are emitted one directory *block* at a time, blocks
-//! in depth-first order. So every directory's children are contiguous (and
-//! sorted, for path lookup), and every directory's whole subtree is the single
-//! range `dir_start..dir_end`. Scoping a search to a folder is a range bound,
-//! not a filter.
-//!
-//! Names are interned: 7.5M entries share ~2M distinct names, so each name
-//! is stored once, and queries score unique names, not entries. Which names
-//! can match a query is answered 64 names at a time from per-class bitmaps
-//! (see `name_bits`) before any name is read.
+//! The name index: every entry on disk in one mmap-able blob, in depth-first directory blocks, so a subtree is one range.
 
 use crate::walk::{FLAG_HARDLINK, FLAG_MOUNT, KIND_DIR, Listing, NONE};
 use memmap2::{Mmap, MmapMut};
@@ -58,16 +47,14 @@ pub struct Index {
     pub u: usize,
     names_len: usize,
     u1: usize,
-    /// Words per name bitmap (64 names each), and all bitmaps' words.
+    /// Words per name bitmap.
     pub words: usize,
     bits_len: usize,
     zones_len: usize,
     ext_slots: usize,
-    /// FSEvents id the index is current as of; replay starts here.
+    /// FSEvents id the index is current as of.
     pub event_id: u64,
     /// Wall-clock second the index is known complete as of (0: unknown).
-    /// If FSEvents history from `event_id` is gone, folders changed since
-    /// then are what needs relisting.
     pub synced_at: u32,
     nbig: usize,
     off: [usize; NSEC],
@@ -78,49 +65,42 @@ pub struct Index {
     marked: std::sync::OnceLock<Vec<u32>>,
 }
 
-/// Per distinct name, what bounds its score for one fuzzy token without
-/// reading the name (see `query::Searcher::ranked`).
+/// Per distinct name, what bounds its score for one fuzzy token without reading the name.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct NameInfo {
-    /// The best location prior among the name's folders, plus the best rank
-    /// tweak its flags allow, less the length penalty.
+    /// Best location prior among the name's folders, plus its best rank tweak, less the length penalty.
     pub key: i8,
-    /// Length past a leading dot (at most 255).
+    /// Length past a leading dot.
     pub len: u8,
-    /// Stem length (up to the last dot) past a leading dot (at most 255).
+    /// Stem length past a leading dot.
     pub stem: u8,
     /// First byte past a leading dot, ASCII-folded.
     pub head: u8,
 }
 
-/// The names with the highest `NameInfo::key`, best first: every name whose
-/// key is at least `cover`, and how many have each key from `cover` up.
+/// The names whose `NameInfo::key` is at least `cover`, best first, and how many have each key.
 pub struct ByKey {
     pub cover: i32,
     pub list: Vec<(i8, u32)>,
     pub counts: Vec<u32>,
-    /// Per `NameInfo::head`: its names in `list`, in order.
+    /// Per `NameInfo::head`: its names in `list`.
     pub heads: Vec<Vec<u32>>,
-    /// Per `NameInfo::head`: the names whose length or stem is at most
-    /// SHORT, the ones a token that short can match whole.
+    /// Per `NameInfo::head`: the names whose length or stem is at most `SHORT`.
     pub short: Vec<Vec<u32>>,
 }
 
-/// See `ByKey::short`.
 pub const SHORT: usize = 3;
 
-/// How to fold per-dir data down the tree in parallel (see `memo_plan`).
+/// How to fold per-dir data down the tree in parallel.
 pub struct MemoPlan {
     /// Dirs to do one by one, parents first.
     pub upper: Vec<u32>,
-    /// (dir, its descendants' id range): the range's parents are the dir or
-    /// inside the range, so each runs on its own once `upper` is done.
+    /// (dir, its descendants' id range), each independent once `upper` is done.
     pub chunks: Vec<(u32, std::ops::Range<u32>)>,
 }
 
-/// A typed view of one section of `self.map`, `self.$len` long. Shared with
-/// content segments, which use the same file layout (see `layout`).
+/// A typed view of one section of `self.map`, `self.$len` long.
 macro_rules! sec {
     ($name:ident, $s:expr, $t:ty, $len:ident) => {
         pub fn $name(&self) -> &[$t] {
@@ -131,64 +111,49 @@ macro_rules! sec {
 pub(crate) use sec;
 
 impl Index {
-    // Per distinct name: the name bitmaps (see `bitmap`), offset into
-    // `names` (u + 1 entries).
     sec!(name_bits, Sec::NameBits, u64, bits_len);
     sec!(name_off, Sec::NameOff, u32, u1);
     sec!(names, Sec::Names, u8, names_len);
-    // Per entry: its name id, kind (walk::KIND_* | walk::FLAG_*), dir id of
-    // its parent, size and allocation (see size_of, alloc_of), mtime.
     sec!(ent_name, Sec::EntName, u32, n);
     sec!(kind, Sec::Kind, u8, n);
     sec!(parent, Sec::Parent, u32, n);
     sec!(size_raw, Sec::Size, u32, n);
     sec!(alloc_raw, Sec::Alloc, u32, n);
     sec!(mtime, Sec::Mtime, u32, n);
-    // Per dir: entry index (ascending, so parents precede children), block
-    // of children, end of the whole subtree range, location prior.
+    // Per dir; `dir_entry` ascends, so parents precede children.
     sec!(dir_entry, Sec::DirEntry, u32, d);
     sec!(dir_start, Sec::DirStart, u32, d);
     sec!(dir_len, Sec::DirLen, u32, d);
     sec!(dir_end, Sec::DirEnd, u32, d);
     sec!(dir_prior, Sec::DirPrior, i8, d);
     sec!(dir_parent, Sec::DirParent, u32, d);
-    // Per dir: exact bytes and allocation of its whole subtree, as built.
+    // Per dir: its whole subtree's bytes and allocation, as built.
     sec!(dir_bytes, Sec::DirBytes, u64, d);
     sec!(dir_alloc, Sec::DirAlloc, u64, d);
-    // Per distinct name, the entries carrying it (best location prior
-    // first): a selective query visits only these instead of every entry.
+    // Per distinct name, its entries, best location prior first.
     sec!(name_ents_off, Sec::NameEntsOff, u32, u1);
     sec!(name_ents, Sec::NameEnts, u32, n);
-    // Per distinct name, the highest location prior among the folders
-    // holding it: bounds what any entry with the name can score.
     sec!(name_prior, Sec::NamePrior, i8, u);
-    // Per distinct name, what bounds its score without reading it.
     sec!(name_info, Sec::NameInfo, NameInfo, u);
-    // Per distinct name, its extension as an `ext_table` slot: 0 none, 255
-    // one not in the table.
+    // Per distinct name, its `ext_table` slot: 0 no extension, 255 one not in the table.
     sec!(name_ext, Sec::NameExt, u8, u);
-    // The EXT_SLOTS most common extensions among the names, lowercased: slot
-    // i is `[len, bytes..]` (slot 0 and 255 unused).
+    // Slot i is `[len, lowercased bytes..]`; slots 0 and 255 are unused.
     sec!(ext_table, Sec::Exts, [u8; 16], ext_slots);
 
-    /// The `name_ext` slot of extension `e` (lowercase): 255 if it is not
-    /// in the table (names with such an extension have to be read).
+    /// The `name_ext` slot of lowercase extension `e`, 255 if it is not in the table.
     pub fn ext_slot(&self, e: &[u8]) -> u8 {
         let t = self.ext_table();
         (1..255).find(|&i| t[i][0] as usize == e.len() && &t[i][1..1 + e.len()] == e).unwrap_or(255) as u8
     }
-    // Per ZONE entries: what a filter on size, mtime or kind can skip.
     sec!(zones, Sec::Zones, Zone, zones_len);
-    // Exact values too large for their 4-byte slot (see `pack`).
     sec!(big, Sec::Big, u64, nbig);
 
-    /// Name bitmap `b` (see `BM_FIRST` and on): bit `k % 64` of word `k / 64`
-    /// is set when name `k` has the property.
+    /// Name bitmap `b`: bit `k % 64` of word `k / 64` is set when name `k` has the property.
     pub fn bitmap(&self, b: usize) -> &[u64] {
         &self.name_bits()[b * self.words..][..self.words]
     }
 
-    /// How many names have each char class: a query checks rare ones first.
+    /// How many names have each char class.
     pub fn class_counts(&self) -> &[u32; CLASSES] {
         &self.counts()[0]
     }
@@ -208,12 +173,10 @@ impl Index {
         })
     }
 
-    /// The highest `name_prior`.
     pub fn top_prior(&self) -> i8 {
         *self.top_prior.get_or_init(|| self.name_prior().iter().copied().max().unwrap_or(0))
     }
 
-    /// The names with the highest keys (see `ByKey`).
     pub fn by_key(&self) -> &ByKey {
         self.by_key.get_or_init(|| {
             const WANT: usize = 1 << 14;
@@ -222,7 +185,6 @@ impl Index {
             for x in info {
                 count[(x.key as i32 + 128) as usize] += 1;
             }
-            // The lowest key such that all names at or above it fit.
             let (mut cover, mut n) = (i8::MAX as i32 + 1, 0);
             while cover > i8::MIN as i32 && n + count[(cover - 1 + 128) as usize] <= WANT {
                 cover -= 1;
@@ -252,9 +214,7 @@ impl Index {
         &self.names()[o[id as usize] as usize..o[id as usize + 1] as usize]
     }
 
-    /// The 64 bytes of the map from name `id` on, if the name is no longer
-    /// and the map goes that far: SIMD reads them whole and masks off what
-    /// follows the name.
+    /// The 64 bytes of the map from name `id` on, if the name fits in them and the map goes that far.
     #[inline]
     pub fn uname_wide(&self, id: u32) -> Option<&[u8; 64]> {
         let o = self.name_off();
@@ -285,16 +245,13 @@ impl Index {
         s..s + self.dir_len()[d as usize] as usize
     }
 
-    /// Dir ids of `k`'s strict descendants: one contiguous range, since dir
-    /// ids follow entry order and a subtree's entries are contiguous.
+    /// Dir ids of `k`'s strict descendants, one contiguous range.
     pub fn descendants(&self, k: u32) -> std::ops::Range<u32> {
         let de = self.dir_entry();
         let (s, e) = (self.dir_start()[k as usize], self.dir_end()[k as usize]);
         de.partition_point(|&x| x < s) as u32..de.partition_point(|&x| x < e) as u32
     }
 
-    /// Split the dir tree for parallel top-down folding: subtrees of at most
-    /// ~4k dirs become chunks; the children of bigger dirs go in `upper`.
     pub fn memo_plan(&self) -> &MemoPlan {
         self.plan.get_or_init(|| {
             const CHUNK: u32 = 4096;
@@ -302,7 +259,6 @@ impl Index {
             let mut p = MemoPlan { upper: Vec::new(), chunks: Vec::new() };
             let mut big = vec![0u32];
             while let Some(k) = big.pop() {
-                // k's child dirs: the dirs whose entry is in k's children block.
                 let (s, l) = (self.dir_start()[k as usize], self.dir_len()[k as usize]);
                 let kids = de.partition_point(|&x| x < s) as u32..de.partition_point(|&x| x < s + l) as u32;
                 for c in kids {
@@ -320,8 +276,7 @@ impl Index {
         })
     }
 
-    /// Entries that are mount points or hard links, ascending: rare enough
-    /// that a folder's totals visit the ones inside it one by one.
+    /// Entries that are mount points or hard links, ascending.
     pub fn marked(&self) -> &[u32] {
         self.marked.get_or_init(|| (0..self.n as u32).filter(|&i| self.kind()[i as usize] & (FLAG_MOUNT | FLAG_HARDLINK) != 0).collect())
     }
@@ -332,8 +287,6 @@ impl Index {
             out.push(b'/');
             return;
         }
-        // The entries from i up: the walk goes folder to parent folder (one
-        // dependent load a level); their entries and names load alongside.
         let (de, dp) = (self.dir_entry(), self.dir_parent());
         let mut chain = [0u32; 256];
         chain[0] = i as u32;
@@ -349,7 +302,6 @@ impl Index {
         }
     }
 
-    /// Resolve an absolute path to its entry.
     pub fn lookup(&self, path: &[u8]) -> Option<u32> {
         let mut e = 0u32;
         for comp in path.split(|&b| b == b'/').filter(|c| !c.is_empty()) {
@@ -369,8 +321,7 @@ impl Index {
         Some(e)
     }
 
-    /// Lay listings out as blocks in DFS order and compute everything derived.
-    /// Listing id 0 is the root ("/").
+    /// Lay listings out as blocks in DFS order; listing id 0 is the root.
     pub fn build(mut ls: Vec<Listing>, event_id: u64, synced_at: u32, home: &[u8]) -> Index {
         ls.par_iter_mut().for_each(|l| {
             let names = &l.names;
@@ -386,8 +337,6 @@ impl Index {
         let n_max = 1 + ls.iter().map(|l| l.ents.len()).sum::<usize>();
         let names_max: usize = ls.iter().map(|l| l.names.len()).sum();
 
-        // Pass 1: DFS layout into plain vectors (sizes are only upper bounds
-        // until unreachable listings are known).
         let mut name_off = vec![0u32; n_max];
         let mut name_len = vec![0u16; n_max];
         let mut kind = vec![0u8; n_max];
@@ -414,7 +363,7 @@ impl Index {
                 size[pos] = pack(r.size, 1, &mut big);
                 alloc[pos] = pack(r.alloc, ALLOC_UNIT, &mut big);
                 mtime[pos] = r.mtime;
-                parent[pos] = e; // entry index for now, converted below
+                parent[pos] = e;
                 if let Some(&li) = by_id.get(r.child as usize).filter(|&&li| li != NONE) {
                     kids.push((pos as u32, li));
                 }
@@ -435,7 +384,6 @@ impl Index {
         parent[0] = 0;
         drop(dir_of);
 
-        // Intern names in entry order.
         let mut ids: HashMap<&[u8], u32, Fx> = HashMap::with_capacity_and_hasher(n / 3, Fx);
         let mut ent_name = vec![0u32; n];
         let mut uoff = vec![0u32];
@@ -453,8 +401,6 @@ impl Index {
         let u = ids.len();
         drop(ids);
         let words = u.div_ceil(64);
-        // Each 64-name block's word of every bitmap, then transposed so each
-        // bitmap is contiguous.
         let mut by_block = vec![0u64; words * NBITMAPS];
         by_block.par_chunks_mut(NBITMAPS).enumerate().for_each(|(w, out)| {
             for k in w * 64..(w * 64 + 64).min(u) {
@@ -470,7 +416,6 @@ impl Index {
             }
         });
         drop(by_block);
-        // Entries grouped by name (counting sort keeps them ascending).
         let mut ne_off = vec![0u32; u + 1];
         for &id in &ent_name {
             ne_off[id as usize + 1] += 1;
@@ -486,8 +431,6 @@ impl Index {
         }
         drop(fill);
 
-        // Subtree end and totals: own block, folded upward (children have
-        // larger ids).
         let dir_entry: Vec<u32> = blocks.iter().map(|b| b.0).collect();
         let mut end: Vec<u32> = blocks.iter().map(|b| b.1 + b.2).collect();
         let own = |v: &[u32], unit| -> Vec<u64> {
@@ -503,8 +446,7 @@ impl Index {
         let comps: Vec<&[u8]> = home.split(|&b| b == b'/').filter(|c| !c.is_empty()).collect();
         let mut prior = vec![0i8; d];
         let mut depth = vec![0u8; d];
-        // How many leading components of `home` this dir's path matches;
-        // u8::MAX once it diverges.
+        // Leading components of `home` this dir's path matches; u8::MAX once it diverges.
         let mut hm = vec![0u8; d];
         for k in 1..d {
             let e = dir_entry[k] as usize;
@@ -523,8 +465,6 @@ impl Index {
         }
         drop((names, name_off, name_len));
 
-        // Write the blob, freeing each array once its last reader is done:
-        // the build's peak is here, the blob beside the arrays it copies.
         let (off, total) = layout(&section_lens(n, d, u, unames.len(), big.len()));
         let mut m = MmapMut::map_anon(total).expect("anon map");
         let mut put = |s: Sec, v: &[u8]| m[off[s as usize]..][..v.len()].copy_from_slice(v);
@@ -552,8 +492,6 @@ impl Index {
         put(Sec::DirBytes, as_bytes(&bytes));
         put(Sec::DirAlloc, as_bytes(&allocated));
         drop((bytes, allocated));
-        // Each name's entries best location prior first (then ascending): a
-        // search visiting them can stop at the first that cannot make it.
         ne.par_sort_unstable_by_key(|&e| (ent_name[e as usize], std::cmp::Reverse(prior[parent[e as usize] as usize]), e));
         put(Sec::NameEntsOff, as_bytes(&ne_off));
         put(Sec::NameEnts, as_bytes(&ne));
@@ -604,7 +542,7 @@ impl Index {
         })
     }
 
-    /// Write atomically (tmp + rename), stamping the current event id.
+    /// Write atomically (tmp + rename).
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let tmp = path.with_extension("tmp");
         let mut f = std::fs::File::create(&tmp)?;
@@ -634,8 +572,7 @@ impl Index {
         self.map.len()
     }
 
-    /// Fault in the arrays every query scans so the first one is fast; the
-    /// rest (sizes, mtimes, dir tables) page in on demand.
+    /// Fault in the arrays every query scans.
     pub fn prefault(&self) {
         let mut sum = 0u8;
         for s in [Sec::NameBits, Sec::NameOff, Sec::Names, Sec::EntName, Sec::Kind, Sec::Parent] {
@@ -646,8 +583,6 @@ impl Index {
             }
         }
         std::hint::black_box(sum);
-        // Built here rather than by the first search that needs them (~5
-        // ms each), which after a compaction would be the next keystroke.
         self.class_counts();
         self.top_prior();
         self.by_key();
@@ -655,8 +590,7 @@ impl Index {
     }
 }
 
-/// Section files (this index, content segments): a 4 KiB header (magic,
-/// then u64 fields), then the sections, each 64-byte aligned.
+/// Section files: a 4 KiB header (magic, then little-endian u64 fields), then 64-byte-aligned sections.
 pub(crate) const HDR: usize = 4096;
 
 pub(crate) fn header(magic: &[u8; 8], fields: &[u64]) -> Vec<u8> {
@@ -688,8 +622,6 @@ pub(crate) fn as_bytes<T: Copy>(v: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v)) }
 }
 
-/// A name's extension (the bytes after its last dot) as `[len, bytes..]`,
-/// lowercased; None if it has no dot or a longer extension.
 fn ext_key(name: &[u8]) -> Option<[u8; 16]> {
     let dot = name.iter().rposition(|&b| b == b'.')?;
     let e = &name[dot + 1..];
@@ -704,8 +636,7 @@ fn ext_key(name: &[u8]) -> Option<[u8; 16]> {
     Some(key)
 }
 
-/// The table of the 254 most common extensions among `names` (each at
-/// most 15 bytes) and each name's slot in it (see `Index::name_ext`).
+/// The table of the most common extensions among `names`, and each name's slot in it.
 pub(crate) fn ext_slots(names: &[u8], off: &[u32]) -> (Vec<[u8; 16]>, Vec<u8>) {
     let name = |k: usize| &names[off[k] as usize..off[k + 1] as usize];
     let count = (0..off.len() - 1)
@@ -745,7 +676,6 @@ pub(crate) fn ext_slots(names: &[u8], off: &[u32]) -> (Vec<[u8; 16]>, Vec<u8>) {
 }
 
 impl NameInfo {
-    /// The info of a name whose folders' best location prior is `prior`.
     pub fn of(name: &[u8], prior: i8) -> NameInfo {
         let off = (name.len() > 1 && name[0] == b'.') as usize;
         let stem = name.iter().rposition(|&b| b == b'.').filter(|&p| p > off).unwrap_or(name.len());
@@ -773,13 +703,10 @@ fn section_lens(n: usize, d: usize, u: usize, names_len: usize, big: usize) -> [
 /// Entries per `Zone`.
 pub const ZONE: usize = 1024;
 
-/// A run of ZONE entries at a glance: entries matching a size, mtime or
-/// kind filter cluster (a folder's big files, the recently modified), so
-/// a pass over every entry skips most runs whole.
+/// What a filter on size, mtime or kind can skip in a run of `ZONE` entries.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct Zone {
-    /// Largest size.
     pub max_size: u64,
     pub min_mtime: u32,
     pub max_mtime: u32,
@@ -801,12 +728,11 @@ pub(crate) fn zones(kind: &[u8], size: &[u32], big: &[u64], mtime: &[u32]) -> Ve
         .collect()
 }
 
-/// Marks a 4-byte size that is an index into `big` rather than the size.
+/// Marks a packed size that is an index into `big`.
 const BIG: u32 = 1 << 31;
 const ALLOC_UNIT: u64 = 4096;
 
-/// A size in 4 bytes, exact: in `unit`s when it fits, else the index of the
-/// whole value appended to `big`.
+/// A size in 4 bytes, exact: in `unit`s when it fits, else an index into `big`.
 fn pack(v: u64, unit: u64, big: &mut Vec<u64>) -> u32 {
     if v.is_multiple_of(unit) && v / unit < BIG as u64 {
         return (v / unit) as u32;
@@ -819,7 +745,6 @@ fn unpack(v: u32, unit: u64, big: &[u64]) -> u64 {
     if v & BIG == 0 { v as u64 * unit } else { big[(v & !BIG) as usize] }
 }
 
-/// FxHash: interning 7.5M names wants a hasher cheaper than SipHash.
 #[derive(Clone, Copy, Default)]
 pub struct Fx;
 pub struct FxH(u64);
@@ -842,24 +767,19 @@ impl std::hash::Hasher for FxH {
     }
 }
 
-/// Which character classes a name contains. A query token can only match a
-/// name whose mask is a superset of the token's mask, which rejects most of
-/// the disk with one AND per entry.
+/// Which character classes a name contains; a token matches only names whose mask is a superset of its own.
 pub fn char_mask(s: &[u8]) -> u64 {
     s.iter().fold(0, |m, &b| m | char_bit(b))
 }
 
-/// A name's mask: `char_mask`, plus in the spare high bits a hash of the
-/// first byte of the name (past a leading dot) and of each space-separated
-/// word: where a typo match may start (`query::typo_score`), so a search
-/// rejects every other name without reading it.
+/// `char_mask`, plus in the high bits a hash of the first byte of the name (past a leading dot) and of each word.
 pub fn name_mask(s: &[u8]) -> u64 {
     let off = (s.len() > 1 && s[0] == b'.') as usize;
     let starts = s.get(off).into_iter().chain(s.windows(2).filter(|w| w[0] == b' ').map(|w| &w[1]));
     starts.fold(char_mask(s), |m, &b| m | start_bit(b))
 }
 
-/// The `name_mask` bit for a word starting with `b` (bits 41..64).
+/// The `name_mask` bit for a word starting with `b`.
 #[inline]
 pub fn start_bit(b: u8) -> u64 {
     1 << (CLASSES + start_hash(b))
@@ -870,25 +790,18 @@ pub fn start_hash(b: u8) -> usize {
     (b.to_ascii_lowercase() % 23) as usize
 }
 
-/// Char classes (`char_bit`).
 pub const CLASSES: usize = 41;
-/// Name bitmaps, per char class: names with that class in their first half
-/// (`BM_FIRST + class`), in their second half (`BM_SECOND + class`). A
-/// query's chars must appear in order, so a name can only match if some
-/// prefix of the query fits its first half and the rest its second half.
+/// Per char class: names with it in their first half (`BM_FIRST`) or their second half (`BM_SECOND`).
 pub const BM_FIRST: usize = 0;
 pub const BM_SECOND: usize = CLASSES;
 /// Names with a word starting with a letter of this `start_bit` hash.
 pub const BM_START: usize = 2 * CLASSES;
-/// Names starting with a dot; names ending in ".app".
 pub const BM_DOT: usize = BM_START + 23;
 pub const BM_APP: usize = BM_DOT + 1;
-/// Names with this char class at least twice: a token with a class twice
-/// can only match those (with a typo, it may lose one).
+/// Names with this char class at least twice.
 pub const BM_DOUBLE: usize = BM_APP + 1;
 pub const NBITMAPS: usize = BM_DOUBLE + CLASSES;
 
-/// The bitmaps (see `BM_FIRST` and on) a name is in.
 fn name_bitmaps(s: &[u8]) -> impl Iterator<Item = usize> {
     let (a, b) = s.split_at(s.len() / 2);
     let class = |m: u64, base: usize| (0..CLASSES).filter(move |c| m & (1 << c) != 0).map(move |c| base + c);
@@ -931,7 +844,6 @@ const BUNDLE_EXTS: &[&[u8]] = &[
     b".musiclibrary", b".tvlibrary", b".imovielibrary", b".dSYM", b".xcarchive", b".sdk", b".platform",
 ];
 
-/// How much a directory's name moves everything under it in ranking.
 fn prior_adjust(name: &[u8], depth: u8) -> i32 {
     if depth == 1 {
         return match name {

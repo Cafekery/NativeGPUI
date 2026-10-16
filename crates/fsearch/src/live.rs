@@ -1,10 +1,4 @@
-//! The index as it is right now: the immutable base, a bitset of base
-//! entries that are gone, and a small overlay of entries added since.
-//!
-//! Every FSEvents directory event is handled the same way: list that one
-//! directory and diff it against what we have. The diff is idempotent, so
-//! replaying history, duplicate events, and events that race a compaction
-//! are all harmless.
+//! The index as it is now: the immutable base, a bitset of dead base entries, and an overlay of entries added since.
 
 use crate::index::Index;
 use crate::walk::{self, FLAG_HARDLINK, FLAG_HIDDEN, FLAG_MOUNT, KIND_DIR, Listing, NONE, RawEnt};
@@ -20,12 +14,10 @@ pub struct OEnt {
     /// Bytes allocated on disk.
     pub alloc: u64,
     pub mtime: u32,
-    /// `index::name_mask` of the entry's name, so a search rejects most of
-    /// the overlay with one AND.
+    /// `index::name_mask` of the entry's name.
     pub mask: u64,
-    /// Location prior of the nearest folder the base knows (set on insert).
+    /// Location prior of the nearest folder the base knows.
     pub prior: i8,
-    /// Its slot in `Live::flat` (set on insert).
     slot: u32,
 }
 
@@ -37,10 +29,7 @@ impl OEnt {
     }
 }
 
-/// The overlay laid out for searches: every entry's name mask in one array
-/// to scan (walking the map cost ~7 ns an entry, 0.35 ms a search at 50k
-/// entries), its path and value in the same slot. A removed entry's slot
-/// is reused; until then its mask is 0, which no name has.
+/// The overlay laid out for searches; a free slot's mask is 0, which no name has.
 #[derive(Default)]
 pub struct Flat {
     pub masks: Vec<u64>,
@@ -74,21 +63,16 @@ pub struct Live {
     dead: Vec<u64>,
     pub dead_count: usize,
     pub over: BTreeMap<Vec<u8>, OEnt>,
-    /// `over` laid out for searches.
     pub flat: Flat,
     /// Last FSEvents id fully applied.
     pub event_id: u64,
-    /// Paths of directories added or removed since last drained; the
-    /// content index re-syncs these whole subtrees.
+    /// Directories added or removed since last drained, for the content index to re-sync.
     pub trees: Vec<Vec<u8>>,
-    /// The last name search's scored names, reused while you type.
+    /// The last name search's scored names.
     pub names_cache: crate::query::NameCache,
     /// Wall-clock second up to which every change is known applied.
     pub synced_at: u32,
-    /// Overlay folder -> prior of its nearest base folder.
     priors: HashMap<Vec<u8>, i8>,
-    /// Base folders whose own entry (kind flags, mtime) changed since the
-    /// base was built: a folder stays in place while its contents change.
     dirs: HashMap<u32, (u8, u32)>,
 }
 
@@ -104,25 +88,22 @@ pub struct Fetched {
 
 pub enum Applied {
     Done,
-    /// The whole disk needs rescanning (history lost at the root).
+    /// The whole disk needs rescanning.
     Rebuild,
 }
 
 /// What a folder holds, as the index has it now.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Totals {
-    /// Logical bytes of everything below it (folders count 0).
+    /// Logical bytes of everything below it.
     pub bytes: u64,
-    /// Bytes allocated on disk for them.
     pub allocated: u64,
-    /// Entries below it, at any depth.
     pub items: u64,
     /// Its children that are neither dot-named nor hidden.
     pub visible: u64,
-    /// Entries below it with another hard link; each link counts above.
+    /// Entries below it with another hard link; each link counts in the totals.
     pub hardlinks: u64,
-    /// Folders below it the index never lists (skipped, or other volumes):
-    /// nothing inside them counts above.
+    /// Folders below it the index never lists; nothing inside them counts.
     pub unindexed: Vec<PathBuf>,
 }
 
@@ -147,7 +128,6 @@ impl Live {
         }
     }
 
-    /// Put an entry in the overlay, stamping the prior it ranks with.
     fn put(&mut self, path: Vec<u8>, mut e: OEnt) {
         let cut = path.iter().rposition(|&b| b == b'/').unwrap_or(0);
         e.prior = match self.priors.get(&path[..cut]) {
@@ -197,7 +177,6 @@ impl Live {
         self.dirs.get(&i).map_or(self.base.mtime()[i as usize], |d| d.1)
     }
 
-    /// Record a base folder's own entry as it is now.
     fn redate(&mut self, i: u32, kind: u8, mtime: u32) {
         if (kind, mtime) == (self.base.kind()[i as usize], self.base.mtime()[i as usize]) {
             self.dirs.remove(&i);
@@ -229,7 +208,6 @@ impl Live {
         }
     }
 
-    /// Alive base entry for a path, if the base has one.
     fn base_alive(&self, path: &[u8]) -> Option<u32> {
         self.base.lookup(path).filter(|&e| !self.is_dead(e))
     }
@@ -242,20 +220,16 @@ impl Live {
         self.drop_over_subtree(path);
     }
 
-    /// Bring one directory (or, with `recursive`, its whole subtree) in line
-    /// with the disk.
+    /// Bring one directory (or, with `recursive`, its whole subtree) in line with the disk.
     pub fn apply_dir(&mut self, path: &[u8], recursive: bool) -> Applied {
         let f = self.fetch(path, recursive);
         self.apply(f)
     }
 
-    /// The disk half of `apply_dir`: list the folder (or stat it) and scan
-    /// any folder that will be new to the index. Needs only `&self`, so the
-    /// caller does this under a read lock and searches keep answering.
+    /// The disk half of `apply_dir`, which needs only `&self`.
     pub fn fetch(&self, path: &[u8], recursive: bool) -> Fetched {
         let p = normalize(path);
         let mut f = Fetched { path: p, recursive, blocked: false, attrs: None, listing: None, scans: HashMap::new() };
-        // Not even an lstat inside folders we may not touch.
         if walk::blocked(&f.path) {
             f.blocked = true;
             return f;
@@ -271,7 +245,6 @@ impl Live {
         }
         f.attrs = lstat(&f.path);
         let Some(listing) = walk::list_one(&f.path) else { return f };
-        // Children that will be added as folders get their subtree scanned now.
         let cur = self.current_children(&f.path);
         for r in &listing.ents {
             if r.kind & 3 != KIND_DIR || r.kind & FLAG_MOUNT != 0 {
@@ -293,8 +266,6 @@ impl Live {
         f
     }
 
-    /// Children the index holds for `p`: name -> base entry, or None for an
-    /// overlay entry.
     fn current_children(&self, p: &[u8]) -> HashMap<Vec<u8>, Option<u32>> {
         let mut cur: HashMap<Vec<u8>, Option<u32>> = HashMap::new();
         if let Some(d) = self.base_alive(p).and_then(|e| self.base.dir_of(e)) {
@@ -392,8 +363,7 @@ impl Live {
                 }
             }
         }
-        // The folder's own entry: what it holds moves its date, and FSEvents
-        // names only the folder, not its parent.
+        // FSEvents names only the folder, not its parent, so the folder's own entry is updated here.
         if let Some(a) = f.attrs {
             let hidden = |kind: u8| (kind & !FLAG_HIDDEN) | (a.kind & FLAG_HIDDEN);
             match self.base_alive(&p) {
@@ -408,8 +378,6 @@ impl Live {
         Applied::Done
     }
 
-    /// Add an entry and, if it is a directory, its subtree (`scan`, read
-    /// ahead by `fetch`; scanned here if missing).
     fn add_new(&mut self, path: Vec<u8>, e: OEnt, scan: Option<Vec<Listing>>) {
         let is_dir = e.kind & 3 == KIND_DIR && e.kind & FLAG_MOUNT == 0;
         self.put(path.clone(), e);
@@ -424,11 +392,7 @@ impl Live {
         });
     }
 
-    /// Folders whose listing may have changed since `since` (a wall-clock
-    /// second): adding, removing or renaming an entry bumps its folder's
-    /// mtime. One lstat per folder, in parallel, under a read lock;
-    /// relisting the few that changed is `apply_dir`'s job. This is how lost
-    /// FSEvents history is recovered without crawling the whole disk.
+    /// Folders whose mtime is at least `since`: adding, removing or renaming an entry bumps its folder's mtime.
     pub fn changed_dirs(&self, since: u32) -> Vec<Vec<u8>> {
         use rayon::prelude::*;
         let idx = &self.base;
@@ -455,7 +419,7 @@ impl Live {
         out
     }
 
-    /// Everything alive, as listings for Index::build.
+    /// Everything alive, as listings for `Index::build`.
     pub fn to_listings(&self) -> Vec<Listing> {
         let mut by_parent: HashMap<&[u8], Vec<(&[u8], OEnt)>> = HashMap::new();
         for (k, v) in &self.over {
@@ -464,7 +428,6 @@ impl Live {
             by_parent.entry(parent).or_default().push((&k[cut + 1..], *v));
         }
         let mut out = Vec::new();
-        // (base dir id if alive in base, path, listing id)
         let mut stack: Vec<(Option<u32>, Vec<u8>, u32)> = vec![(Some(0), b"/".to_vec(), 0)];
         let mut next = 1u32;
         while let Some((bd, path, id)) = stack.pop() {
@@ -505,8 +468,6 @@ impl Live {
         out
     }
 
-    /// A folder the index lists: Some(its base dir id), or Some(None) if
-    /// only the overlay holds it. Paths are absolute: "" would be the root.
     fn folder(&self, p: &[u8]) -> Option<Option<u32>> {
         if !p.starts_with(b"/") {
             return None;
@@ -518,7 +479,6 @@ impl Live {
         (o.kind & 3 == KIND_DIR && o.kind & FLAG_MOUNT == 0 && !walk::blocked(p)).then_some(None)
     }
 
-    /// Whether the index lists `path` as a folder.
     pub fn lists(&self, path: &[u8]) -> bool {
         self.folder(&normalize(path)).is_some()
     }
@@ -530,7 +490,6 @@ impl Live {
         Some(self.total(&p, k))
     }
 
-    /// The totals of each folder directly in `dir` that the index lists.
     pub fn folder_totals(&self, dir: &[u8]) -> Option<Vec<(Vec<u8>, Totals)>> {
         let p = normalize(dir);
         let k = self.folder(&p)?;
@@ -550,8 +509,6 @@ impl Live {
         Some(out)
     }
 
-    /// Base dir `k`'s totals as built, less what died since; then the
-    /// overlay below `p`.
     fn total(&self, p: &[u8], k: Option<u32>) -> Totals {
         let mut t = Totals::default();
         if let Some(k) = k {
@@ -595,7 +552,6 @@ impl Live {
         t
     }
 
-    /// Dead base entries in `s..e`, a bitset word at a time.
     fn each_dead(&self, s: u32, e: u32, mut f: impl FnMut(usize)) {
         if self.dead_count == 0 {
             return;
@@ -618,13 +574,11 @@ impl Live {
         }
     }
 
-    /// Marked base entries (see `Index::marked`) in `s..e`, dead or alive.
     fn marked_in(&self, s: u32, e: u32) -> &[u32] {
         let m = self.base.marked();
         &m[m.partition_point(|&i| i < s)..m.partition_point(|&i| i < e)]
     }
 
-    /// Paths of the hard-linked entries below the folder at `path`.
     pub fn hardlinks(&self, path: &[u8]) -> Vec<Vec<u8>> {
         let p = normalize(path);
         let Some(k) = self.folder(&p) else { return Vec::new() };
@@ -644,8 +598,7 @@ impl Live {
         out
     }
 
-    /// What the index holds directly in the folder `dir`: (path, kind, size,
-    /// mtime) each.
+    /// What the index holds directly in `dir`: (path, kind, size, mtime) each.
     #[allow(clippy::type_complexity)]
     pub fn children(&self, dir: &[u8]) -> Option<Vec<(Vec<u8>, u8, u64, u32)>> {
         let p = normalize(dir);
@@ -700,12 +653,10 @@ impl Live {
     }
 }
 
-/// Threads for bulk lstat: path lookups scale further than opens do.
 pub fn stat_pool() -> rayon::ThreadPool {
     rayon::ThreadPoolBuilder::new().num_threads(12).start_handler(|_| crate::no_materialize()).build().unwrap()
 }
 
-/// Visit every entry of a scan with its full path.
 pub fn for_each_path(ls: &[Listing], root: &[u8], mut f: impl FnMut(Vec<u8>, &RawEnt)) {
     let mut by_id: HashMap<u32, &Listing> = HashMap::with_capacity(ls.len());
     for l in ls {
@@ -742,7 +693,6 @@ pub fn join(dir: &[u8], name: &[u8]) -> Vec<u8> {
     p
 }
 
-/// Key range holding everything strictly under `path`.
 fn subtree_bounds(path: &[u8]) -> (Vec<u8>, Vec<u8>) {
     let lo = join(path, b"");
     let mut hi = lo.clone();
@@ -750,7 +700,7 @@ fn subtree_bounds(path: &[u8]) -> (Vec<u8>, Vec<u8>) {
     (lo, hi)
 }
 
-/// Not dot-named and not hidden: how the Finder decides what a folder shows.
+/// The Finder shows what is neither dot-named nor hidden.
 fn shown(name: &[u8], kind: u8) -> bool {
     !name.starts_with(b".") && kind & FLAG_HIDDEN == 0
 }
@@ -810,8 +760,6 @@ mod tests {
         assert_eq!(unsafe { libc::chflags(c.as_ptr(), libc::UF_HIDDEN) }, 0);
     }
 
-    /// The tree at `root`, under its real path: each folder above it holds
-    /// just the entry leading down.
     fn live_of(root: &Path) -> Live {
         let comps: Vec<&[u8]> = bytes(root).split(|&b| b == b'/').filter(|c| !c.is_empty()).collect();
         let above = comps.len() as u32;
@@ -829,7 +777,6 @@ mod tests {
         Live::new(Index::build(ls, 0, 0, b""))
     }
 
-    /// What lstat finds below `dir`, counted the way `Live::totals` counts.
     fn weighed(dir: &Path, skip: &[PathBuf]) -> Totals {
         let mut t = Totals::default();
         let mut pending = vec![dir.to_path_buf()];
@@ -842,10 +789,12 @@ mod tests {
                 t.allocated += m.blocks() * 512;
                 t.hardlinks += (m.nlink() > 1 && !m.is_dir()) as u64;
                 t.visible += (d == dir && !name.starts_with(b".") && m.st_flags() & libc::UF_HIDDEN == 0) as u64;
-                match m.is_dir() {
-                    true if skip.contains(&path) => t.unindexed.push(path),
-                    true => pending.push(path),
-                    false => t.bytes += m.len(),
+                if !m.is_dir() {
+                    t.bytes += m.len();
+                } else if skip.contains(&path) {
+                    t.unindexed.push(path);
+                } else {
+                    pending.push(path);
                 }
             }
         }
@@ -859,7 +808,6 @@ mod tests {
         write(&root.join(".dot"), 10);
         write(&root.join("shy.txt"), 20);
         hide(&root.join("shy.txt"));
-        // Past what 4 bytes hold exactly; sparse, so it costs no disk.
         let big = root.join("sub/big.bin");
         fs::create_dir_all(big.parent().unwrap()).unwrap();
         fs::File::create(&big).unwrap().set_len((3 << 30) + 12345).unwrap();
