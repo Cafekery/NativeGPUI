@@ -27,6 +27,7 @@ Each probe is an example under `examples/` with its verdict and exit code in the
 | script | use |
 |---|---|
 | `bundle.sh <example> [features]` | builds a signed `.app` in `dist/`. A bare Cargo binary is never made key by `activate`, so anything about focus, key equivalents or the menu bar runs from a bundle: `open -n dist/Storybook.app` |
+| `release.sh` | bundles Found'er with its third-party notices and zips it into `dist/Found'er-<version>.zip` with a `.sha256`, the two files a GitHub release carries |
 | `winlist.sh [pid]` | the window server's view of what is on screen: number, owner pid, layer, geometry, owner, title. The only reliable "is it really up / really gone" |
 | `lockguard.sh` | exits 90 if the display is locked or asleep. Run it before and after anything that produces a number; a 90 voids the numbers |
 | `keys.sh` | the keyboard suite: real keystrokes through System Events into a bundled window, results read back from AppKit |

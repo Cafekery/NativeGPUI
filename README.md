@@ -11,6 +11,18 @@ Found'er is free and open source under the MIT license.
 
 ## Install
 
+### Download
+
+Each release on the [Releases page](https://github.com/Cafekery/NativeGPUI/releases) carries `Found'er-<version>.zip` and its `.sha256`. Unzip it and follow the steps below.
+
+Found'er is not notarized by Apple, so macOS will not open a downloaded copy the first time.
+
+1. Move Found'er.app to your Applications folder before you open it. Opened straight from Downloads, macOS runs it from a hidden read-only location, and the default file browser item stays disabled.
+2. Open it. macOS says Apple could not verify it. Click Done.
+3. Open System Settings → Privacy & Security. Under Security, click Open Anyway next to the message about Found'er, and confirm.
+
+Only do this for a copy from someone you trust.
+
 ### Build from source
 
 You need Rust (rustc 1.97 or later), Xcode for the app icon, and cargo-about for the third-party notices.
@@ -25,16 +37,6 @@ cargo install cargo-about --locked --features cli
 This builds `dist/Found'er.app`. Drag it into your Applications folder, then open it from there.
 
 `bundle.sh` signs the app with your Developer ID or Apple Development certificate if you have one. If not, it creates a self-signed "NativeGPUI Dev" certificate in `~/Library/Keychains/nativegpui-dev.keychain-db` and signs with that, so the permissions you grant survive a rebuild.
-
-### A copy someone else built
-
-Found'er is not notarized by Apple, so macOS will not open a downloaded copy the first time.
-
-1. Move Found'er.app to your Applications folder before you open it. Opened straight from Downloads, macOS runs it from a hidden read-only location, and the default file browser item stays disabled.
-2. Open it. macOS says Apple could not verify it. Click Done.
-3. Open System Settings → Privacy & Security. Under Security, click Open Anyway next to the message about Found'er, and confirm.
-
-Only do this for a copy from someone you trust.
 
 ## First launch
 
