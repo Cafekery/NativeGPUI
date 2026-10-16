@@ -7,7 +7,7 @@ use crate::args::Args;
 use crate::out::{self, Out};
 use crate::{OK, Stop};
 
-const APP_ID: &str = "dev.cafekery.nativegpui.finder_demo";
+const APP_ID: &str = "dev.cafekery.founder";
 const APP: &str = "/Applications/Found'er.app";
 
 /// Whether Found'er stands in for Finder as the app that reveals and opens folders.

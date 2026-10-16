@@ -159,7 +159,7 @@ fn home() -> PathBuf {
 }
 
 pub(crate) fn store() -> PathBuf {
-    let store = home().join("Library/Application Support/FinderDemo");
+    let store = home().join("Library/Application Support/Founder");
     std::fs::create_dir_all(&store).ok();
     store
 }

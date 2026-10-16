@@ -50,7 +50,7 @@ Allow the ones you want Found'er to show. Found'er works without the rest.
 
 ### The search index
 
-On launch Found'er indexes the names of the files on your startup disk, so searches and folder sizes come back at once. The index lives in `~/Library/Application Support/FinderDemo/fsearch` and takes several hundred MB: about 700–800 MB on a full disk. The first launch builds it in the background, and search answers once it's done. Later launches load it and catch up on what changed while Found'er was closed.
+On launch Found'er indexes the names of the files on your startup disk, so searches and folder sizes come back at once. The index lives in `~/Library/Application Support/Founder/fsearch` and takes several hundred MB: about 700–800 MB on a full disk. The first launch builds it in the background, and search answers once it's done. Later launches load it and catch up on what changed while Found'er was closed.
 
 The index skips the folders that would raise a privacy prompt: Desktop, Documents, Downloads, iCloud Drive and other cloud folders, other apps' containers, the Photos library, and other disks. Search results also leave out anything inside your Desktop, Documents, Downloads, Pictures, Music, Movies and Library folders.
 
@@ -62,9 +62,9 @@ To grant it, open System Settings → Privacy & Security → Full Disk Access, t
 
 ## Default file browser
 
-Found'er menu → Use Found'er as Default File Browser sets the system's `NSFileViewer` default to Found'er's bundle id, `dev.cafekery.nativegpui.finder_demo`. Other apps' Show in Finder then opens Found'er. macOS keeps Finder as the app that opens folders; `NSFileViewer` is the only setting another app can take over.
+Found'er menu → Use Found'er as Default File Browser sets the system's `NSFileViewer` default to Found'er's bundle id, `dev.cafekery.founder`. Other apps' Show in Finder then opens Found'er. macOS keeps Finder as the app that opens folders; `NSFileViewer` is the only setting another app can take over.
 
-Turning it on also installs a small guard, `~/Library/LaunchAgents/dev.cafekery.nativegpui.finder_demo.viewer-guard.plist`. macOS shows a "Background Items Added" notice and lists the guard as "sh", the shell it runs in, under System Settings → General → Login Items & Extensions; leave it allowed. The guard runs at login and once an hour, and within a few seconds of Found'er.app being deleted or moved to the Trash. If Found'er is gone, it puts back the file viewer you had before (or Finder, if that app is gone too) and removes itself. It never touches `NSFileViewer` if it names another app. If you move Found'er, it points the guard at the new place on its next launch.
+Turning it on also installs a small guard, `~/Library/LaunchAgents/dev.cafekery.founder.viewer-guard.plist`. macOS shows a "Background Items Added" notice and lists the guard as "sh", the shell it runs in, under System Settings → General → Login Items & Extensions; leave it allowed. The guard runs at login and once an hour, and within a few seconds of Found'er.app being deleted or moved to the Trash. If Found'er is gone, it puts back the file viewer you had before (or Finder, if that app is gone too) and removes itself. It never touches `NSFileViewer` if it names another app. If you move Found'er, it points the guard at the new place on its next launch.
 
 The item is disabled while Found'er runs from a hidden read-only location (opened from Downloads without being moved). Move it to Applications first.
 
@@ -76,12 +76,12 @@ To undo it by hand, first check that the setting is Found'er's:
 defaults read -g NSFileViewer
 ```
 
-Only if that prints `dev.cafekery.nativegpui.finder_demo`, run:
+Only if that prints `dev.cafekery.founder`, run:
 
 ```sh
 defaults delete -g NSFileViewer
-launchctl bootout gui/$(id -u)/dev.cafekery.nativegpui.finder_demo.viewer-guard
-rm ~/Library/LaunchAgents/dev.cafekery.nativegpui.finder_demo.viewer-guard.plist
+launchctl bootout gui/$(id -u)/dev.cafekery.founder.viewer-guard
+rm ~/Library/LaunchAgents/dev.cafekery.founder.viewer-guard.plist
 ```
 
 ## Uninstall
@@ -92,18 +92,18 @@ rm ~/Library/LaunchAgents/dev.cafekery.nativegpui.finder_demo.viewer-guard.plist
 4. Remove what it left behind:
 
 ```sh
-rm -rf ~/Library/Application\ Support/FinderDemo
-defaults delete dev.cafekery.nativegpui.finder_demo
-tccutil reset All dev.cafekery.nativegpui.finder_demo
+rm -rf ~/Library/Application\ Support/Founder
+defaults delete dev.cafekery.founder
+tccutil reset All dev.cafekery.founder
 ```
 
 These are every file and setting Found'er keeps:
 
 | what | where |
 |---|---|
-| search index, file kinds, network servers it has seen, sidebar items | `~/Library/Application Support/FinderDemo` |
-| settings, view options, windows kept across quits | `~/Library/Preferences/dev.cafekery.nativegpui.finder_demo.plist` (remove it with `defaults delete`, not `rm`, so macOS doesn't write it back) |
-| the default file browser guard, if you turned that on | `~/Library/LaunchAgents/dev.cafekery.nativegpui.finder_demo.viewer-guard.plist` |
+| search index, file kinds, network servers it has seen, sidebar items | `~/Library/Application Support/Founder` |
+| settings, view options, windows kept across quits | `~/Library/Preferences/dev.cafekery.founder.plist` (remove it with `defaults delete`, not `rm`, so macOS doesn't write it back) |
+| the default file browser guard, if you turned that on | `~/Library/LaunchAgents/dev.cafekery.founder.viewer-guard.plist` |
 | Full Disk Access and the folder permissions you granted | System Settings → Privacy & Security (`tccutil reset` clears them) |
 | saved searches, only the ones you saved | `~/Library/Saved Searches/*.savedSearch`. Finder reads these too; delete only the ones you don't want |
 

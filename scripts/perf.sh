@@ -70,7 +70,7 @@ wait $cappid; kill "$pid" 2>/dev/null
 probe scroll "$(unique_fps "$cap" 0.9 2.2)" "${FPS_MIN_SCROLL:-100}"
 
 # The demo autosaves its frame, so each resize run would otherwise start 200 pt wider.
-defaults delete dev.cafekery.nativegpui.finder_demo "NSWindow Frame ng.finder.window" >/dev/null 2>&1
+defaults delete dev.cafekery.founder "NSWindow Frame ng.finder.window" >/dev/null 2>&1
 pid=$(launch "$finder" "Found'er") || { echo "no finder window"; exit 1; }
 sleep 1.5; place "Found'er"
 win=$(window_of "$pid"); wid=${win%%	*}; IFS=, read -r wx wy ww wh <<<"${win#*	}"

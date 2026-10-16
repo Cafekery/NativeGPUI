@@ -13,11 +13,17 @@ fi
 cd "$(dirname "$0")/.." || exit 1
 
 title=$(python3 -c "import sys; print(sys.argv[1].replace('_',' ').title().replace(' ',''))" "$name")
-# The bundle id and icon stay keyed to the example name, so grants and defaults outlive a rename.
 product=$title
-[ "$name" = finder_demo ] && product="Found'er"
-app="dist/$product.app"
+icon_name=$title
 bundle_id="dev.cafekery.nativegpui.$name"
+if [ "$name" = finder_demo ]; then
+  product="Found'er"
+  icon_name=Founder
+  bundle_id=dev.cafekery.founder
+fi
+app="dist/$product.app"
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+build_number=$(git rev-list --count HEAD 2>/dev/null || echo 0)
 
 build=(cargo build --release --example "$name")
 [ -n "$features" ] && build+=(--features "$features")
@@ -39,14 +45,14 @@ if [ "$name" = finder_demo ]; then
   fi
 fi
 
-icon="assets/$title.icon"
+icon="assets/$icon_name.icon"
 icon_keys=
 if [ -d "$icon" ]; then
-  if xcrun actool --output-format human-readable-text --app-icon "$title" \
+  if xcrun actool --output-format human-readable-text --app-icon "$icon_name" \
     --output-partial-info-plist "$PWD/$app/Contents/Resources/icon.plist" --target-device mac \
     --minimum-deployment-target 26.0 --platform macosx \
     --compile "$PWD/$app/Contents/Resources" "$PWD/$icon" >/dev/null; then
-    icon_keys=$'\t<key>CFBundleIconFile</key>\t\t<string>'$title$'</string>\n\t<key>CFBundleIconName</key>\t\t<string>'$title'</string>'
+    icon_keys=$'\t<key>CFBundleIconFile</key>\t\t<string>'$icon_name$'</string>\n\t<key>CFBundleIconName</key>\t\t<string>'$icon_name'</string>'
   else
     echo "warning: actool could not compile $icon" >&2
   fi
@@ -88,8 +94,8 @@ $icon_keys
 $doc_keys
 	<key>CFBundleDisplayName</key>		<string>$product</string>
 	<key>CFBundlePackageType</key>		<string>APPL</string>
-	<key>CFBundleShortVersionString</key>	<string>0.1.0</string>
-	<key>CFBundleVersion</key>		<string>1</string>
+	<key>CFBundleShortVersionString</key>	<string>$version</string>
+	<key>CFBundleVersion</key>		<string>$build_number</string>
 	<key>LSMinimumSystemVersion</key>	<string>26.0</string>
 	<key>NSHighResolutionCapable</key>	<true/>
 	<key>NSPrincipalClass</key>		<string>NSApplication</string>
