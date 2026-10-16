@@ -96,9 +96,10 @@ impl Cf {
             return Some(if on { "Yes" } else { "No" }.to_owned());
         }
         if let Some(number) = self.number() {
-            return Some(match number.fract() == 0. {
-                true => format!("{number:.0}"),
-                false => format!("{number:.2}").trim_end_matches('0').to_owned(),
+            return Some(if number.fract() == 0. {
+                format!("{number:.0}")
+            } else {
+                format!("{number:.2}").trim_end_matches('0').to_owned()
             });
         }
         if !self.is(unsafe { CFArrayGetTypeID() }) {

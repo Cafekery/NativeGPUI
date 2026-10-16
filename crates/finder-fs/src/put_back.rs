@@ -30,9 +30,10 @@ pub fn origins(items: &[PathBuf]) -> Vec<Option<PathBuf>> {
 fn trash(folder: &Path) -> Option<(PathBuf, Records)> {
     let records = put_backs(&std::fs::read(folder.join(".DS_Store")).ok()?)?;
     let mount = mount_point(folder)?;
-    let root = match mount == Path::new("/System/Volumes/Data") {
-        true => PathBuf::from("/"),
-        false => mount,
+    let root = if mount == Path::new("/System/Volumes/Data") {
+        PathBuf::from("/")
+    } else {
+        mount
     };
     Some((root, records))
 }

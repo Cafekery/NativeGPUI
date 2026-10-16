@@ -498,7 +498,7 @@ mod tests {
     #[test]
     fn a_computer_opens_its_files_before_its_screen_and_mounts_under_its_own_name() {
         let url = |protocols: &[&str]| {
-            let protocols = protocols.iter().map(|it| it.to_string()).collect();
+            let protocols = protocols.iter().map(ToString::to_string).collect();
             let name = "Alex’s MacBook Air".into();
             Computer {
                 name,

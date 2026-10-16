@@ -733,13 +733,11 @@ impl<'a> Job<'a> {
     }
 
     fn next_free(&self, task: &Task) -> PathBuf {
-        match task.is_root {
-            true => {
-                let item = &self.items[task.root];
-                next_free(&item.source, &item.dest)
-            }
-            false => free_path(&task.dest),
+        if !task.is_root {
+            return free_path(&task.dest);
         }
+        let item = &self.items[task.root];
+        next_free(&item.source, &item.dest)
     }
 
     fn displaced(&self, item: PathBuf, to: &Path) {
@@ -914,9 +912,10 @@ impl<'a> Job<'a> {
                 .lock()
                 .iter()
                 .any(|failure| failure.dest.starts_with(&swap.staged));
-            let swapped = match failed || self.halted() {
-                true => Err(None),
-                false => exchange(&swap.staged, &swap.dest).map_err(Some),
+            let swapped = if failed || self.halted() {
+                Err(None)
+            } else {
+                exchange(&swap.staged, &swap.dest).map_err(Some)
             };
             if let Err(error) = swapped {
                 drop_slot(&swap.staged);
@@ -980,7 +979,7 @@ impl<'a> Job<'a> {
                 })
                 .collect(),
         };
-        let retry = (!again.is_empty()).then(|| Request {
+        let retry = (!again.is_empty()).then_some(Request {
             kind: self.kind,
             items: again,
             conflict: Conflict::Merge,

@@ -342,10 +342,12 @@ fn children(walk: &Walk, source: &Path, dest: &Path, gate: &Arc<Gate>, merging: 
             continue;
         }
         let to = dest.join(&name);
-        let landing = match merging && taken(&to) {
-            false => Landing::Fresh(to),
-            true if meta.is_dir() && real_dir(&to) => Landing::Into(to),
-            true => Landing::Over(to),
+        let landing = if !(merging && taken(&to)) {
+            Landing::Fresh(to)
+        } else if meta.is_dir() && real_dir(&to) {
+            Landing::Into(to)
+        } else {
+            Landing::Over(to)
         };
         place(walk, &from, &meta, landing, gate, merging, false);
     }

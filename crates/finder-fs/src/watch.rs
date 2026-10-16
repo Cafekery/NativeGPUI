@@ -456,7 +456,7 @@ mod tests {
             }
             match rx.recv_timeout(remaining) {
                 Ok(dirs) if dirs.iter().any(|d| d == wanted) => return true,
-                Ok(_) => continue,
+                Ok(_) => {}
                 Err(_) => return false,
             }
         }

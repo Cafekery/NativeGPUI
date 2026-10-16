@@ -10,7 +10,6 @@ use crate::{CANCELLED, OK, Stop, signals};
 
 const READY_POLL: Duration = Duration::from_millis(50);
 
-/// The index folder; one made for this run alone goes away with it.
 struct Index {
     dir: PathBuf,
     temporary: bool,
@@ -96,16 +95,17 @@ pub fn search(mut args: Args, out: &mut Out) -> Result<u8, Stop> {
     }
     let found = engine.search(&query).map_err(Stop::Failed)?;
     for hit in &found {
-        match out.json {
-            true => out.emit(json!({
+        if out.json {
+            out.emit(json!({
                 "event": "found",
                 "path": out::path(&hit.path),
                 "folder": hit.kind & 3 == walk::KIND_DIR,
                 "size": hit.size,
                 "modified": hit.mtime,
                 "score": hit.score,
-            })),
-            false => out.say(&hit.path.to_string_lossy()),
+            }));
+        } else {
+            out.say(&hit.path.to_string_lossy());
         }
     }
     if out.json {
@@ -137,8 +137,8 @@ pub fn totals(mut args: Args, out: &mut Out) -> Result<u8, Stop> {
             ));
             continue;
         };
-        match out.json {
-            true => out.emit(json!({
+        if out.json {
+            out.emit(json!({
                 "event": "totals",
                 "path": out::path(path),
                 "bytes": totals.bytes,
@@ -147,15 +147,16 @@ pub fn totals(mut args: Args, out: &mut Out) -> Result<u8, Stop> {
                 "visible": totals.visible,
                 "hardlinks": totals.hardlinks,
                 "unindexed": totals.unindexed.iter().map(|dir| out::path(dir)).collect::<Vec<_>>(),
-            })),
-            false => out.say(&format!(
+            }));
+        } else {
+            out.say(&format!(
                 "{}: {} items, {} ({} on disk), {} shown",
                 path.display(),
                 totals.items,
                 out::size(totals.bytes),
                 out::size(totals.allocated),
                 totals.visible
-            )),
+            ));
         }
     }
     Ok(match missing {

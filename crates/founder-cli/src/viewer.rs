@@ -25,8 +25,8 @@ pub fn viewer(mut args: Args, out: &mut Out) -> Result<u8, Stop> {
     }
     let status = viewer::status(&id).map_err(failed)?;
     let shown = status.viewer.clone().unwrap_or_else(|| "Finder".into());
-    match out.json {
-        true => out.emit(json!({
+    if out.json {
+        out.emit(json!({
             "event": "viewer",
             "viewer": status.viewer,
             "guard": status.guard.as_ref().map(|guard| json!({
@@ -34,16 +34,15 @@ pub fn viewer(mut args: Args, out: &mut Out) -> Result<u8, Stop> {
                 "previous": guard.previous,
                 "loaded": guard.is_loaded,
             })),
-        })),
-        false => {
-            out.say(&format!("file viewer: {shown}"));
-            if let Some(guard) = &status.guard {
-                out.say(&format!(
-                    "guard: watches {}, restores {}",
-                    guard.bundle.display(),
-                    guard.previous.as_deref().unwrap_or("Finder")
-                ));
-            }
+        }));
+    } else {
+        out.say(&format!("file viewer: {shown}"));
+        if let Some(guard) = &status.guard {
+            out.say(&format!(
+                "guard: watches {}, restores {}",
+                guard.bundle.display(),
+                guard.previous.as_deref().unwrap_or("Finder")
+            ));
         }
     }
     Ok(OK)

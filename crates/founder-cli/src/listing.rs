@@ -73,14 +73,16 @@ pub fn ls(mut args: Args, out: &mut Out) -> Result<u8, Stop> {
     }
     let many = dirs.len() > 1;
     for (at, dir) in dirs.iter().enumerate() {
-        let entries = match list::is_dir(dir) {
-            true => list::list_dir(dir),
-            false => list::entry_at(dir).map(|entry| vec![entry]),
+        let entries = if list::is_dir(dir) {
+            list::list_dir(dir)
+        } else {
+            list::entry_at(dir).map(|entry| vec![entry])
         }
         .map_err(|error| Stop::Refused(format!("{}: {error}", dir.display())))?;
-        let base = match list::is_dir(dir) {
-            true => dir.as_path(),
-            false => dir.parent().unwrap_or(Path::new("/")),
+        let base = if list::is_dir(dir) {
+            dir.as_path()
+        } else {
+            dir.parent().unwrap_or(Path::new("/"))
         };
         let rows: Vec<Row> = (entries.into_iter())
             .filter(|entry| all || !entry.hidden)
@@ -105,17 +107,19 @@ pub fn ls(mut args: Args, out: &mut Out) -> Result<u8, Stop> {
         for &at in &order {
             let row = &rows[at];
             let name = finder_fs::name::display(&row.entry.name).into_owned();
-            match long {
-                false => out.say(&name),
-                true => out.say(&format!(
+            if long {
+                out.say(&format!(
                     "{}  {:>9}  {:<24}  {name}",
                     local_time(row.entry.modified),
-                    match row.entry.kind == EntryKind::Directory && !row.entry.package {
-                        true => "--".into(),
-                        false => out::size(row.entry.size),
+                    if row.entry.kind == EntryKind::Directory && !row.entry.package {
+                        "--".into()
+                    } else {
+                        out::size(row.entry.size)
                     },
                     row.kind.label,
-                )),
+                ));
+            } else {
+                out.say(&name);
             }
         }
     }
@@ -135,9 +139,10 @@ fn ordered(rows: &[Row], key: Key, reverse: bool, folders_first: bool) -> Vec<us
             Key::Added => one.entry.added.cmp(&other.entry.added),
         };
         let order = if reverse { order.reverse() } else { order };
-        match folders_first {
-            true => other.entry.is_dir().cmp(&one.entry.is_dir()).then(order),
-            false => order,
+        if folders_first {
+            other.entry.is_dir().cmp(&one.entry.is_dir()).then(order)
+        } else {
+            order
         }
     };
     sort::order(rows.len(), by, |at| rows[at].entry.name.as_str(), reverse)
@@ -193,9 +198,10 @@ pub fn info(mut args: Args, out: &mut Out) -> Result<u8, Stop> {
                 continue;
             }
         };
-        match out.json {
-            true => out.emit(facts),
-            false => print_facts(&facts, out),
+        if out.json {
+            out.emit(facts);
+        } else {
+            print_facts(&facts, out);
         }
     }
     if code != OK && paths.len() == 1 {
@@ -208,9 +214,10 @@ fn facts(path: &Path, deep: bool) -> std::io::Result<Value> {
     let meta = std::fs::symlink_metadata(path)?;
     let entry = list::entry_at(path)?;
     let kind = kind::kind_of_path(path);
-    let (bytes, allocated, items) = match meta.is_dir() && deep {
-        true => tally(path),
-        false => (meta.len(), meta.blocks() * 512, 0),
+    let (bytes, allocated, items) = if meta.is_dir() && deep {
+        tally(path)
+    } else {
+        (meta.len(), meta.blocks() * 512, 0)
     };
     let grants = permissions::grants(path).unwrap_or_default();
     let found = meta::meta(path);
@@ -375,11 +382,12 @@ fn acl_text(path: &Path) -> String {
         return String::new();
     }
     let text = unsafe { acl_to_text(acl, std::ptr::null_mut()) };
-    let shown = match text.is_null() {
-        true => String::new(),
-        false => unsafe { CStr::from_ptr(text) }
+    let shown = if text.is_null() {
+        String::new()
+    } else {
+        unsafe { CStr::from_ptr(text) }
             .to_string_lossy()
-            .into_owned(),
+            .into_owned()
     };
     unsafe {
         if !text.is_null() {

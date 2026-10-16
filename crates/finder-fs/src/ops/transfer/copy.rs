@@ -88,9 +88,10 @@ fn copy_file(job: &Job, task: &Task, slot: &Slot) -> io::Result<()> {
             return Ok(());
         }
     }
-    let temp = match task.over {
-        true => replace_slot(&task.dest)?,
-        false => staging_path(&task.dest),
+    let temp = if task.over {
+        replace_slot(&task.dest)?
+    } else {
+        staging_path(&task.dest)
     };
     *slot.file.lock() = Some((task.source.clone(), task.size));
     job.claim(task);
@@ -100,11 +101,10 @@ fn copy_file(job: &Job, task: &Task, slot: &Slot) -> io::Result<()> {
     let (copied, at) = match landed {
         Ok(landed) => landed,
         Err(error) => {
-            match task.over {
-                true => drop_slot(&temp),
-                false => {
-                    let _ = deep::remove_file(&temp);
-                }
+            if task.over {
+                drop_slot(&temp);
+            } else {
+                let _ = deep::remove_file(&temp);
             }
             job.unclaim(task);
             return Err(error);
@@ -199,10 +199,12 @@ fn lean(job: &Job) -> bool {
 }
 
 fn attributes(job: &Job, source: &File) -> u32 {
-    match lean(job) {
-        false => libc::COPYFILE_METADATA,
-        true if has_kept(source) => libc::COPYFILE_XATTR,
-        true => 0,
+    if !lean(job) {
+        libc::COPYFILE_METADATA
+    } else if has_kept(source) {
+        libc::COPYFILE_XATTR
+    } else {
+        0
     }
 }
 
@@ -228,9 +230,12 @@ fn copy_into(job: &Job, task: &Task, temp: &Path, slot: &Slot) -> io::Result<Cop
         .call(job, slot, |state| unsafe {
             libc::fcopyfile(source.as_raw_fd(), out.as_raw_fd(), state, carry)
         })
-        .map_err(|error| match job.halted() {
-            true => io::Error::from_raw_os_error(libc::ECANCELED),
-            false => error,
+        .map_err(|error| {
+            if job.halted() {
+                io::Error::from_raw_os_error(libc::ECANCELED)
+            } else {
+                error
+            }
         })?;
     let after = source.metadata()?;
     if (after.len(), after.mtime(), after.mtime_nsec())
@@ -303,24 +308,21 @@ fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
 
 fn copy_link(job: &Job, task: &Task) -> io::Result<()> {
     let stamp = Stamp::at(&deep::lstat(&task.source)?);
-    let at = match task.over {
-        false => {
-            let next = || job.next_free(task);
-            land(task.dest.clone(), next, |at| {
-                make_link(job, &task.source, at)
-            })?
-            .0
+    let at = if task.over {
+        let slot = replace_slot(&task.dest)?;
+        let placed =
+            make_link(job, &task.source, &slot).and_then(|()| replace(job, &slot, &task.dest));
+        if let Err(error) = placed {
+            drop_slot(&slot);
+            return Err(error);
         }
-        true => {
-            let slot = replace_slot(&task.dest)?;
-            let placed =
-                make_link(job, &task.source, &slot).and_then(|()| replace(job, &slot, &task.dest));
-            if let Err(error) = placed {
-                drop_slot(&slot);
-                return Err(error);
-            }
-            task.dest.clone()
-        }
+        task.dest.clone()
+    } else {
+        let next = || job.next_free(task);
+        land(task.dest.clone(), next, |at| {
+            make_link(job, &task.source, at)
+        })?
+        .0
     };
     job.landed(task, &at);
     job.release(task, &at, stamp);
@@ -440,9 +442,10 @@ struct State(libc::copyfile_state_t);
 impl State {
     fn new() -> io::Result<State> {
         let state = unsafe { libc::copyfile_state_alloc() };
-        match state.is_null() {
-            true => Err(io::Error::last_os_error()),
-            false => Ok(State(state)),
+        if state.is_null() {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(State(state))
         }
     }
 
@@ -504,9 +507,10 @@ extern "C" fn status_callback(
             status.copied = copied;
             status.slot.done.store(copied, Ordering::Relaxed);
             status.job.shared.wait_while_paused();
-            match status.job.halted() {
-                true => libc::COPYFILE_QUIT,
-                false => libc::COPYFILE_CONTINUE,
+            if status.job.halted() {
+                libc::COPYFILE_QUIT
+            } else {
+                libc::COPYFILE_CONTINUE
             }
         }
         // CONTINUE would make copyfile retry a failed write forever on a full disk.
@@ -519,9 +523,10 @@ extern "C" fn status_callback(
             // SAFETY: copyfile hands over a NUL-terminated name for as long as the callback runs.
             let kept =
                 !name.is_null() && KEPT.contains(&unsafe { CStr::from_ptr(name) }.to_bytes());
-            match kept {
-                true => libc::COPYFILE_CONTINUE,
-                false => libc::COPYFILE_SKIP,
+            if kept {
+                libc::COPYFILE_CONTINUE
+            } else {
+                libc::COPYFILE_SKIP
             }
         }
         _ => libc::COPYFILE_CONTINUE,

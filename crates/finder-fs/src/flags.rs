@@ -24,14 +24,12 @@ pub fn set(path: &Path, flag: u16, on: bool) -> io::Result<()> {
     let mut info = xattr::get(&path, FINDER_INFO).unwrap_or_default();
     info.resize(32, 0);
     let flags = u16::from_be_bytes([info[8], info[9]]);
-    let flags = match on {
-        true => flags | flag,
-        false => flags & !flag,
-    };
+    let flags = if on { flags | flag } else { flags & !flag };
     info[8..10].copy_from_slice(&flags.to_be_bytes());
-    match info.iter().all(|byte| *byte == 0) {
-        true => xattr::remove(&path, FINDER_INFO),
-        false => xattr::set(&path, FINDER_INFO, &info),
+    if info.iter().all(|byte| *byte == 0) {
+        xattr::remove(&path, FINDER_INFO)
+    } else {
+        xattr::set(&path, FINDER_INFO, &info)
     }
 }
 

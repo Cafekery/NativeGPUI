@@ -114,9 +114,10 @@ pub fn order<'a>(
             .into_iter()
             .zip(run.iter().copied())
             .collect();
-        match descending {
-            true => ranked.sort_by_key(|&(rank, _)| std::cmp::Reverse(rank)),
-            false => ranked.sort_by_key(|&(rank, _)| rank),
+        if descending {
+            ranked.sort_by_key(|&(rank, _)| std::cmp::Reverse(rank));
+        } else {
+            ranked.sort_by_key(|&(rank, _)| rank);
         }
         for (slot, (_, at)) in run.iter_mut().zip(ranked) {
             *slot = at;
@@ -135,9 +136,12 @@ pub fn first<'a>(
 ) -> Vec<usize> {
     let before = |a: usize, b: usize| {
         by(a, b)
-            .then_with(|| match descending {
-                true => name_cmp(name(b), name(a)),
-                false => name_cmp(name(a), name(b)),
+            .then_with(|| {
+                if descending {
+                    name_cmp(name(b), name(a))
+                } else {
+                    name_cmp(name(a), name(b))
+                }
             })
             .then(a.cmp(&b))
     };

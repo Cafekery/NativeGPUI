@@ -542,11 +542,11 @@ fn rotate_movie(path: &Path, left: bool) -> io::Result<()> {
     let wrote: Bool = unsafe {
         msg_send![&movie, writeMovieHeaderToURL: &*file, fileType: movie_type(path), options: 0usize, error: &mut error]
     };
-    match wrote.as_bool() {
-        true => Ok(()),
-        false => Err(unsafe { error.as_ref() }
-            .map(|err| io_error(err.retain()))
-            .unwrap_or_else(|| unreadable(path))),
+    if wrote.as_bool() {
+        Ok(())
+    } else {
+        Err(unsafe { error.as_ref() }
+            .map_or_else(|| unreadable(path), |err| io_error(err.retain())))
     }
 }
 
@@ -633,13 +633,11 @@ fn write_image(dest: &Path, format: ImageFormat, image: Ref, properties: Ref) ->
     })
     .ok_or_else(|| unreadable(dest))?;
     unsafe { CGImageDestinationAddImage(out.0, image, properties) };
-    match unsafe { CGImageDestinationFinalize(out.0) } {
-        true => Ok(()),
-        false => {
-            let _ = std::fs::remove_file(dest);
-            Err(unreadable(dest))
-        }
+    if unsafe { CGImageDestinationFinalize(out.0) } {
+        return Ok(());
     }
+    let _ = std::fs::remove_file(dest);
+    Err(unreadable(dest))
 }
 
 fn convert(
@@ -764,7 +762,7 @@ fn cut_out(path: &Path, orientation: i64) -> Option<Owned> {
         msg_send![made, initWithURL: &*file, orientation: orientation as u32, options: &*empty]
     };
     let request: Retained<AnyObject> = unsafe { msg_send![request_class, new] };
-    let requests = NSArray::from_retained_slice(&[request.clone()]);
+    let requests = NSArray::from_retained_slice(std::slice::from_ref(&request));
     let mut error: *mut NSError = std::ptr::null_mut();
     let ran: Bool = unsafe { msg_send![&handler, performRequests: &*requests, error: &mut error] };
     if !ran.as_bool() {

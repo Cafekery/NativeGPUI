@@ -469,7 +469,7 @@ mod tests {
 
         let next = queue.submit(
             Op::Copy {
-                items: vec![small.clone()],
+                items: vec![small],
                 into: ram.mount.clone(),
             },
             Conflict::KeepBoth,
@@ -552,7 +552,7 @@ mod tests {
         let (queue, rx) = listen();
         let id = queue.submit(
             Op::Copy {
-                items: vec![missing.clone(), good.clone()],
+                items: vec![missing.clone(), good],
                 into: dst.clone(),
             },
             Conflict::Replace,
@@ -693,7 +693,7 @@ mod tests {
 
         let op = Op::Move {
             items: vec![file.clone()],
-            into: dst.clone(),
+            into: dst,
         };
         let done = ops::perform(op.clone(), Conflict::Replace).unwrap();
         let mut journal = Journal::new();
@@ -717,13 +717,13 @@ mod tests {
             to: dir.join("missing.txt"),
         };
         let real = ops::Restore {
-            item: item.clone(),
+            item,
             to: dest.clone(),
         };
         let (queue, rx) = listen();
         let id = queue.submit(Op::PutBack(vec![missing, real]), Conflict::KeepBoth);
         let carried = carried(&rx, id);
-        assert_eq!(carried.done.results, vec![dest.clone()]);
+        assert_eq!(carried.done.results, vec![dest]);
         assert!(matches!(carried.left, Some(Op::PutBack(left)) if left.len() == 1));
         let _ = fs::remove_dir_all(&dir);
     }

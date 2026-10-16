@@ -31,9 +31,10 @@ impl Meter {
         }
         let secs = dt.as_secs_f64();
         let instant = bytes.saturating_sub(before) as f64 / secs;
-        self.bytes_per_sec = match self.moving.is_zero() {
-            true => instant,
-            false => blend(self.bytes_per_sec, instant, secs, SPEED_SECS),
+        self.bytes_per_sec = if self.moving.is_zero() {
+            instant
+        } else {
+            blend(self.bytes_per_sec, instant, secs, SPEED_SECS)
         };
         self.moving += dt;
         self.eta = self.estimate(left).map(|raw| match self.eta {
@@ -55,9 +56,10 @@ impl Meter {
             return None;
         }
         let by_bytes = left.bytes as f64 / self.bytes_per_sec;
-        let by_items = match left.items_done >= ITEMS_TO_TRUST {
-            true => left.items as f64 * self.moving.as_secs_f64() / left.items_done as f64,
-            false => 0.0,
+        let by_items = if left.items_done >= ITEMS_TO_TRUST {
+            left.items as f64 * self.moving.as_secs_f64() / left.items_done as f64
+        } else {
+            0.0
         };
         Some(by_bytes.max(by_items))
     }

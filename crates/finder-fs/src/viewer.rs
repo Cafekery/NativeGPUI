@@ -136,9 +136,10 @@ impl Site {
 
     fn follow(&self, id: &str, bundle: &Path) -> io::Result<()> {
         if viewer(self.domain.as_deref()).as_deref() != Some(id) {
-            return match self.plist.exists() {
-                true => self.remove(),
-                false => Ok(()),
+            return if self.plist.exists() {
+                self.remove()
+            } else {
+                Ok(())
             };
         }
         if is_translocated(bundle) {
@@ -305,15 +306,16 @@ fn set_viewer(domain: Option<&str>, id: Option<&str>) -> io::Result<()> {
         }
         CFPreferencesSynchronize(domain, user, host)
     });
-    match saved {
-        true => Ok(()),
-        false => Err(io::Error::other("the preferences could not be saved")),
+    if saved {
+        Ok(())
+    } else {
+        Err(io::Error::other("the preferences could not be saved"))
     }
 }
 
 fn in_domain<R>(domain: Option<&str>, run: impl FnOnce(&CFString) -> R) -> R {
     match domain {
-        Some(domain) => run(&*CFString::from_str(domain)),
+        Some(domain) => run(&CFString::from_str(domain)),
         None => run(unsafe { kCFPreferencesAnyApplication }),
     }
 }
@@ -351,11 +353,12 @@ fn gui() -> String {
 
 fn launchctl(args: &[&OsStr]) -> io::Result<()> {
     let out = Command::new("/bin/launchctl").args(args).output()?;
-    match out.status.success() {
-        true => Ok(()),
-        false => Err(io::Error::other(
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(
             String::from_utf8_lossy(&out.stderr).trim().to_owned(),
-        )),
+        ))
     }
 }
 

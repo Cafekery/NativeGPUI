@@ -82,8 +82,7 @@ fn open_dir_at(dir: &OwnedFd, name: &CStr) -> io::Result<OwnedFd> {
     owned(unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), DIR_FLAGS) })
 }
 
-/// Half of `PATH_MAX` opens in one call and the rest a part at a time: the limit counts the path
-/// with its links expanded, and `/var` alone is one.
+/// `PATH_MAX` counts the path with its links expanded (`/var` is one), so only half opens in one call.
 fn open_dir(path: &Path) -> io::Result<OwnedFd> {
     let fits = path
         .ancestors()
@@ -391,8 +390,7 @@ pub(super) fn remove_dir(path: &Path) -> io::Result<()> {
     )
 }
 
-/// Each name in the folder with what `lstat` says of it, read whole so a deep walk holds one
-/// directory descriptor at a time.
+/// Read whole, so a deep walk holds one directory descriptor at a time.
 pub(super) fn list(path: &Path) -> io::Result<Vec<(OsString, io::Result<Stat>)>> {
     let dir = open_dir(path)?;
     let names = names_in(&dir)?;
@@ -405,7 +403,6 @@ pub(super) fn list(path: &Path) -> io::Result<Vec<(OsString, io::Result<Stat>)>>
         .collect())
 }
 
-/// A link, never what it points at.
 pub(super) fn copy_link(source: &Path, dest: &Path) -> io::Result<()> {
     let ((sdir, sname), (ddir, dname)) = (at(source)?, at(dest)?);
     let meta = stat_at(&sdir, &sname)?;

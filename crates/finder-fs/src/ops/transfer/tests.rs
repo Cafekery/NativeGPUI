@@ -301,7 +301,7 @@ fn a_move_removes_each_source_only_once_its_copy_is_whole() {
         b"beta"
     );
     assert!(!folder.exists(), "the moved folder's source stayed");
-    assert_eq!(outcome.done.results, vec![moved.clone()]);
+    assert_eq!(outcome.done.results, vec![moved]);
 
     let retry = outcome
         .retry()
@@ -1021,9 +1021,10 @@ fn jobs_started_together_into_one_folder_each_land_under_their_own_name() {
     let mut files = Vec::new();
     for entry in fs::read_dir(&dst).unwrap().flatten() {
         let path = entry.path();
-        match path.is_dir() {
-            true => sets.push(fs::read(path.join("0.txt")).unwrap()),
-            false => files.push(fs::read(&path).unwrap()),
+        if path.is_dir() {
+            sets.push(fs::read(path.join("0.txt")).unwrap());
+        } else {
+            files.push(fs::read(&path).unwrap());
         }
     }
     sets.sort();
@@ -1089,9 +1090,12 @@ fn files_below(dir: &Path) -> Vec<Vec<u8>> {
     };
     (entries.flatten())
         .filter(|entry| entry.file_name() != ".DS_Store")
-        .flat_map(|entry| match entry.path().is_dir() {
-            true => files_below(&entry.path()),
-            false => fs::read(entry.path()).into_iter().collect(),
+        .flat_map(|entry| {
+            if entry.path().is_dir() {
+                files_below(&entry.path())
+            } else {
+                fs::read(entry.path()).into_iter().collect()
+            }
         })
         .collect()
 }

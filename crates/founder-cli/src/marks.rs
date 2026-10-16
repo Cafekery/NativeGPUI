@@ -42,16 +42,15 @@ pub fn tag(mut args: Args, out: &mut Out) -> Result<u8, Stop> {
     changed.map_err(|error| Stop::Failed(error.to_string()))?;
     for path in &paths {
         let held = tags::of(path);
-        match out.json {
-            true => out.emit(json!({
+        if out.json {
+            out.emit(json!({
                 "event": "tags",
                 "path": out::path(path),
                 "tags": held.iter().map(|tag| json!({ "name": tag.name, "color": tag.color })).collect::<Vec<_>>(),
-            })),
-            false => {
-                let names: Vec<&str> = held.iter().map(|tag| tag.name.as_str()).collect();
-                out.say(&format!("{}: {}", path.display(), names.join(", ")));
-            }
+            }));
+        } else {
+            let names: Vec<&str> = held.iter().map(|tag| tag.name.as_str()).collect();
+            out.say(&format!("{}: {}", path.display(), names.join(", ")));
         }
     }
     Ok(OK)
@@ -81,9 +80,10 @@ pub fn comment(mut args: Args, out: &mut Out) -> Result<u8, Stop> {
         comment::set(&path, &new).map_err(|error| Stop::Failed(error.to_string()))?;
     }
     let held = comment::of(&path);
-    match out.json {
-        true => out.emit(json!({ "event": "comment", "path": out::path(&path), "comment": held })),
-        false => out.say(&held),
+    if out.json {
+        out.emit(json!({ "event": "comment", "path": out::path(&path), "comment": held }));
+    } else {
+        out.say(&held);
     }
     Ok(OK)
 }

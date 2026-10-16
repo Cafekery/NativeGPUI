@@ -97,13 +97,12 @@ fn stopped(stop: Stop, out: &mut Out) -> u8 {
         Stop::Refused(message) => (REFUSED, message),
         Stop::Failed(message) => (PARTIAL, message),
     };
-    match out.json {
-        true => out.emit(json!({ "event": "error", "exit": code, "error": message })),
-        false => {
-            out.warn(&message);
-            if code == USAGE {
-                eprintln!("run `founder help` for the commands");
-            }
+    if out.json {
+        out.emit(json!({ "event": "error", "exit": code, "error": message }));
+    } else {
+        out.warn(&message);
+        if code == USAGE {
+            eprintln!("run `founder help` for the commands");
         }
     }
     code
@@ -213,7 +212,6 @@ fn verb(op: &Op) -> &'static str {
     }
 }
 
-/// Runs a new operation and records its undo when `--journal` names a file.
 fn perform(command: &str, op: Op, args: &Args, out: &mut Out) -> Result<u8, Stop> {
     let plan = plan(args, None)?;
     let journal = args.path("journal");
@@ -545,9 +543,10 @@ fn clean(mut args: Args, out: &mut Out) -> Result<u8, Stop> {
         cleaned.trashed.extend(one.trashed);
         cleaned.failures.extend(one.failures);
     }
-    let code = match cleaned.failures.is_empty() {
-        true => OK,
-        false => PARTIAL,
+    let code = if cleaned.failures.is_empty() {
+        OK
+    } else {
+        PARTIAL
     };
     if out.json {
         out.emit(json!({

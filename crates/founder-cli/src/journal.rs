@@ -455,7 +455,6 @@ impl Journal {
         self.redo.push(entry);
     }
 
-    /// The newest entry a failed run left work for.
     pub fn unfinished(&mut self) -> Option<&mut Entry> {
         self.undo
             .iter_mut()

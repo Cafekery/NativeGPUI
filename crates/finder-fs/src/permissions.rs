@@ -126,9 +126,10 @@ fn with(mode: u32, folder: bool, class: Class, privilege: Privilege) -> u32 {
         Privilege::Custom => return mode & 0o7777,
     };
     let shift = class.shift();
-    let search = match folder {
-        true => read || write,
-        false => mode >> shift & 1 != 0,
+    let search = if folder {
+        read || write
+    } else {
+        mode >> shift & 1 != 0
     };
     let bits = u32::from(read) << 2 | u32::from(write) << 1 | u32::from(search);
     mode & 0o7777 & !(7 << shift) | bits << shift
@@ -158,9 +159,10 @@ pub fn apply_to_enclosed(folder: &Path) -> io::Result<usize> {
     }
     let mut changed = 0;
     for (path, mode, is_dir) in owned.into_iter().rev() {
-        let wanted = match is_dir {
-            true => mode & 0o7000 | from & 0o777,
-            false => mode & 0o7111 | from & 0o666,
+        let wanted = if is_dir {
+            mode & 0o7000 | from & 0o777
+        } else {
+            mode & 0o7111 | from & 0o666
         };
         if wanted != mode & 0o7777 && set_mode(&path, wanted).is_ok() {
             changed += 1;
@@ -183,12 +185,12 @@ fn group_name(gid: libc::gid_t) -> String {
 }
 
 fn name_or_unknown(name: *const c_char) -> String {
-    match name.is_null() {
-        true => "(unknown)".to_owned(),
-        false => unsafe { CStr::from_ptr(name) }
-            .to_string_lossy()
-            .into_owned(),
+    if name.is_null() {
+        return "(unknown)".to_owned();
     }
+    unsafe { CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Deny entries grant nothing and get no row.
@@ -230,10 +232,7 @@ fn acl_grants(path: &Path, me: libc::uid_t) -> Vec<Grant> {
         }
         let group = kind == ID_TYPE_GID;
         grants.push(Grant {
-            name: match group {
-                true => group_name(id),
-                false => user_name(id),
-            },
+            name: if group { group_name(id) } else { user_name(id) },
             group,
             me: !group && id == me,
             privilege,

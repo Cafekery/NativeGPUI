@@ -103,13 +103,14 @@ fn progress_json(progress: &Progress, elapsed: Duration) -> Value {
 }
 
 fn progress_line(verb: &str, progress: &Progress) -> String {
-    let mut line = match progress.counting {
-        true => format!("{verb} {} items so far", progress.items_total),
-        false => format!(
+    let mut line = if progress.counting {
+        format!("{verb} {} items so far", progress.items_total)
+    } else {
+        format!(
             "{verb} {} of {}",
             progress.items_done.min(progress.items_total),
             progress.items_total
-        ),
+        )
     };
     if progress.bytes_total > 0 {
         line += &format!(

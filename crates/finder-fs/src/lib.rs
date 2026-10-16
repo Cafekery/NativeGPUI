@@ -71,9 +71,12 @@ pub(crate) fn trash_reachable() -> bool {
 #[cfg(test)]
 pub(crate) fn purge(paths: &[PathBuf]) {
     for path in paths {
-        let removed = std::fs::symlink_metadata(path).and_then(|meta| match meta.is_dir() {
-            true => std::fs::remove_dir_all(path),
-            false => std::fs::remove_file(path),
+        let removed = std::fs::symlink_metadata(path).and_then(|meta| {
+            if meta.is_dir() {
+                std::fs::remove_dir_all(path)
+            } else {
+                std::fs::remove_file(path)
+            }
         });
         removed.unwrap_or_else(|err| panic!("{} was left behind: {err}", path.display()));
     }

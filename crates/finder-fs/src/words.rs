@@ -53,14 +53,15 @@ fn english(bundle: &NSBundle, file: &str) -> Vec<(String, String)> {
         .resourcePath()
         .and_then(|resources| std::fs::read(format!("{resources}/{file}")).ok())
         .and_then(|bytes| crate::plist(&bytes)?.downcast::<NSDictionary>().ok());
-    let table = match file.ends_with(".loctable") {
-        true => table.and_then(|table| {
+    let table = if file.ends_with(".loctable") {
+        table.and_then(|table| {
             table
                 .objectForKey(ns_string!("en"))?
                 .downcast::<NSDictionary>()
                 .ok()
-        }),
-        false => table,
+        })
+    } else {
+        table
     };
     let Some(table) = table else {
         return Vec::new();

@@ -81,9 +81,12 @@ fn lookup(ext: &str) -> (Kind, bool) {
             |ty| ty.identifier().to_string().into(),
         ),
         label: label
-            .unwrap_or_else(|| match ext.is_empty() {
-                true => "Document".into(),
-                false => format!("{} File", ext.to_ascii_uppercase()),
+            .unwrap_or_else(|| {
+                if ext.is_empty() {
+                    "Document".into()
+                } else {
+                    format!("{} File", ext.to_ascii_uppercase())
+                }
             })
             .into(),
     };
@@ -91,9 +94,10 @@ fn lookup(ext: &str) -> (Kind, bool) {
 }
 
 fn cached(ext: &str, resolve: impl FnOnce(&str) -> (Kind, bool)) -> (Kind, bool) {
-    let key = match ext.bytes().any(|b| b.is_ascii_uppercase()) {
-        true => Cow::Owned(ext.to_ascii_lowercase()),
-        false => Cow::Borrowed(ext),
+    let key = if ext.bytes().any(|b| b.is_ascii_uppercase()) {
+        Cow::Owned(ext.to_ascii_lowercase())
+    } else {
+        Cow::Borrowed(ext)
     };
     if let Some(hit) = KINDS.read().unwrap().get(&*key) {
         return hit.clone();

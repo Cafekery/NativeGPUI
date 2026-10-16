@@ -27,8 +27,7 @@ pub struct Cleaned {
     pub failures: Vec<(PathBuf, io::Error)>,
 }
 
-/// Temps that transfers no longer running left below `folder`: a copy being written is deleted,
-/// an item a Replace had swapped out goes to the Trash.
+/// Deletes the partial copies dead transfers left below `folder` and trashes what their Replaces swapped out.
 pub fn clean_temps(folder: &Path) -> Cleaned {
     let mut cleaned = Cleaned::default();
     match std::fs::metadata(folder) {
@@ -50,8 +49,7 @@ pub(super) fn staging_path(dest: &Path) -> PathBuf {
     dir_of(dest).join(name(STAGING))
 }
 
-/// A folder of its own holds the item a Replace swaps in, and after the swap the item it replaced,
-/// so a temp left by a kill says whether it may be deleted.
+/// Holds the item a Replace swaps in, then the one it replaced, so a temp a kill leaves says whether it may go.
 pub(super) fn replace_slot(dest: &Path) -> io::Result<PathBuf> {
     let holder = room_near(dest).join(name(REPLACE));
     deep::create_dir(&holder, 0o700)?;
@@ -66,9 +64,10 @@ fn room_near(dest: &Path) -> &Path {
         return dir;
     };
     let volume = |at: &Path| deep::lstat(at).map(|meta| meta.dev()).ok();
-    match volume(near).is_some() && volume(near) == volume(dir) {
-        true => near,
-        false => dir,
+    if volume(near).is_some() && volume(near) == volume(dir) {
+        near
+    } else {
+        dir
     }
 }
 

@@ -134,10 +134,7 @@ pub fn run(op: Op, plan: &Plan, verb: &str, out: &mut Out) -> Ran {
             out.progress(verb, &progress, started.elapsed());
             shown = Some(Instant::now());
         }
-        thread::sleep(match hooks.armed() {
-            true => POLL_ARMED,
-            false => POLL,
-        });
+        thread::sleep(if hooks.armed() { POLL_ARMED } else { POLL });
     }
     out.clear();
     let ran = worker.join().unwrap_or_else(|_| Ran {
@@ -154,8 +151,7 @@ pub fn run(op: Op, plan: &Plan, verb: &str, out: &mut Out) -> Ran {
     ran
 }
 
-/// The Trash writes down where an item came from a moment after it arrives, on a queue of its
-/// own: a process that quits at once loses the note, and Put Back with it.
+/// The Trash records an item's origin on its own queue a moment later; quitting at once loses Put Back.
 fn settle_trash(done: &Done) {
     let mut trashed = Vec::new();
     in_trash(done.undo.as_ref(), &mut trashed);
@@ -218,17 +214,18 @@ impl Hooks<'_> {
             self.pause_after = None;
             transfer.pause();
             let pid = std::process::id();
-            match out.json {
-                true => out.emit(json!({
+            if out.json {
+                out.emit(json!({
                     "event": "paused",
                     "pid": pid,
                     "bytes_done": progress.bytes_done,
                     "items_done": progress.items_done,
-                })),
-                false => out.warn(&format!(
+                }));
+            } else {
+                out.warn(&format!(
                     "paused after {}; `kill -USR1 {pid}` resumes",
                     out::size(progress.bytes_done)
-                )),
+                ));
             }
         }
         let reached = self.cancel_after.is_some_and(|limit| match limit {

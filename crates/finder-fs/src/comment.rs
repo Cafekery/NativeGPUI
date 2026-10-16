@@ -22,9 +22,10 @@ pub fn set(path: &Path, comment: &str) -> io::Result<()> {
         return Err(io::ErrorKind::InvalidInput.into());
     };
     let item = crate::c_path(path)?;
-    match comment.is_empty() {
-        true => xattr::remove(&item, COMMENT)?,
-        false => xattr::set(&item, COMMENT, &binary_plist(comment)?)?,
+    if comment.is_empty() {
+        xattr::remove(&item, COMMENT)?;
+    } else {
+        xattr::set(&item, COMMENT, &binary_plist(comment)?)?;
     }
     ds_store::set_comment(folder, name, comment)
 }

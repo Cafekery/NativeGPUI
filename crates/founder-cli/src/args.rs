@@ -117,7 +117,6 @@ impl Args {
             .transpose()
     }
 
-    /// Takes the first word left, the command or a subcommand.
     pub fn shift(&mut self) -> Option<String> {
         (!self.words.is_empty()).then(|| self.words.remove(0).to_string_lossy().into_owned())
     }
