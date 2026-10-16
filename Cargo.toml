@@ -76,3 +76,6 @@ incremental = true
 
 [patch."https://github.com/zed-industries/zed"]
 gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "5de9f7df3867725c31f5e5d501fadbe3667e5670" }
+
+[lints.clippy]
+type_complexity = "allow"
