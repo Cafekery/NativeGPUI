@@ -1162,11 +1162,11 @@ mod tests {
     }
 
     #[test]
-    fn the_zip_icon_is_orange() {
-        let (hue, share) = hue_of(FileType::Extension("zip"));
-        let hue = hue.expect("the archive is not a grey document sheet");
-        assert!((15.0..40.0).contains(&hue), "zip hue {hue}");
-        assert!(share > 0.8, "zip orange covers only {share}");
+    fn the_installer_package_icon_is_orange() {
+        let (hue, share) = hue_of(FileType::Extension("pkg"));
+        let hue = hue.expect("the package is not a grey document sheet");
+        assert!((15.0..40.0).contains(&hue), "pkg hue {hue}");
+        assert!(share > 0.8, "pkg orange covers only {share}");
     }
 
     #[test]

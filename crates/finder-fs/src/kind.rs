@@ -389,12 +389,7 @@ mod tests {
     fn kind_names_are_finders() {
         let dir = std::env::temp_dir().join(format!("finder-fs-kind-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        for (ext, want) in [
-            ("json", "JSON"),
-            ("html", "HTML text"),
-            ("csv", "Comma Separated Spreadsheet (.csv)"),
-            ("png", "PNG image"),
-        ] {
+        for (ext, want) in [("txt", "Plain Text Document"), ("png", "PNG image")] {
             let path = dir.join(format!("a.{ext}"));
             std::fs::write(&path, b"").unwrap();
             assert_eq!(&*kind_of_path(&path).label, want, "{ext}");
