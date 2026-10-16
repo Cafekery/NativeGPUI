@@ -2,7 +2,7 @@
 
 ## Build
 
-You need macOS 26 or later and rustc 1.98 or later. Build every example in both feature configs:
+You need macOS 26 or later and rustc 1.97 or later. Build every example in both feature configs:
 
 ```sh
 cargo build --release --examples
