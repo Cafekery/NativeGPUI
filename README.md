@@ -13,7 +13,7 @@ Found'er is free and open source under the MIT license.
 
 ### Build from source
 
-You need Rust (rustc 1.98 or later), Xcode for the app icon, and cargo-about for the third-party notices.
+You need Rust (rustc 1.97 or later), Xcode for the app icon, and cargo-about for the third-party notices.
 
 ```sh
 git clone https://github.com/Cafekery/NativeGPUI.git
