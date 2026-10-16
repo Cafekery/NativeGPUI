@@ -1,0 +1,17 @@
+[package]
+name = "finder-sftp"
+version = "0.1.0"
+edition = "2021"
+description = "SFTP over the system's OpenSSH: pipelined listings and multi-connection transfers"
+license = "MIT"
+publish = false
+
+[lib]
+name = "finder_sftp"
+path = "src/lib.rs"
+
+[dependencies]
+parking_lot = "0.12"
+
+[lints.clippy]
+type_complexity = "allow"

@@ -1365,6 +1365,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "finder-sftp"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+]
+
+[[package]]
 name = "flate2"
 version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2859,6 +2866,7 @@ dependencies = [
  "block2 0.6.2",
  "convert",
  "finder-fs",
+ "finder-sftp",
  "fsearch",
  "gpui",
  "gpui_macos",

@@ -54,6 +54,7 @@ gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "5de9f7df38
 [dev-dependencies]
 convert = { path = "crates/convert" }
 finder-fs = { path = "crates/finder-fs" }
+finder-sftp = { path = "crates/finder-sftp" }
 fsearch = { path = "crates/fsearch" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "90d8514059561f0e44af0a32e84e1c329cef3232", features = ["font-kit"] }
 parking_lot = "0.12"
