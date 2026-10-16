@@ -14,7 +14,7 @@ storybook=$(./scripts/bundle.sh storybook | tail -1) || exit 1
 tools=/tmp/ng-perf-tools
 mkdir -p "$tools"
 for tool in ngtrain2 npcap2; do
-  src=.wip/tools/perf/$tool.swift
+  src=scripts/$tool.swift
   [ "$tools/$tool" -nt "$src" ] || swiftc -O -suppress-warnings -o "$tools/$tool" "$src" || exit 1
 done
 [ "$tools/ngdrag" -nt scripts/ngdrag.swift ] || swiftc -O -suppress-warnings -o "$tools/ngdrag" scripts/ngdrag.swift || exit 1
