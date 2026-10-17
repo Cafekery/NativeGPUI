@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use native_gpui::tokens::SystemColor;
+
 use crate::prefs;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -66,6 +68,17 @@ impl Protocol {
             Protocol::Sftp => "terminal",
             Protocol::WebDav | Protocol::Ftp => "globe",
             _ => "network",
+        }
+    }
+
+    pub(crate) fn tint(self) -> SystemColor {
+        match self {
+            Protocol::Smb => SystemColor::SystemBlue,
+            Protocol::Sftp => SystemColor::SystemGray,
+            Protocol::WebDav => SystemColor::SystemTeal,
+            Protocol::Afp => SystemColor::SystemPurple,
+            Protocol::Nfs => SystemColor::SystemOrange,
+            Protocol::Ftp => SystemColor::SystemGreen,
         }
     }
 

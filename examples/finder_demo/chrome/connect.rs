@@ -8,8 +8,8 @@ use gpui::{
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::{
-    ButtonBezel, MenuEntry, native_button, native_combo_box, native_context_menu, native_label,
-    native_popup, native_root, native_rule, native_spinner, native_symbol, window_options,
+    ButtonBezel, ControlSize, MenuEntry, native_button, native_context_menu, native_label,
+    native_popup, native_root, native_spinner, native_symbol, native_text_field, window_options,
 };
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
@@ -26,32 +26,33 @@ use crate::prefs;
 use crate::servers::{self, Protocol, Saved};
 use crate::ui::click_kind;
 
-const DEFAULT_W: f32 = 460.;
-const DEFAULT_H: f32 = 380.;
-const MIN_W: f32 = 400.;
-const MIN_H: f32 = 300.;
-const EDGE: f32 = 19.;
-const FIELD_Y: f32 = 51.;
-const LABEL_Y: f32 = 87.;
-const LIST_Y: f32 = 110.;
-const LIST_BOTTOM: f32 = 52.;
-const ROW_H: f32 = 40.;
-const ICON: f32 = 18.;
-const ICON_X: f32 = 12.;
-const TEXT_X: f32 = 42.;
-const BAR_BOTTOM: f32 = 19.;
-const BAR_H: f32 = 26.;
+const DEFAULT_W: f32 = 520.;
+const DEFAULT_H: f32 = 440.;
+const MIN_W: f32 = 440.;
+const MIN_H: f32 = 340.;
+const TOP: f32 = 48.;
+const EDGE: f32 = 20.;
+const GAP: f32 = 8.;
+const RADIUS: f32 = 10.;
+const FIELD_H: f32 = 38.;
+const FIELD_FONT: f32 = 15.;
+const ROW_H: f32 = 52.;
+const ROW_PAD: f32 = 12.;
+const ROW_GAP: f32 = 10.;
+const BADGE: f32 = 30.;
+const BADGE_R: f32 = 7.;
+const ICON: f32 = 15.;
 const SQUARE: f32 = 24.;
-const HELP_X: f32 = 142.;
-const SPINNER_RIGHT: f32 = 178.;
-const BROWSE_RIGHT: f32 = 107.;
-const BROWSE_W: f32 = 70.;
-const CONNECT_W: f32 = 77.;
+const ACTIONS_W: f32 = 28.;
+const TEXT_X: f32 = ROW_PAD + BADGE + ROW_GAP;
+const TEXT_RIGHT: f32 = ROW_PAD + ACTIONS_W + ROW_GAP;
+const BROWSE_W: f32 = 76.;
+const CONNECT_W: f32 = 84.;
 const RECENTS: usize = 10;
 const EINVAL: i32 = 22;
 const PARAM_ERR: i32 = -50;
 const HELP_ANCHOR: &str = "mchlp3015";
-const EMPTY: &str = "No saved servers yet. Click + to add one, or type an address above.";
+const EMPTY: &str = "Type an address above, or add a server to keep it here.";
 
 thread_local! {
     static OPEN: RefCell<Option<WindowHandle<Connect>>> = const { RefCell::new(None) };
@@ -294,6 +295,16 @@ impl Connect {
         alert.beginSheetModalForWindow_completionHandler(&ns, Some(&handler));
     }
 
+    fn act(&mut self, at: usize, pick: usize, window: &Window, cx: &mut Context<Self>) {
+        self.picked = Some(at);
+        self.address = self.saved[at].address();
+        match pick {
+            0 => self.connect(cx),
+            1 => self.edit(Some(at), window, cx),
+            _ => self.remove(at, cx),
+        }
+    }
+
     fn row(&self, at: usize, cx: &mut Context<Self>) -> AnyElement {
         let saved = &self.saved[at];
         let (address, picked) = (saved.address(), self.picked == Some(at));
@@ -304,34 +315,51 @@ impl Connect {
                 plain
             }
         };
+        let actions = native_popup(("ng.finder.connect.actions", at), 0)
+            .pull_down(true)
+            .bordered(false)
+            .entries([
+                MenuEntry::item("").symbol("ellipsis.circle"),
+                MenuEntry::item("Connect"),
+                MenuEntry::item("Edit\u{2026}"),
+                MenuEntry::separator(),
+                MenuEntry::item("Remove"),
+            ])
+            .on_change(cx.listener(move |connect, pick: &usize, window, cx| {
+                if *pick > 0 {
+                    connect.act(at, pick - 1, window, cx);
+                }
+            }));
         let row = div()
             .id(("ng.finder.connect.row", at))
             .relative()
             .h(px(ROW_H))
             .when(picked, |row| {
-                row.child(
-                    div().absolute().inset_0().child(
-                        native_rule(("ng.finder.connect.pick", at))
-                            .color(SystemColor::SelectedContentBackground),
-                    ),
-                )
+                row.bg(system_color(SystemColor::SelectedContentBackground))
+            })
+            .when(!picked, |row| {
+                row.hover(|row| row.bg(system_color(SystemColor::QuinarySystemFill)))
             })
             .child(
                 div()
                     .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(px(ICON_X))
-                    .w(px(ICON))
+                    .left(px(ROW_PAD))
+                    .top(px((ROW_H - BADGE) / 2.))
+                    .size(px(BADGE))
+                    .rounded(px(BADGE_R))
+                    .bg(system_color(saved.protocol.tint()))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(native_symbol(
-                        ("ng.finder.connect.icon", at),
-                        saved.protocol.symbol(),
-                        ICON,
-                        FontWeight::MEDIUM,
-                    )),
+                    .child(
+                        native_symbol(
+                            ("ng.finder.connect.icon", at),
+                            saved.protocol.symbol(),
+                            ICON,
+                            FontWeight::SEMIBOLD,
+                        )
+                        .ink(gpui::white()),
+                    ),
             )
             .child(
                 div()
@@ -339,13 +367,14 @@ impl Connect {
                     .top_0()
                     .bottom_0()
                     .left(px(TEXT_X))
-                    .right(px(EDGE))
+                    .right(px(TEXT_RIGHT))
                     .flex()
                     .flex_col()
                     .justify_center()
                     .child(
                         native_label(("ng.finder.connect.name", at), saved.label())
                             .font_size(tokens::system_font_size())
+                            .weight(FontWeight::MEDIUM)
                             .color(color(SystemColor::Label))
                             .truncates(true),
                     )
@@ -356,6 +385,26 @@ impl Connect {
                             .truncates(true),
                     ),
             )
+            .child(
+                div()
+                    .absolute()
+                    .right(px(ROW_PAD))
+                    .top(px((ROW_H - SQUARE) / 2.))
+                    .w(px(ACTIONS_W))
+                    .h(px(SQUARE))
+                    .child(actions),
+            )
+            .when(at + 1 < self.saved.len(), |row| {
+                row.child(
+                    div()
+                        .absolute()
+                        .left(px(TEXT_X))
+                        .right_0()
+                        .bottom_0()
+                        .h(px(1.))
+                        .bg(system_color(SystemColor::Separator)),
+                )
+            })
             .on_click(cx.listener(move |connect, event: &ClickEvent, _, cx| {
                 connect.picked = Some(at);
                 connect.address.clone_from(&address);
@@ -372,13 +421,7 @@ impl Connect {
                 MenuEntry::item("Remove"),
             ])
             .on_select(cx.listener(move |connect, pick: &usize, window, cx| {
-                connect.picked = Some(at);
-                connect.address = connect.saved[at].address();
-                match pick {
-                    0 => connect.connect(cx),
-                    1 => connect.edit(Some(at), window, cx),
-                    _ => connect.remove(at, cx),
-                }
+                connect.act(at, *pick, window, cx)
             }))
             .into_any_element()
     }
@@ -387,10 +430,11 @@ impl Connect {
 impl Render for Connect {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let address = self.address.trim().to_string();
-        let mut field = native_combo_box("ng.finder.connect.address", &self.address)
+        let mut field = native_text_field("ng.finder.connect.address", &self.address)
             .stretch()
+            .borderless()
+            .font_size(FIELD_FONT)
             .placeholder("smb://server/share or sftp://user@host")
-            .items(self.recents.clone())
             .on_change(cx.listener(|connect, text: &String, _, cx| {
                 connect.address.clone_from(text);
                 cx.notify();
@@ -400,16 +444,115 @@ impl Render for Connect {
         if std::mem::take(&mut self.fresh) {
             field = field.editing(0..self.address.chars().count());
         }
+        let clearing = |entry: MenuEntry| {
+            if self.recents.is_empty() {
+                entry.disabled()
+            } else {
+                entry
+            }
+        };
+        let recents = native_popup("ng.finder.connect.recents", 0)
+            .pull_down(true)
+            .bordered(false)
+            .entries(
+                std::iter::once(MenuEntry::item("").symbol("clock.arrow.circlepath"))
+                    .chain(
+                        self.recents
+                            .iter()
+                            .map(|recent| MenuEntry::item(recent.clone())),
+                    )
+                    .chain([
+                        MenuEntry::separator(),
+                        clearing(MenuEntry::item("Clear Recent Servers\u{2026}")),
+                        clearing(MenuEntry::item("Clear Recent Servers").option_alternate()),
+                    ]),
+            )
+            .on_change(cx.listener(|connect, pick: &usize, window, cx| {
+                let count = connect.recents.len();
+                match *pick {
+                    0 => {}
+                    pick if pick <= count => {
+                        connect.address.clone_from(&connect.recents[pick - 1]);
+                        cx.notify();
+                    }
+                    pick => connect.clear_recents(pick == count + 2, window, cx),
+                }
+            }));
+        let bar = div()
+            .flex_none()
+            .h(px(FIELD_H))
+            .pl(px(ROW_PAD))
+            .pr(px(6.))
+            .rounded(px(RADIUS))
+            .bg(system_color(SystemColor::ControlBackground))
+            .border_1()
+            .border_color(system_color(SystemColor::Separator))
+            .flex()
+            .items_center()
+            .gap(px(ROW_GAP))
+            .child(
+                native_symbol(
+                    "ng.finder.connect.glyph",
+                    "network",
+                    ICON,
+                    FontWeight::MEDIUM,
+                )
+                .tint(SystemColor::SecondaryLabel),
+            )
+            .child(div().flex_1().child(field))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(ACTIONS_W))
+                    .h(px(SQUARE))
+                    .child(recents),
+            );
+        let header = div()
+            .flex_none()
+            .mt(px(GAP))
+            .px(px(2.))
+            .flex()
+            .items_center()
+            .child(
+                native_label("ng.finder.connect.heading", "Saved Servers")
+                    .font_size(tokens::small_system_font_size())
+                    .weight(FontWeight::SEMIBOLD)
+                    .color(SystemColor::SecondaryLabel),
+            )
+            .child(div().flex_1())
+            .child(
+                native_button("ng.finder.connect.add", "Add Server\u{2026}")
+                    .bezel_style(ButtonBezel::AccessoryBarAction)
+                    .control_size(ControlSize::Small)
+                    .on_click(cx.listener(|connect, _, window, cx| connect.edit(None, window, cx))),
+            );
         let list: AnyElement = if self.saved.is_empty() {
             div()
                 .size_full()
                 .flex()
+                .flex_col()
                 .items_center()
                 .justify_center()
+                .gap(px(6.))
                 .child(
-                    native_label("ng.finder.connect.empty", EMPTY)
+                    native_symbol(
+                        "ng.finder.connect.none",
+                        "server.rack",
+                        28.,
+                        FontWeight::LIGHT,
+                    )
+                    .tint(SystemColor::TertiaryLabel),
+                )
+                .child(
+                    native_label("ng.finder.connect.empty", "No Saved Servers")
                         .font_size(tokens::system_font_size())
+                        .weight(FontWeight::SEMIBOLD)
                         .color(SystemColor::SecondaryLabel),
+                )
+                .child(
+                    native_label("ng.finder.connect.empty.hint", EMPTY)
+                        .font_size(tokens::small_system_font_size())
+                        .color(SystemColor::TertiaryLabel),
                 )
                 .into_any_element()
         } else {
@@ -423,129 +566,56 @@ impl Render for Connect {
             .size_full()
             .into_any_element()
         };
-        let bar = |left: f32| div().absolute().bottom(px(BAR_BOTTOM)).left(px(left));
-        let square = |id: &'static str, symbol: &'static str, enabled: bool| {
-            native_button(id, "")
-                .symbol(symbol)
-                .bezel_style(ButtonBezel::SmallSquare)
-                .square(SQUARE)
-                .enabled(enabled)
-        };
-        let clearing = |entry: MenuEntry| {
-            if self.recents.is_empty() {
-                entry.disabled()
-            } else {
-                entry
-            }
-        };
-        let action = native_popup("ng.finder.connect.action", 0)
-            .pull_down(true)
-            .bezel_style(ButtonBezel::SmallSquare)
-            .entries([
-                MenuEntry::item("").symbol("ellipsis.circle"),
-                clearing(MenuEntry::item("Clear Recent Servers\u{2026}")),
-                clearing(MenuEntry::item("Clear Recent Servers").option_alternate()),
-            ])
-            .on_change(cx.listener(|connect, picked: &usize, window, cx| {
-                connect.clear_recents(*picked == 1, window, cx)
-            }));
+        let card = div()
+            .flex_1()
+            .min_h_0()
+            .rounded(px(RADIUS))
+            .overflow_hidden()
+            .bg(system_color(SystemColor::QuaternarySystemFill))
+            .child(list);
+        let footer = div()
+            .flex_none()
+            .mt(px(GAP))
+            .flex()
+            .items_center()
+            .gap(px(ROW_GAP))
+            .child(
+                native_button("ng.finder.connect.help", "")
+                    .bezel_style(ButtonBezel::HelpButton)
+                    .on_click(|_, _, _| crate::menus::open_mac_help(HELP_ANCHOR)),
+            )
+            .child(div().flex_1())
+            .when(self.connecting, |footer| {
+                footer.child(native_spinner("ng.finder.connect.spinner"))
+            })
+            .child(
+                native_button("ng.finder.connect.browse", "Browse")
+                    .width(px(BROWSE_W))
+                    .on_click(|_, _, cx| {
+                        crate::open_finder_window(crate::locations::NETWORK, cx);
+                    }),
+            )
+            .child(
+                native_button("ng.finder.connect.go", "Connect")
+                    .width(px(CONNECT_W))
+                    .default_button(true)
+                    .enabled(!address.is_empty() && !self.connecting)
+                    .on_click(cx.listener(|connect, _, _, cx| connect.connect(cx))),
+            );
         native_root(
             div()
-                .relative()
                 .size_full()
                 .bg(system_color(SystemColor::WindowBackground))
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(FIELD_Y))
-                        .left(px(EDGE))
-                        .right(px(EDGE))
-                        .child(field),
-                )
-                .child(
-                    div().absolute().top(px(LABEL_Y)).left(px(EDGE)).child(
-                        native_label("ng.finder.connect.heading", "Saved Servers")
-                            .font_size(tokens::small_system_font_size())
-                            .weight(FontWeight::SEMIBOLD)
-                            .color(SystemColor::SecondaryLabel),
-                    ),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(LIST_Y))
-                        .bottom(px(LIST_BOTTOM))
-                        .left(px(EDGE + 1.))
-                        .right(px(EDGE + 1.))
-                        .border_1()
-                        .border_color(system_color(SystemColor::Separator))
-                        .bg(system_color(SystemColor::ControlBackground))
-                        .child(list),
-                )
-                .child(bar(EDGE + 2.).child(
-                    square("ng.finder.connect.add", "plus", true).on_click(
-                        cx.listener(|connect, _, window, cx| connect.edit(None, window, cx)),
-                    ),
-                ))
-                .child(bar(EDGE + 2. + SQUARE).child(
-                    square("ng.finder.connect.remove", "minus", self.picked.is_some()).on_click(
-                        cx.listener(|connect, _, _, cx| {
-                            if let Some(at) = connect.picked {
-                                connect.remove(at, cx);
-                            }
-                        }),
-                    ),
-                ))
-                .child(bar(EDGE + 2. + 2. * SQUARE).child(
-                    square("ng.finder.connect.edit", "pencil", self.picked.is_some()).on_click(
-                        cx.listener(|connect, _, window, cx| {
-                            connect.edit(connect.picked, window, cx)
-                        }),
-                    ),
-                ))
-                .child(bar(EDGE + 2. + 3. * SQUARE).h(px(SQUARE)).child(action))
-                .child(
-                    bar(HELP_X).child(
-                        native_button("ng.finder.connect.help", "")
-                            .bezel_style(ButtonBezel::HelpButton)
-                            .on_click(|_, _, _| crate::menus::open_mac_help(HELP_ANCHOR)),
-                    ),
-                )
-                .when(self.connecting, |root| {
-                    root.child(
-                        div()
-                            .absolute()
-                            .bottom(px(BAR_BOTTOM + (BAR_H - 16.) / 2.))
-                            .right(px(SPINNER_RIGHT))
-                            .child(native_spinner("ng.finder.connect.spinner")),
-                    )
-                })
-                .child(
-                    div()
-                        .absolute()
-                        .bottom(px(BAR_BOTTOM))
-                        .right(px(BROWSE_RIGHT))
-                        .child(
-                            native_button("ng.finder.connect.browse", "Browse")
-                                .width(px(BROWSE_W))
-                                .on_click(|_, _, cx| {
-                                    crate::open_finder_window(crate::locations::NETWORK, cx);
-                                }),
-                        ),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .bottom(px(BAR_BOTTOM))
-                        .right(px(EDGE + 1.))
-                        .child(
-                            native_button("ng.finder.connect.go", "Connect")
-                                .width(px(CONNECT_W))
-                                .default_button(true)
-                                .enabled(!address.is_empty() && !self.connecting)
-                                .on_click(cx.listener(|connect, _, _, cx| connect.connect(cx))),
-                        ),
-                ),
+                .flex()
+                .flex_col()
+                .pt(px(TOP))
+                .px(px(EDGE))
+                .pb(px(EDGE))
+                .gap(px(ROW_GAP))
+                .child(bar)
+                .child(header)
+                .child(card)
+                .child(footer),
         )
     }
 }
