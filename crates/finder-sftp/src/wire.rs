@@ -34,8 +34,6 @@ pub(crate) const FXF_TRUNC: u32 = 0x10;
 pub(crate) const FX_EOF: u32 = 1;
 pub(crate) const FX_NO_SUCH_FILE: u32 = 2;
 pub(crate) const FX_PERMISSION_DENIED: u32 = 3;
-pub(crate) const FX_FAILURE: u32 = 4;
-pub(crate) const FX_FILE_ALREADY_EXISTS: u32 = 11;
 
 const ATTR_SIZE: u32 = 0x1;
 const ATTR_UIDGID: u32 = 0x2;
@@ -100,13 +98,9 @@ impl Packet {
     }
 }
 
-pub(crate) struct Cursor<'a>(&'a [u8]);
+pub(crate) struct Cursor<'a>(pub(crate) &'a [u8]);
 
 impl<'a> Cursor<'a> {
-    pub(crate) fn new(bytes: &'a [u8]) -> Cursor<'a> {
-        Cursor(bytes)
-    }
-
     fn take(&mut self, len: usize) -> Result<&'a [u8], Error> {
         if self.0.len() < len {
             return Err(Error::Protocol("truncated packet".into()));
@@ -157,10 +151,6 @@ impl<'a> Cursor<'a> {
             }
         }
         Ok(attrs)
-    }
-
-    pub(crate) fn rest(&self) -> &'a [u8] {
-        self.0
     }
 }
 

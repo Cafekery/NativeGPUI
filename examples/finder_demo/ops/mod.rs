@@ -258,9 +258,12 @@ impl FinderDemo {
             (!stem.is_empty() && !extension.is_empty()).then(|| extension.to_owned())
         };
         let (was, now) = (extension(old), extension(&name));
-        let folder = || match crate::remote::is_remote(key) {
-            true => self.remote_row(dir, key).is_some_and(|row| row.is_folder()),
-            false => Path::new(key.as_ref()).is_dir(),
+        let folder = || {
+            if crate::remote::is_remote(key) {
+                self.remote_row(dir, key).is_some_and(|row| row.is_folder())
+            } else {
+                Path::new(key.as_ref()).is_dir()
+            }
         };
         match was {
             Some(was)

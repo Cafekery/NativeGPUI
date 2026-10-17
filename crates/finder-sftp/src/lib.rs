@@ -149,47 +149,22 @@ pub enum Error {
 
 impl Error {
     pub fn is_not_found(&self) -> bool {
-        matches!(
-            self,
-            Error::Status {
-                code: wire::FX_NO_SUCH_FILE,
-                ..
-            }
-        )
+        self.code() == Some(wire::FX_NO_SUCH_FILE)
     }
 
     pub fn is_permission(&self) -> bool {
-        matches!(
-            self,
-            Error::Status {
-                code: wire::FX_PERMISSION_DENIED,
-                ..
-            }
-        )
-    }
-
-    pub fn is_exists(&self) -> bool {
-        match self {
-            Error::Status {
-                code: wire::FX_FILE_ALREADY_EXISTS,
-                ..
-            } => true,
-            Error::Status {
-                code: wire::FX_FAILURE,
-                message,
-            } => message.to_lowercase().contains("exist"),
-            _ => false,
-        }
+        self.code() == Some(wire::FX_PERMISSION_DENIED)
     }
 
     fn is_eof(&self) -> bool {
-        matches!(
-            self,
-            Error::Status {
-                code: wire::FX_EOF,
-                ..
-            }
-        )
+        self.code() == Some(wire::FX_EOF)
+    }
+
+    fn code(&self) -> Option<u32> {
+        match self {
+            Error::Status { code, .. } => Some(*code),
+            _ => None,
+        }
     }
 }
 
@@ -199,11 +174,11 @@ impl fmt::Display for Error {
             Error::Status { code, message } if message.is_empty() => {
                 write!(f, "SFTP status {code}")
             }
-            Error::Status { message, .. } => f.write_str(message),
-            Error::Connect(text) => f.write_str(text),
+            Error::Status { message: text, .. } | Error::Connect(text) | Error::Protocol(text) => {
+                f.write_str(text)
+            }
             Error::Disconnected => f.write_str("the connection to the server closed"),
             Error::Io(error) => error.fmt(f),
-            Error::Protocol(text) => f.write_str(text),
             Error::Cancelled => f.write_str("cancelled"),
         }
     }

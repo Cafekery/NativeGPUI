@@ -139,7 +139,6 @@ pub(crate) fn open() -> Option<WindowHandle<Connect>> {
     OPEN.with_borrow(|open| *open)
 }
 
-/// Shows the window with `address` filled in and starts connecting, so progress and errors land there.
 pub(crate) fn connect_to(
     address: String,
     demo: WeakEntity<FinderDemo>,

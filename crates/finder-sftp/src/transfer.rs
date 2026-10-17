@@ -20,7 +20,6 @@ const SPLIT_AT: u64 = 16 << 20;
 const WINDOW: usize = 64;
 const TICK: Duration = Duration::from_millis(50);
 
-/// Byte range shared by every session working on one file: each takes the next chunk.
 struct Job {
     next: AtomicU64,
     end: u64,
@@ -30,11 +29,7 @@ struct Job {
 }
 
 impl Job {
-    fn new(end: u64) -> Job {
-        Job::span(0, end)
-    }
-
-    fn span(start: u64, end: u64) -> Job {
+    fn new(start: u64, end: u64) -> Job {
         Job {
             next: AtomicU64::new(start),
             end,
@@ -45,6 +40,7 @@ impl Job {
     }
 
     fn claim(&self, chunk: u32) -> Option<(u64, u32)> {
+        // Parks every session while the progress callback holds the gate.
         drop(self.gate.lock());
         if self.cancel.load(Ordering::Relaxed) {
             return None;
@@ -76,7 +72,7 @@ impl Server {
         let file = File::create(local)?;
         let result = (|| {
             file.set_len(size)?;
-            let job = Job::new(if size == 0 { u64::MAX } else { size });
+            let job = Job::new(0, if size == 0 { u64::MAX } else { size });
             let sink = |offset: u64, data: &[u8]| file.write_all_at(data, offset);
             self.transfer(
                 handle,
@@ -108,7 +104,7 @@ impl Server {
         let meta = file.metadata()?;
         let session = self.inner.session(1)?;
         let handle = Handle::open(&session, remote, FXF_WRITE | FXF_CREAT | FXF_TRUNC)?;
-        let job = Job::new(meta.len());
+        let job = Job::new(0, meta.len());
         let result = self.transfer(
             handle,
             &job,
@@ -156,7 +152,7 @@ impl Server {
 
     fn read(&self, handle: &Handle, start: u64, end: u64) -> Result<Vec<u8>, Error> {
         let bytes = Mutex::new(Vec::new());
-        let job = Job::span(start, end);
+        let job = Job::new(start, end);
         let sink = |offset: u64, data: &[u8]| {
             let mut bytes = bytes.lock();
             let from = (offset - start) as usize;
@@ -171,8 +167,6 @@ impl Server {
         Ok(bytes.into_inner())
     }
 
-    /// Runs `work` on `first` and, for a large file, on further pool sessions as they come up,
-    /// reporting progress from this thread.
     fn transfer(
         &self,
         first: Handle,
@@ -226,7 +220,6 @@ impl Server {
     }
 }
 
-/// Reads chunks with `WINDOW` requests outstanding until the job runs out or the file ends.
 fn fetch(
     handle: &Handle,
     job: &Job,
@@ -269,7 +262,6 @@ fn fetch(
     }
 }
 
-/// Writes chunks of `file` with `WINDOW` requests outstanding until the job runs out.
 fn push(handle: &Handle, job: &Job, chunk: u32, file: &File) -> Result<(), Error> {
     let mut queue = VecDeque::new();
     let mut more = true;

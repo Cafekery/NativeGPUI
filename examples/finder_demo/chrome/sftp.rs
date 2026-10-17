@@ -111,7 +111,9 @@ impl SftpForm {
         };
         self.server = address.host;
         self.user = address.user.unwrap_or_default();
-        self.port = address.port.map_or(DEFAULT_PORT.into(), |port| port.to_string());
+        self.port = address
+            .port
+            .map_or(DEFAULT_PORT.into(), |port| port.to_string());
         self.folder = address.path;
     }
 

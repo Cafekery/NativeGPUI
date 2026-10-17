@@ -88,7 +88,6 @@ define_class!(
 );
 
 impl FinderDemo {
-    /// Each item as a file promise, downloaded wherever it is dropped.
     pub(crate) fn drag_out(
         &self,
         keys: &[SharedString],

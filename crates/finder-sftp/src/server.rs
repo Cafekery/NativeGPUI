@@ -26,7 +26,6 @@ enum Spawn {
     Command(Box<dyn Fn() -> Command + Send + Sync>),
 }
 
-/// The helper, and a private directory for the server's password cache and attempt files.
 struct Askpass {
     helper: PathBuf,
     dir: PathBuf,
@@ -141,7 +140,6 @@ pub(crate) struct Inner {
 }
 
 impl Inner {
-    /// The live session in `slot`, started when there is none.
     pub(crate) fn session(&self, slot: usize) -> Result<Arc<Session>, Error> {
         let (session, version) = {
             let mut pool = self.pool.lock();
@@ -163,7 +161,6 @@ impl Inner {
     }
 }
 
-/// An open file or directory handle, closed when dropped.
 pub(crate) struct Handle {
     pub(crate) session: Arc<Session>,
     pub(crate) id: Vec<u8>,
@@ -181,7 +178,6 @@ impl Handle {
         })
     }
 
-    /// Opens for reading and stats in the same round trip.
     pub(crate) fn open_stat(session: &Arc<Session>, path: &str) -> Result<(Handle, Attrs), Error> {
         let opened = session.send(open(path, FXF_READ));
         let stat = session.send(Packet::new(STAT).str(path));

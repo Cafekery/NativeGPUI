@@ -6,18 +6,8 @@ use std::process::{Command, Stdio};
 const SECURITY: &str = "/usr/bin/security";
 
 pub fn find(host: &str, user: &str) -> Option<String> {
-    let output = Command::new(SECURITY)
-        .args([
-            "find-internet-password",
-            "-r",
-            "ssh ",
-            "-s",
-            host,
-            "-a",
-            user,
-            "-w",
-        ])
-        .stderr(Stdio::null())
+    let output = security("find-internet-password", host, user)
+        .arg("-w")
         .output()
         .ok()?;
     if !output.status.success() {
@@ -32,23 +22,10 @@ pub fn store(host: &str, user: &str, password: &str) -> bool {
         return false;
     }
     let label = format!("{host} (Found'er)");
-    let child = Command::new(SECURITY)
-        .args([
-            "add-internet-password",
-            "-U",
-            "-r",
-            "ssh ",
-            "-s",
-            host,
-            "-a",
-            user,
-            "-l",
-            &label,
-            "-w",
-        ])
+    let child = security("add-internet-password", host, user)
+        .args(["-U", "-l", &label, "-w"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
         .spawn();
     let Ok(mut child) = child else {
         return false;
@@ -62,22 +39,16 @@ pub fn store(host: &str, user: &str, password: &str) -> bool {
 }
 
 pub fn forget(host: &str, user: &str) -> bool {
-    run(&[
-        "delete-internet-password",
-        "-r",
-        "ssh ",
-        "-s",
-        host,
-        "-a",
-        user,
-    ])
-}
-
-fn run(args: &[&str]) -> bool {
-    Command::new(SECURITY)
-        .args(args)
+    security("delete-internet-password", host, user)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+fn security(verb: &str, host: &str, user: &str) -> Command {
+    let mut command = Command::new(SECURITY);
+    command
+        .args([verb, "-r", "ssh ", "-s", host, "-a", user])
+        .stderr(Stdio::null());
+    command
 }

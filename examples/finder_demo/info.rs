@@ -2150,9 +2150,8 @@ fn comment_box(path: SharedString, editable: bool) -> impl IntoElement {
 
 pub(crate) fn where_of(id: &str) -> Option<String> {
     if crate::remote::is_remote(id) {
-        return Some(crate::remote::parent(id))
-            .filter(|parent| crate::remote::is_remote(parent))
-            .map(Into::into);
+        let parent = crate::remote::parent(id);
+        return crate::remote::is_remote(parent).then(|| parent.to_owned());
     }
     let parent = Path::new(id)
         .parent()

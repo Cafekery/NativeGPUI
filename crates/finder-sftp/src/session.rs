@@ -21,7 +21,6 @@ struct Waiters {
     map: HashMap<u32, SyncSender<Reply>>,
 }
 
-/// One child process speaking SFTP on its stdin and stdout.
 pub(crate) struct Session {
     stdin: Mutex<ChildStdin>,
     child: Mutex<Child>,
@@ -40,25 +39,20 @@ impl Pending {
 }
 
 impl Session {
-    /// Starts the child and sends INIT; `hello` waits for the answer.
     pub(crate) fn spawn(
         mut command: Command,
         attempt: Option<PathBuf>,
     ) -> Result<(Arc<Session>, Pending), Error> {
-        let mut child = match command
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-        {
-            Ok(child) => child,
-            Err(error) => {
-                if let Some(attempt) = attempt {
+            .inspect_err(|_| {
+                if let Some(attempt) = &attempt {
                     let _ = std::fs::remove_file(attempt);
                 }
-                return Err(error.into());
-            }
-        };
+            })?;
         let stdout = child.stdout.take().unwrap();
         let mut stderr = child.stderr.take().unwrap();
         let stderr = thread::spawn(move || {
@@ -86,16 +80,11 @@ impl Session {
         Ok((Arc::new(session), Pending(reply)))
     }
 
-    /// The extension names the server announced.
     pub(crate) fn hello(&self, version: Pending) -> Result<Vec<String>, Error> {
         let Ok(reply) = version.wait() else {
             return Err(Error::Connect(self.stderr()));
         };
-        let extensions = extensions(&reply.body);
-        if extensions.is_err() {
-            self.kill();
-        }
-        extensions
+        extensions(&reply.body).inspect_err(|_| self.kill())
     }
 
     fn stderr(&self) -> String {
@@ -158,7 +147,7 @@ impl Drop for Session {
 }
 
 fn extensions(version: &[u8]) -> Result<Vec<String>, Error> {
-    let mut cursor = Cursor::new(version);
+    let mut cursor = Cursor(version);
     let version = cursor.u32()?;
     if version < 3 {
         return Err(Error::Protocol(format!(
@@ -166,7 +155,7 @@ fn extensions(version: &[u8]) -> Result<Vec<String>, Error> {
         )));
     }
     let mut extensions = Vec::new();
-    while !cursor.rest().is_empty() {
+    while !cursor.0.is_empty() {
         extensions.push(cursor.string()?);
         cursor.bytes()?;
     }
@@ -205,10 +194,7 @@ fn frame(stdout: &mut impl Read) -> io::Result<(u32, Reply)> {
     if kind != VERSION {
         stdout.read_exact(&mut id)?;
     }
-    let mut body = Vec::with_capacity(rest);
-    stdout.take(rest as u64).read_to_end(&mut body)?;
-    if body.len() != rest {
-        return Err(io::ErrorKind::UnexpectedEof.into());
-    }
+    let mut body = vec![0; rest];
+    stdout.read_exact(&mut body)?;
     Ok((u32::from_be_bytes(id), Reply { kind, body }))
 }

@@ -30,9 +30,7 @@ pub(crate) struct Ended {
     pub(crate) results: Vec<PathBuf>,
     pub(crate) failures: Vec<Failure>,
     pub(crate) end: End,
-    /// The name a rename found already taken.
     pub(crate) taken: Option<String>,
-    /// The server whose connection closed.
     pub(crate) dropped: Option<&'static str>,
 }
 
@@ -43,7 +41,6 @@ pub(crate) struct Jobs {
 }
 
 impl Jobs {
-    /// `fetch` pairs replace `op`'s own plan: each remote item lands at its local path.
     pub(crate) fn start(
         &mut self,
         op: Op,
@@ -98,6 +95,7 @@ impl Jobs {
 
     pub(crate) fn cancel(&self, id: u64) {
         if let Some(state) = self.state(id) {
+            // Held so `tick` cannot check `cancelled` and park between the store and the notify.
             let _held = state.progress.lock();
             state.cancelled.store(true, Ordering::Relaxed);
             state.wake.notify_all();
@@ -115,7 +113,6 @@ impl Jobs {
     }
 }
 
-/// Where `id` sits in the cache Open and Quick Look read from.
 pub(crate) fn cached(id: &str) -> Option<PathBuf> {
     let address = connected(id)?.server.address().clone();
     let host = match address.port {
@@ -275,7 +272,6 @@ impl Place {
         }
     }
 
-    /// A folder already there counts as made.
     fn mkdir(&self) -> Result<(), Error> {
         let made = match self {
             Place::Here(path) => fs::create_dir(path).map_err(Error::from),
@@ -287,7 +283,6 @@ impl Place {
         }
     }
 
-    /// The first name Finder would pick in this folder: `name`, `name 2`…, or with a tag.
     fn free(&self, name: &str, tag: &str) -> Result<Place, Error> {
         let (stem, ext) = match name.rsplit_once('.') {
             Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => (stem, Some(ext)),
@@ -333,7 +328,6 @@ fn io_error(error: Error) -> io::Error {
     }
 }
 
-/// Each item beside the name Finder would give it in the folder `into` picks, with its tag.
 fn landing(
     items: &[PathBuf],
     into: impl Fn(&Place) -> Result<(Place, &'static str), Error>,
@@ -348,7 +342,6 @@ fn landing(
         .collect()
 }
 
-/// `~/.Trash` on the item's server, made when missing.
 fn trash(from: &Place) -> Result<Place, Error> {
     let Place::There { server, prefix, .. } = from else {
         return Err(Error::Protocol("not on a server".into()));
@@ -383,7 +376,6 @@ impl Run {
         self.state.cancelled.load(Ordering::Relaxed)
     }
 
-    /// False ends the job: cancelled, or the connection closed.
     fn failed(&mut self, from: &Place, to: &Place, error: Error) -> bool {
         match error {
             Error::Cancelled => return false,
@@ -413,12 +405,13 @@ impl Run {
             _ => fetch.first().map(|(item, _)| item),
         };
         let first = first.cloned().unwrap_or_default();
-        let planned = match fetch.is_empty() {
-            true => self.plan(op),
-            false => (fetch.into_iter())
+        let planned = if fetch.is_empty() {
+            self.plan(op)
+        } else {
+            (fetch.into_iter())
                 .map(|(item, to)| Ok((place(&item)?, Place::Here(to))))
                 .collect::<Result<Vec<_>, Error>>()
-                .map(|pairs| self.fetch(pairs)),
+                .map(|pairs| self.fetch(pairs))
         };
         if let Err(error) = planned {
             let at = place(&first).unwrap_or(Place::Here(first));
@@ -437,11 +430,10 @@ impl Run {
         match op {
             Op::Copy { items, into } | Op::CopyExactly { items, into } => {
                 let into = place(&into)?;
-                let same = |from: &Place| from.parent().id() == into.id();
-                let pairs = landing(&items, |from| {
-                    Ok((into.clone(), if same(from) { " copy" } else { "" }))
-                })?;
-                self.carry(pairs);
+                self.carry(landing(&items, |from| {
+                    let same = from.parent().id() == into.id();
+                    Ok((into.clone(), if same { " copy" } else { "" }))
+                })?);
             }
             Op::Duplicate(items) => {
                 self.carry(landing(&items, |from| Ok((from.parent(), " copy")))?)
@@ -477,7 +469,6 @@ impl Run {
         Ok(())
     }
 
-    /// Renames on one server.
     fn shift(&mut self, pairs: Vec<(Place, Place)>) {
         self.state.progress.lock().items_total = pairs.len() as u64;
         for (from, to) in pairs {
@@ -502,7 +493,6 @@ impl Run {
         }
     }
 
-    /// A cached copy whose size and modification time match is used as it is.
     fn fetch(&mut self, pairs: Vec<(Place, Place)>) {
         let mut stale = Vec::new();
         for (from, to) in pairs {
@@ -529,17 +519,16 @@ impl Run {
     fn carry(&mut self, pairs: Vec<(Place, Place)>) {
         self.state.progress.lock().counting = true;
         let mut steps = Vec::new();
-        let mut walked = vec![true; pairs.len()];
+        let mut whole = vec![true; pairs.len()];
         for (top, (from, to)) in pairs.iter().enumerate() {
             if let Err(error) = self.walk(top, from, to, &mut steps) {
-                walked[top] = false;
+                whole[top] = false;
                 if !self.failed(from, to, error) {
                     return;
                 }
             }
         }
         self.state.progress.lock().counting = false;
-        let mut whole = walked;
         for step in steps {
             if !whole[step.top] {
                 continue;
@@ -622,13 +611,10 @@ impl Run {
                     prefix: there,
                     path: to,
                 },
-            ) => match (prefix == there)
+            ) => (prefix == there)
                 .then(|| server.copy_data(path, to))
                 .flatten()
-            {
-                Some(copied) => copied,
-                None => relay(server, path, into, to, size, &mut tick),
-            },
+                .unwrap_or_else(|| relay(server, path, into, to, size, &mut tick)),
             (Place::Here(from), Place::Here(to)) => {
                 fs::copy(from, to).map(drop).map_err(Error::from)
             }
@@ -638,7 +624,6 @@ impl Run {
         copied
     }
 
-    /// Parks while paused; false once cancelled.
     fn tick(&mut self, path: &Path, done: u64, total: u64) -> bool {
         let mut progress = self.state.progress.lock();
         while progress.paused && !self.cancelled() {
@@ -673,7 +658,6 @@ impl Run {
     }
 }
 
-/// Between servers, or on one that cannot copy by itself, through a file in the cache.
 fn relay(
     from: &Server,
     path: &str,

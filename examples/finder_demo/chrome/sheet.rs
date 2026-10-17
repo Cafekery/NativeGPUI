@@ -486,7 +486,7 @@ impl GoPanel {
             this.update_in(cx, |this, window, cx| {
                 let moving = std::mem::take(&mut this.moving);
                 this.close(window, cx, move |demo, window, cx| match (folder, item) {
-                    (Some(id), _) if !moving.is_empty() => demo.move_to(moving, id, cx),
+                    (Some(id), _) if !moving.is_empty() => demo.move_to(moving, id, false, cx),
                     (Some(id), _) => demo.go(id, window, cx),
                     (None, Some(item)) if moving.is_empty() => {
                         demo.show_enclosing(item, window, cx)

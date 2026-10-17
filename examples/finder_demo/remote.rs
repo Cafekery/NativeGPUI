@@ -51,13 +51,10 @@ pub(crate) struct Connected {
 
 static SERVERS: RwLock<Vec<Connected>> = RwLock::new(Vec::new());
 
-/// What a finished download hands its cached copies to.
 pub(crate) enum Then {
     Open(Vec<PathBuf>),
     QuickLook(Look),
-    /// A file promise's completion handler.
     Promise(RcBlock<dyn Fn(*mut NSError)>),
-    /// The items a new folder gathers.
     MoveIn(Vec<PathBuf>),
 }
 
@@ -136,12 +133,10 @@ pub(crate) fn crumbs(id: &str) -> Vec<(&'static str, &'static str)> {
     crumbs
 }
 
-/// The host at the server root, else the last segment.
 pub(crate) fn title(id: &str) -> &'static str {
     crumbs(id).pop().map_or("", |(title, _)| title)
 }
 
-/// A typed `sftp://` address.
 pub(crate) fn address(text: &str) -> Option<Address> {
     let scheme = text.trim().get(..SCHEME.len())?;
     scheme
@@ -149,7 +144,6 @@ pub(crate) fn address(text: &str) -> Option<Address> {
         .then(|| Address::parse(text))?
 }
 
-/// The id, when a connected server answers for it.
 pub(crate) fn folder_at(text: &str) -> Option<&'static str> {
     let id = text.trim().trim_end_matches('/');
     let id = if is_prefix(id) {
@@ -190,7 +184,6 @@ pub(crate) struct Stat {
     pub(crate) mine: Option<bool>,
 }
 
-/// One round trip, so off the main thread.
 pub(crate) fn stat(id: &str) -> Option<Stat> {
     let server = connected(id)?;
     let attrs = server.server.stat(split(id).1).ok()?;
@@ -205,7 +198,6 @@ fn seconds(mtime: u32) -> f64 {
     reference_seconds(UNIX_EPOCH + Duration::from_secs(mtime.into()))
 }
 
-/// A line for an id that names a server folder.
 pub(crate) fn line(id: &'static str) -> Line {
     let kind = finder_fs::words::say("Folder").into_owned().into();
     let row = crate::locations::location_row(id, title(id).into(), kind, "", Some(id), artwork(id));
@@ -244,8 +236,8 @@ fn connect(address: Address, askpass: Option<&Path>) -> Result<&'static str, Err
 
 fn rows(server: &Server, dir: &'static str) -> Result<Vec<Arc<Row>>, Error> {
     let path = split(dir).1;
-    let entries = server.list(path)?;
-    Ok(entries
+    Ok(server
+        .list(path)?
         .into_iter()
         .map(|entry| {
             let followed = (entry.attrs.kind() == Kind::Symlink)
@@ -435,7 +427,6 @@ impl FinderDemo {
         .detach();
     }
 
-    /// Whether a connected server was dropped.
     pub(crate) fn eject_remote(&mut self, id: &str, cx: &mut Context<Self>) -> bool {
         let prefix = split(id).0;
         let gone = {
@@ -485,7 +476,6 @@ impl FinderDemo {
         })
     }
 
-    /// Downloads into the cache, then hands the cached copies on.
     pub(crate) fn fetch(
         &mut self,
         ids: Vec<PathBuf>,
@@ -622,7 +612,6 @@ fn frame(x: f64, y: f64, width: f64, height: f64) -> NSRect {
     NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
 }
 
-/// A modal Connect / Cancel alert in a process with no window of its own.
 fn ask(message: &str, detail: &str, accessory: Option<(&NSView, &NSView)>) -> bool {
     let Some(mtm) = MainThreadMarker::new() else {
         return false;

@@ -405,6 +405,7 @@ impl FinderDemo {
         &mut self,
         items: Vec<PathBuf>,
         into: &'static str,
+        copy: bool,
         cx: &mut Context<Self>,
     ) {
         let items: Vec<PathBuf> = items
@@ -422,9 +423,10 @@ impl FinderDemo {
         let same = items
             .iter()
             .all(|item| crate::remote::same_server(item, &into));
-        let op = match !remote || same {
-            true => Op::Move { items, into },
-            false => Op::Copy { items, into },
+        let op = if !copy && (!remote || same) {
+            Op::Move { items, into }
+        } else {
+            Op::Copy { items, into }
         };
         self.run_op(op, After::Select, cx);
     }
@@ -438,26 +440,14 @@ impl FinderDemo {
     ) {
         let held = window.modifiers();
         if crate::remote::is_remote(into) || keys.iter().any(|key| crate::remote::is_remote(key)) {
-            let items: Vec<PathBuf> = keys
+            let items = keys
                 .iter()
                 .filter(|key| {
                     crate::remote::is_remote(key) || Path::new(key.as_ref()).is_absolute()
                 })
-                .filter(|key| split_key(key).is_some_and(|(dir, _)| dir != into))
                 .map(|key| PathBuf::from(key.as_ref()))
                 .collect();
-            if items.is_empty() {
-                return;
-            }
-            let into = PathBuf::from(into);
-            let same = items
-                .iter()
-                .all(|item| crate::remote::same_server(item, &into));
-            let op = match same && !held.alt {
-                true => Op::Move { items, into },
-                false => Op::Copy { items, into },
-            };
-            return self.run_op(op, After::Select, cx);
+            return self.move_to(items, into, held.alt, cx);
         }
         let into = PathBuf::from(into);
         // A web link dragged from a browser arrives as its URL, not as a file.
