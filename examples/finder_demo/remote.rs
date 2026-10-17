@@ -5,6 +5,7 @@ mod promise;
 pub(crate) use self::jobs::{Ended, Jobs, cached};
 pub(crate) use self::preview::{cached_copy, prune_fetches};
 
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -252,6 +253,41 @@ fn rows(server: &Server, dir: &'static str) -> Result<Vec<Arc<Row>>, Error> {
             row(dir, entry, followed)
         })
         .collect())
+}
+
+/// Every row under `dir` the filter admits, breadth first; hidden folders are not entered.
+pub(crate) fn find(
+    dir: &'static str,
+    admits: &dyn Fn(&Row) -> bool,
+    limit: usize,
+    stale: &dyn Fn() -> bool,
+) -> Option<Vec<Arc<Row>>> {
+    let server = connected(dir)?.server;
+    let mut found = Vec::new();
+    let mut seen = HashSet::from([dir]);
+    let mut pending = VecDeque::from([dir]);
+    while let Some(dir) = pending.pop_front() {
+        if stale() {
+            return None;
+        }
+        let Ok(rows) = rows(&server, dir) else {
+            continue;
+        };
+        for row in rows {
+            if let Some(child) = row.opens.filter(|_| !row.hidden) {
+                if seen.insert(child) {
+                    pending.push_back(child);
+                }
+            }
+            if admits(&row) {
+                found.push(row);
+                if found.len() >= limit {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    Some(found)
 }
 
 fn row(dir: &'static str, entry: Entry, followed: Option<Option<Attrs>>) -> Arc<Row> {

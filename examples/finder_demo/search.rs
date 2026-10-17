@@ -260,7 +260,8 @@ impl FinderDemo {
             scope_bar::THIS_MAC => Vec::new(),
             _ => vec![PathBuf::from(self.here())],
         };
-        let cached = crate::remote::is_remote(self.here()).then(|| {
+        let here = self.here();
+        let cached = crate::remote::is_remote(here).then(|| {
             self.folder()
                 .map_or_else(Arc::default, |folder| folder.rows.clone())
         });
@@ -277,14 +278,19 @@ impl FinderDemo {
                         if search.is_empty() || !indexed {
                             return Some((Vec::new(), true));
                         }
+                        let stale = || pass.load(Ordering::Relaxed) != generation;
                         if let Some(rows) = cached {
                             let matcher = search.matcher();
-                            let admits = |row: &&Arc<Row>| {
+                            let admits = |row: &Row| {
                                 matcher.admits(row) && criteria.iter().all(|it| it.holds(row))
                             };
-                            return Some((rows.iter().filter(admits).cloned().collect(), true));
+                            if !last {
+                                let shallow = rows.iter().filter(|row| admits(row)).cloned();
+                                return Some((shallow.collect(), false));
+                            }
+                            return crate::remote::find(here, &admits, limit, &stale)
+                                .map(|rows| (rows, true));
                         }
-                        let stale = || pass.load(Ordering::Relaxed) != generation;
                         let gathered =
                             || gather(&search, &under, limit, last, &criteria, extras, &stale);
                         let mut hits = gathered();
