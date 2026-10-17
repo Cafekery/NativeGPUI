@@ -4,7 +4,7 @@ use std::hash::Hash;
 use std::rc::Rc;
 use std::sync::{LazyLock, Mutex};
 use std::thread::LocalKey;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{FontWeight, SharedString};
 use native_gpui::tokens;
@@ -30,6 +30,11 @@ use super::row::{Column, Row};
 const UNIX_TO_REFERENCE: f64 = 978_307_200.;
 const SEEN_MAX: usize = 4096;
 const BYTES_HELD: usize = 16_384;
+
+pub(crate) fn reference_time(seconds: f64) -> SystemTime {
+    Duration::try_from_secs_f64(seconds + UNIX_TO_REFERENCE)
+        .map_or(UNIX_EPOCH, |since| UNIX_EPOCH + since)
+}
 
 pub(crate) fn reference_seconds(at: SystemTime) -> f64 {
     match at.duration_since(UNIX_EPOCH) {

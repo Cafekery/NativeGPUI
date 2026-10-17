@@ -295,6 +295,8 @@ fn reads_small_files_whole() {
         server.read_all(&file, 1000),
         Err(Error::Protocol(_))
     ));
+    assert!(server.read_range(&file, 1000, 50).unwrap() == bytes[1000..1050]);
+    assert!(server.read_range(&file, (600 << 10) - 10, 100).unwrap() == bytes[(600 << 10) - 10..]);
     fs::remove_dir_all(&dir).unwrap();
 }
 

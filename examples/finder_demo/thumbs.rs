@@ -192,7 +192,7 @@ pub(crate) fn thumb(
         return largest(&row.path, icon);
     }
     let path = if crate::remote::is_remote(&row.path) {
-        crate::remote::cached_copy(row)?
+        crate::remote::cached_copy(row, key.1)?
     } else {
         PathBuf::from(row.path.as_ref())
     };

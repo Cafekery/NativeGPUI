@@ -31,8 +31,12 @@ struct Job {
 
 impl Job {
     fn new(end: u64) -> Job {
+        Job::span(0, end)
+    }
+
+    fn span(start: u64, end: u64) -> Job {
         Job {
-            next: AtomicU64::new(0),
+            next: AtomicU64::new(start),
             end,
             done: AtomicU64::new(0),
             cancel: AtomicBool::new(false),
@@ -136,23 +140,35 @@ impl Server {
         if size > limit {
             return Err(too_large());
         }
-        let bytes = Mutex::new(Vec::new());
-        let job = Job::new(if size == 0 { limit + 1 } else { size });
-        let sink = |offset: u64, data: &[u8]| {
-            let mut bytes = bytes.lock();
-            let (start, end) = (offset as usize, offset as usize + data.len());
-            if bytes.len() < end {
-                bytes.resize(end, 0);
-            }
-            bytes[start..end].copy_from_slice(data);
-            Ok(())
-        };
-        fetch(&handle, &job, self.inner.read_size, &sink)?;
-        let bytes = bytes.into_inner();
+        let bytes = self.read(&handle, 0, if size == 0 { limit + 1 } else { size })?;
         if bytes.len() as u64 > limit {
             return Err(too_large());
         }
         Ok(bytes)
+    }
+
+    /// `len` bytes from `offset`, fewer where the file ends first.
+    pub fn read_range(&self, remote: &str, offset: u64, len: u64) -> Result<Vec<u8>, Error> {
+        let session = self.inner.session(1)?;
+        let handle = Handle::open(&session, remote, FXF_READ)?;
+        self.read(&handle, offset, offset.saturating_add(len))
+    }
+
+    fn read(&self, handle: &Handle, start: u64, end: u64) -> Result<Vec<u8>, Error> {
+        let bytes = Mutex::new(Vec::new());
+        let job = Job::span(start, end);
+        let sink = |offset: u64, data: &[u8]| {
+            let mut bytes = bytes.lock();
+            let from = (offset - start) as usize;
+            let to = from + data.len();
+            if bytes.len() < to {
+                bytes.resize(to, 0);
+            }
+            bytes[from..to].copy_from_slice(data);
+            Ok(())
+        };
+        fetch(handle, &job, self.inner.read_size, &sink)?;
+        Ok(bytes.into_inner())
     }
 
     /// Runs `work` on `first` and, for a large file, on further pool sessions as they come up,
