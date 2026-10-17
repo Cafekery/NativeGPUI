@@ -73,7 +73,11 @@ pub(crate) fn prune_fetches(drawn: &HashSet<SharedString>) {
 }
 
 fn work() {
-    while let Some((key, local)) = QUEUE.lock().pop() {
+    loop {
+        // A `while let` guard would hold the queue lock through the whole download.
+        let Some((key, local)) = QUEUE.lock().pop() else {
+            break;
+        };
         let fetched = connected(&key.0)
             .ok_or(Error::Disconnected)
             .and_then(|server| {
