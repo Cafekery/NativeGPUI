@@ -356,10 +356,14 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) {
         let id = Id::Local(self.queue.submit(op.clone(), conflict));
-        self.push_job(JobRow::new(id, op, conflict, after, record, sound), cx);
+        self.push_job(
+            JobRow::new(id, op, conflict, after, record, sound),
+            false,
+            cx,
+        );
     }
 
-    /// `fetch` pairs remote files with the cache paths they download to.
+    /// `fetch` pairs remote files with the cache paths they download to. Returns the job's id.
     pub(crate) fn submit_remote(
         &mut self,
         op: Op,
@@ -367,18 +371,32 @@ impl FinderDemo {
         then: Option<Then>,
         after: After,
         cx: &mut Context<Self>,
-    ) {
+    ) -> u64 {
         let artwork = subject(&op).and_then(|path| self.remote_artwork(path));
         let sound = Sound::of(&op, false).filter(|_| fetch.is_empty());
-        let id = Id::Remote(self.remote_jobs.start(op.clone(), fetch, then));
-        let mut row = JobRow::new(id, op, Conflict::KeepBoth, after, Record::New, sound);
+        // Quick Look paging through a server folder would otherwise keep raising the window.
+        let quiet = matches!(then, Some(Then::QuickLook(_)));
+        let job = self.remote_jobs.start(op.clone(), fetch, then);
+        let mut row = JobRow::new(
+            Id::Remote(job),
+            op,
+            Conflict::KeepBoth,
+            after,
+            Record::New,
+            sound,
+        );
         row.artwork = artwork;
-        self.push_job(row, cx);
+        self.push_job(row, quiet, cx);
+        job
     }
 
-    fn push_job(&mut self, row: JobRow, cx: &mut Context<Self>) {
+    fn push_job(&mut self, row: JobRow, quiet: bool, cx: &mut Context<Self>) {
         let id = row.id;
         self.jobs.push(row);
+        cx.notify();
+        if quiet {
+            return;
+        }
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SHOW_AFTER).await;
             this.update(cx, |this, cx| {
@@ -390,7 +408,6 @@ impl FinderDemo {
             .ok();
         })
         .detach();
-        cx.notify();
     }
 
     pub(crate) fn poll_jobs(&mut self) -> bool {

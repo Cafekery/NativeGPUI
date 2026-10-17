@@ -237,7 +237,8 @@ impl FinderDemo {
         }
         if remote {
             let then = Some(crate::remote::Then::MoveIn(with));
-            return self.submit_remote(op, Vec::new(), then, After::Rename, cx);
+            self.submit_remote(op, Vec::new(), then, After::Rename, cx);
+            return;
         }
         cx.spawn(async move |this, cx| {
             let made = cx

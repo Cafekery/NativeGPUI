@@ -76,7 +76,11 @@ impl FinderDemo {
             shown,
             update,
         };
-        self.fetch(items, |items| Then::QuickLook(look(items)), cx);
+        // Moving on before a file lands leaves its download hogging the next one's bandwidth.
+        if let Some(job) = self.ql_fetch.take() {
+            self.remote_jobs.cancel(job);
+        }
+        self.ql_fetch = self.fetch(items, |items| Then::QuickLook(look(items)), cx);
     }
 
     pub(crate) fn looked(&mut self, look: Look, window: &mut Window, cx: &mut Context<Self>) {
@@ -87,12 +91,13 @@ impl FinderDemo {
             update,
             ..
         } = look;
-        let source = shown.1;
         if !update && !quick_look_visible() {
-            self.ql_shown = Some(shown);
-            quick_look(window, items, current, source, key_forwarder(window, cx));
-        } else if update && quick_look_visible() && self.ql_shown.as_ref() == Some(&shown) {
-            quick_look_update(window, items, current, source);
+            self.ql_shown = Some(shown.clone());
+            quick_look(window, items, current, shown.1, key_forwarder(window, cx));
+        } else if update && quick_look_visible() {
+            if let Some(now) = self.ql_shown.as_ref().filter(|now| now.0 == shown.0) {
+                quick_look_update(window, items, current, now.1);
+            }
         }
     }
 
@@ -145,7 +150,13 @@ impl FinderDemo {
         let Some(subject) = self.quick_look_subject() else {
             return;
         };
-        let settled = match &self.ql_shown {
+        let remote = crate::remote::is_remote(&subject.0);
+        let settled = match self.ql_shown.as_mut() {
+            // A server file is fetched once; its icon moving only moves the zoom anchor.
+            Some(shown) if remote && shown.0 == subject.0 => {
+                shown.1 = subject.1;
+                true
+            }
             Some(shown) => *shown == subject,
             // A window that did not open the panel never hands it its folder.
             None => self.selected.is_empty(),
@@ -157,7 +168,7 @@ impl FinderDemo {
             return;
         };
         self.ql_shown = Some(subject.clone());
-        if crate::remote::is_remote(&subject.0) {
+        if remote {
             cx.defer_in(window, move |this, window, cx| {
                 this.look_remote(items, current, subject, true, window, cx)
             });

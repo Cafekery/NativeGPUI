@@ -489,25 +489,23 @@ impl FinderDemo {
         })
     }
 
-    /// Downloads into the cache, then hands the cached copies on.
+    /// Downloads into the cache, then hands the cached copies on. Returns the job's id.
     pub(crate) fn fetch(
         &mut self,
         ids: Vec<PathBuf>,
         then: impl FnOnce(Vec<PathBuf>) -> Then,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Option<u64> {
         let pairs: Vec<(PathBuf, PathBuf)> = (ids.into_iter())
             .filter_map(|id| Some((id.clone(), jobs::cached(id.to_str()?)?)))
             .collect();
-        let Some(into) = pairs.first().and_then(|(_, to)| to.parent()) else {
-            return;
-        };
+        let into = pairs.first().and_then(|(_, to)| to.parent())?;
         let op = Op::Copy {
             items: pairs.iter().map(|(id, _)| id.clone()).collect(),
             into: into.to_path_buf(),
         };
         let then = then(pairs.iter().map(|(_, to)| to.clone()).collect());
-        self.submit_remote(op, pairs, Some(then), After::Nothing, cx);
+        Some(self.submit_remote(op, pairs, Some(then), After::Nothing, cx))
     }
 
     pub(crate) fn then(&mut self, then: Then, clean: bool, cx: &mut Context<Self>) {
