@@ -1,8 +1,8 @@
 use std::cell::Cell;
 
 use gpui::{
-    AnyWindowHandle, App, Bounds, Context, Entity, FontWeight, Render, Window, WindowBounds,
-    WindowOptions, div, point, prelude::*, px, relative, size,
+    AnyWindowHandle, App, Bounds, Context, Entity, FontWeight, Render, SharedString, Window,
+    WindowBounds, WindowOptions, div, point, prelude::*, px, relative, size,
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::{
@@ -101,19 +101,11 @@ fn folder_hint(protocol: Protocol) -> &'static str {
     }
 }
 
-fn small(text: &str) -> f32 {
-    text_height(
-        text,
-        f32::from(tokens::small_system_font_size()),
-        FontWeight::NORMAL,
-        FIELD_W,
-    )
-}
-
 fn hint_height() -> f32 {
+    let small = f32::from(tokens::small_system_font_size());
     Protocol::ALL
         .iter()
-        .map(|protocol| small(protocol.hint()))
+        .map(|protocol| text_height(protocol.hint(), small, FontWeight::NORMAL, FIELD_W))
         .fold(0., f32::max)
 }
 
@@ -190,7 +182,7 @@ impl ServerForm {
         &self,
         id: &'static str,
         text: &str,
-        placeholder: &'static str,
+        placeholder: impl Into<SharedString>,
         set: fn(&mut Saved, String),
         cx: &mut Context<Self>,
     ) -> NativeTextField {
@@ -301,14 +293,7 @@ impl Render for ServerForm {
         let port = self.field(
             "ng.finder.server.port",
             &self.saved.port,
-            match protocol {
-                Protocol::Smb => "445",
-                Protocol::Sftp => "22",
-                Protocol::WebDav => "443",
-                Protocol::Afp => "548",
-                Protocol::Nfs => "2049",
-                Protocol::Ftp => "21",
-            },
+            protocol.default_port().to_string(),
             |saved, text| saved.port = text,
             cx,
         );

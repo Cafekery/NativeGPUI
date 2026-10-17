@@ -133,7 +133,7 @@ impl Saved {
             .rsplit_once('@')
             .map_or(("", authority), |(user, host)| (user, host));
         let (host, port) = match host_port.rsplit_once(':') {
-            Some((host, port)) if !host.ends_with(']') || host.starts_with('[') => (host, port),
+            Some((host, port)) if port.bytes().all(|b| b.is_ascii_digit()) => (host, port),
             _ => (host_port, ""),
         };
         let mut saved = Saved::new(protocol);
@@ -155,23 +155,20 @@ impl Saved {
             Protocol::Nfs => "nfs",
             Protocol::Ftp => "ftp",
         };
-        let mut address = format!("{scheme}://");
         let user = self.user.trim();
-        if !user.is_empty() {
-            address.push_str(user);
-            address.push('@');
-        }
-        address.push_str(self.host.trim());
-        if let Some(port) = self.port() {
-            address.push(':');
-            address.push_str(&port.to_string());
-        }
+        let user = if user.is_empty() {
+            String::new()
+        } else {
+            format!("{user}@")
+        };
+        let port = self.port().map_or(String::new(), |port| format!(":{port}"));
         let path = self.path.trim().trim_start_matches('/');
-        if !path.is_empty() {
-            address.push('/');
-            address.push_str(path);
-        }
-        address
+        let path = if path.is_empty() {
+            String::new()
+        } else {
+            format!("/{path}")
+        };
+        format!("{scheme}://{user}{}{port}{path}", self.host.trim())
     }
 
     pub(crate) fn port(&self) -> Option<u16> {
