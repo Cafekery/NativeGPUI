@@ -474,21 +474,6 @@ pub(crate) fn set_connect_last(address: &str) {
     set_setting_text(CONNECT_LAST, address);
 }
 
-/// Finder's last Connect to Server frame, in AppKit's bottom-left screen points.
-pub(crate) fn finder_connect_frame() -> Option<[f64; 4]> {
-    let bounds = finder_string("FXConnectToBounds")?;
-    let mut sides = bounds
-        .split(|ch: char| !(ch.is_ascii_digit() || ch == '.' || ch == '-'))
-        .filter(|side| !side.is_empty())
-        .map(|side| side.parse::<f64>().ok());
-    Some([
-        sides.next()??,
-        sides.next()??,
-        sides.next()??,
-        sides.next()??,
-    ])
-}
-
 fn finder_servers(list: &str) -> Option<Vec<String>> {
     let file = crate::home().join(format!(
         "Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.{list}.sfl4"
