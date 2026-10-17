@@ -43,6 +43,7 @@ mod remote;
 mod search;
 mod search_field;
 mod select;
+mod servers;
 mod settings;
 mod signal;
 mod smart;

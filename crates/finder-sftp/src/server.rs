@@ -80,6 +80,9 @@ fn ssh(address: &Address, askpass: Option<&Askpass>) -> Result<(Arc<Session>, Pe
     if let Some(port) = address.port {
         command.arg("-p").arg(port.to_string());
     }
+    if let Some(identity) = &address.identity {
+        command.arg("-i").arg(identity);
+    }
     let mut attempt = None;
     if let Some(askpass) = askpass {
         let path = askpass.dir.join(format!("attempt-{}", next()));
@@ -224,6 +227,7 @@ impl Server {
             host: String::new(),
             port: None,
             path: String::new(),
+            identity: None,
         };
         Server::start(address, Spawn::Command(Box::new(make)))
     }

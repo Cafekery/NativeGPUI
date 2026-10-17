@@ -1621,16 +1621,18 @@ impl Info {
                 opener.chosen = Some(app);
             }
             Some(Pick::Store) => crate::openwith::app_store(&[path]),
-            Some(Pick::Other) => choose_file(cx, Some("/Applications"), move |info, app, cx| {
-                crate::openwith::set_default(std::slice::from_ref(&path), &app);
-                let mut opener = Opener::of(&path);
-                if !opener.apps.contains(&app) {
-                    opener.apps.push(app.clone());
-                }
-                opener.chosen = Some(app);
-                info.opener = Some(opener);
-                cx.notify();
-            }),
+            Some(Pick::Other) => {
+                choose_file(cx, Some("/Applications".into()), move |info, app, cx| {
+                    crate::openwith::set_default(std::slice::from_ref(&path), &app);
+                    let mut opener = Opener::of(&path);
+                    if !opener.apps.contains(&app) {
+                        opener.apps.push(app.clone());
+                    }
+                    opener.chosen = Some(app);
+                    info.opener = Some(opener);
+                    cx.notify();
+                })
+            }
             Some(Pick::Separator) | None => {}
         }
         cx.notify();

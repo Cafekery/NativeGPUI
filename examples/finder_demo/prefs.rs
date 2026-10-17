@@ -513,15 +513,16 @@ fn finder_servers(list: &str) -> Option<Vec<String>> {
     Some(items.iter().filter_map(name).collect())
 }
 
-pub(crate) fn favorite_servers() -> Vec<String> {
-    sidebar_file()
-        .remove("servers.favorite")
+pub(crate) fn saved_servers() -> Vec<String> {
+    let mut file = sidebar_file();
+    file.remove("servers.saved")
+        .or_else(|| file.remove("servers.favorite"))
         .or_else(|| finder_servers("FavoriteServers"))
         .unwrap_or_default()
 }
 
-pub(crate) fn set_favorite_servers(servers: &[&str]) {
-    write_list("servers.favorite", servers);
+pub(crate) fn set_saved_servers(servers: &[String]) {
+    write_list("servers.saved", servers);
 }
 
 pub(crate) fn recent_servers() -> Vec<String> {

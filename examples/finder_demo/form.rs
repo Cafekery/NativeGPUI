@@ -482,7 +482,7 @@ pub(crate) fn resize_later(
 /// Runs from a task: the open panel's modal loop would re-enter GPUI's borrow.
 pub(crate) fn choose_file<V: 'static>(
     cx: &mut Context<V>,
-    from: Option<&'static str>,
+    from: Option<PathBuf>,
     chosen: impl FnOnce(&mut V, PathBuf, &mut Context<V>) + 'static,
 ) {
     cx.spawn(async move |this, cx| {
@@ -492,7 +492,9 @@ pub(crate) fn choose_file<V: 'static>(
         let panel = NSOpenPanel::openPanel(mtm);
         crate::chrome::toolbar::system_corners_of(&panel);
         if let Some(from) = from {
-            panel.setDirectoryURL(Some(&NSURL::fileURLWithPath(&NSString::from_str(from))));
+            panel.setDirectoryURL(Some(&NSURL::fileURLWithPath(&NSString::from_str(
+                &from.to_string_lossy(),
+            ))));
         }
         if panel.runModal() != NSModalResponseOK {
             return;

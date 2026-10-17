@@ -12,6 +12,7 @@ mod tests;
 
 use std::fmt::{self, Write as _};
 use std::io;
+use std::path::PathBuf;
 
 pub use server::Server;
 
@@ -22,6 +23,7 @@ pub struct Address {
     pub port: Option<u16>,
     /// Empty means the login home.
     pub path: String,
+    pub identity: Option<PathBuf>,
 }
 
 impl Address {
@@ -68,6 +70,7 @@ impl Address {
             host: host.to_owned(),
             port,
             path: path.to_owned(),
+            identity: None,
         })
     }
 
