@@ -137,6 +137,23 @@ pub(crate) fn open() -> Option<WindowHandle<Connect>> {
     OPEN.with_borrow(|open| *open)
 }
 
+/// Shows the window with `address` filled in and starts connecting, so progress and errors land there.
+pub(crate) fn connect_to(
+    address: String,
+    demo: WeakEntity<FinderDemo>,
+    host: AnyWindowHandle,
+    cx: &mut App,
+) {
+    show(demo, host, cx);
+    if let Some(open) = open() {
+        open.update(cx, |connect, _, cx| {
+            connect.address = address;
+            connect.connect(cx);
+        })
+        .ok();
+    }
+}
+
 pub(crate) fn set_connecting(connecting: bool, cx: &mut AsyncApp) {
     if let Some(open) = open() {
         open.update(cx, |connect, _, cx| {
@@ -390,10 +407,15 @@ impl Render for Connect {
                 MenuEntry::item("").symbol("ellipsis.circle"),
                 clearing(MenuEntry::item("Clear Recent Servers\u{2026}")),
                 clearing(MenuEntry::item("Clear Recent Servers").option_alternate()),
+                MenuEntry::separator(),
+                MenuEntry::item("Connect to SFTP Server\u{2026}"),
             ])
-            .on_change(cx.listener(|connect, picked: &usize, window, cx| {
-                connect.clear_recents(*picked == 1, window, cx)
-            }));
+            .on_change(
+                cx.listener(|connect, picked: &usize, window, cx| match picked {
+                    4 => super::sftp::show(connect.demo.clone(), connect.host, cx),
+                    picked => connect.clear_recents(*picked == 1, window, cx),
+                }),
+            );
         native_root(
             div()
                 .relative()

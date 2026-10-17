@@ -2,6 +2,7 @@ pub(crate) mod connect;
 pub(crate) mod criteria_bar;
 pub(crate) mod path_bar;
 pub(crate) mod scope_bar;
+pub(crate) mod sftp;
 pub(crate) mod sheet;
 pub(crate) mod sidebar;
 pub(crate) mod status_bar;

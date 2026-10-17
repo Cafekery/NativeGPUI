@@ -89,6 +89,7 @@ actions!(
         GoShared,
         GoToFolder,
         ConnectToServer,
+        ConnectToSftp,
         GoUtilities,
         ClearRecents,
         NewFolder,
@@ -863,6 +864,7 @@ pub(crate) fn go_rows(recents: &[(&'static str, String)]) -> Vec<MenuCommand> {
         MenuCommand::separator(),
         MenuCommand::new("Go to Folder…", GoToFolder).key("cmd-shift-g"),
         MenuCommand::new("Connect to Server…", ConnectToServer).key("cmd-k"),
+        MenuCommand::new("Connect to SFTP Server…", ConnectToSftp).key("cmd-alt-k"),
     ]);
     rows
 }
@@ -1211,6 +1213,10 @@ impl FinderDemo {
             .on_action(cx.listener(|_, _: &ConnectToServer, window, cx| {
                 let demo = cx.entity().downgrade();
                 crate::chrome::connect::show(demo, window.window_handle(), cx);
+            }))
+            .on_action(cx.listener(|_, _: &ConnectToSftp, window, cx| {
+                let demo = cx.entity().downgrade();
+                crate::chrome::sftp::show(demo, window.window_handle(), cx);
             }))
             .on_action(cx.listener(run_act::<QuickLook>(Act::QuickLook)))
             .on_action(cx.listener(|this, _: &Slideshow, window, cx| this.slideshow(window, cx)))
