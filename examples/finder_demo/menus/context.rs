@@ -188,6 +188,7 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     }
     menu.item(MenuEntry::item("Duplicate"), Act::Duplicate);
     menu.item(exactly("Duplicate Exactly"), Act::Duplicate);
+    menu.item(MenuEntry::item("Move to…"), Act::MoveTo);
     menu.item(MenuEntry::item("Make Alias"), Act::MakeAlias);
     let look = if unlistable {
         subject("Quick Look", &line.row.display, false, chosen)
@@ -291,6 +292,7 @@ fn remote_item(line: &Line, many: bool, chosen: usize) -> Menu {
         Act::Rename,
     );
     menu.item(MenuEntry::item("Duplicate"), Act::Duplicate);
+    menu.item(MenuEntry::item("Move to…"), Act::MoveTo);
     if many || line.row.opens.is_none() {
         menu.item(MenuEntry::item("Quick Look"), Act::QuickLook);
     }

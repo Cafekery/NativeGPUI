@@ -62,6 +62,7 @@ actions!(
         CompressNamed,
         Duplicate,
         DuplicateExactly,
+        MoveTo,
         EjectSelection,
         EjectOne,
         EjectAll,
@@ -384,6 +385,7 @@ fn enabled(action: &dyn Action) -> bool {
                     &NewFolderWithSelection,
                     &RenameSelection,
                     &Duplicate,
+                    &MoveTo,
                     &Trash,
                 ],
             )
@@ -442,6 +444,7 @@ fn enabled(action: &dyn Action) -> bool {
                             &CompressNamed,
                             &Duplicate,
                             &DuplicateExactly,
+                            &MoveTo,
                             &MakeAlias,
                             &Trash,
                             &DeleteImmediately,
@@ -698,6 +701,7 @@ fn file_rows() -> Vec<MenuCommand> {
         MenuCommand::new("Duplicate Exactly", DuplicateExactly)
             .key("cmd-alt-shift-d")
             .option_alternate(),
+        MenuCommand::new("Move to…", MoveTo),
         MenuCommand::new("Make Alias", MakeAlias).key("cmd-ctrl-a"),
         MenuCommand::new("Quick Look", QuickLook).key("cmd-y"),
         MenuCommand::new("Slideshow", Slideshow)
@@ -1099,6 +1103,7 @@ impl FinderDemo {
             .on_action(cx.listener(run_act::<RenameSelection>(Act::Rename)))
             .on_action(cx.listener(run_act::<Duplicate>(Act::Duplicate)))
             .on_action(cx.listener(run_act::<DuplicateExactly>(Act::Duplicate)))
+            .on_action(cx.listener(run_act::<MoveTo>(Act::MoveTo)))
             .on_action(cx.listener(run_act::<DeleteImmediately>(Act::DeleteNow)))
             .on_action(cx.listener(run_act::<Trash>(Act::Trash)))
             .on_action(cx.listener(|this, _: &CopyPath, _, cx| this.copy_pathnames(cx)))

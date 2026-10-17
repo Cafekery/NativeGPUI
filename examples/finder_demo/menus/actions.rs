@@ -47,6 +47,7 @@ pub(crate) enum Act {
     EmptyTrash,
     Rename,
     Duplicate,
+    MoveTo,
     MakeAlias,
     QuickLook,
     OpenWith(&'static str),
@@ -165,6 +166,7 @@ impl FinderDemo {
             Act::EmptyTrash => self.empty_trash(cx),
             Act::Rename => self.renaming = self.cursor.clone(),
             Act::Duplicate => self.with_selection(Op::Duplicate, After::Select, cx),
+            Act::MoveTo => self.open_move_to(window, cx),
             Act::MakeAlias => self.with_selection(Op::MakeAlias, After::Rename, cx),
             Act::Compress => self.with_selection(Op::Compress, After::Select, cx),
             Act::Share => self.share_selection(window, cx),
@@ -270,7 +272,7 @@ impl FinderDemo {
     }
 
     /// The chosen items an operation can take, server roots aside.
-    fn items(&self) -> Vec<PathBuf> {
+    pub(crate) fn items(&self) -> Vec<PathBuf> {
         self.chosen_keys()
             .iter()
             .filter(|key| !crate::remote::is_root(key))

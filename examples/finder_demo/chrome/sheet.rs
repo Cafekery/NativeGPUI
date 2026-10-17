@@ -1,5 +1,6 @@
 use std::ffi::CString;
 use std::ops::Range;
+use std::path::PathBuf;
 
 use finder_fs::sort::fold;
 use gpui::{
@@ -74,6 +75,8 @@ pub(crate) struct GoPanel {
     demo: WeakEntity<FinderDemo>,
     host: AnyWindowHandle,
     here: &'static str,
+    /// Empty when the sheet navigates; otherwise what the typed folder receives.
+    moving: Vec<PathBuf>,
     typed: String,
     lines: Vec<GoLine>,
     selected: Option<usize>,
@@ -273,6 +276,17 @@ fn remember_go(path: &str) {
 
 impl FinderDemo {
     pub(crate) fn open_go(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_go_sheet(Vec::new(), window, cx);
+    }
+
+    pub(crate) fn open_move_to(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let items = self.items();
+        if !items.is_empty() {
+            self.open_go_sheet(items, window, cx);
+        }
+    }
+
+    fn open_go_sheet(&mut self, moving: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
         if self.go_sheet.is_some() {
             return;
         }
@@ -297,6 +311,7 @@ impl FinderDemo {
                         demo,
                         host: handle,
                         here,
+                        moving,
                         typed: String::new(),
                         lines: Vec::new(),
                         selected: None,
@@ -470,10 +485,14 @@ impl GoPanel {
                 return;
             }
             this.update_in(cx, |this, window, cx| {
+                let moving = std::mem::take(&mut this.moving);
                 this.close(window, cx, move |demo, window, cx| match (folder, item) {
+                    (Some(id), _) if !moving.is_empty() => demo.move_to(moving, id, cx),
                     (Some(id), _) => demo.go(id, window, cx),
-                    (None, Some(item)) => demo.show_enclosing(item, window, cx),
-                    (None, None) => {}
+                    (None, Some(item)) if moving.is_empty() => {
+                        demo.show_enclosing(item, window, cx)
+                    }
+                    _ => {}
                 })
             })
             .ok();
@@ -517,7 +536,11 @@ impl Render for GoPanel {
             .stretch()
             .borderless()
             .font_size(FIELD_FONT)
-            .placeholder("Go to Folder")
+            .placeholder(if self.moving.is_empty() {
+                "Go to Folder"
+            } else {
+                "Move to Folder"
+            })
             .editing(0..self.typed.chars().count())
             .on_change(cx.listener(|panel, text: &String, _, cx| panel.typing(text.clone(), cx)))
             .on_command(COMMANDS, move |command, text, _, cx| {
