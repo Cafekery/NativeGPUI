@@ -466,9 +466,15 @@ impl FinderDemo {
         true
     }
 
+    /// Search hits count too: a deep search lists folders the cache has never seen.
     pub(crate) fn remote_row(&self, dir: &'static str, key: &str) -> Option<Arc<Row>> {
-        let rows = &self.folders.get(dir)?.rows;
-        rows.iter().find(|row| row.path.as_ref() == key).cloned()
+        let cached = self.folders.get(dir).map(|folder| folder.rows.iter());
+        cached
+            .into_iter()
+            .flatten()
+            .chain(&self.hits)
+            .find(|row| row.path.as_ref() == key)
+            .cloned()
     }
 
     pub(crate) fn remote_artwork(&self, path: &Path) -> Option<FileType<'static>> {
