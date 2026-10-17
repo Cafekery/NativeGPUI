@@ -138,6 +138,7 @@ pub(crate) fn show(demo: WeakEntity<FinderDemo>, host: AnyWindowHandle, cx: &mut
     })
     .detach();
 }
+
 pub(crate) fn open() -> Option<WindowHandle<Connect>> {
     OPEN.with_borrow(|open| *open)
 }

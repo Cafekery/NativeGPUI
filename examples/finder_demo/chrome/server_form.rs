@@ -463,7 +463,7 @@ impl Render for ServerForm {
                         .h(px(BUTTON_H))
                         .items_end()
                         .justify_end()
-                        .gap(px(12.))
+                        .gap(px(GAP))
                         .child(
                             native_button("ng.finder.server.cancel", "Cancel")
                                 .width(px(BUTTON_W))
