@@ -12,8 +12,13 @@ use parking_lot::Mutex;
 use super::{connected, jobs::cached, split};
 use crate::data::{Face, Row, reference_seconds};
 
-/// Larger files stay icons until opened.
-const LIMIT: u64 = 64 << 20;
+/// Larger files stay icons until opened; a camera raw runs to about 100 MB.
+fn limit(face: Face) -> u64 {
+    match face {
+        Face::Image => 256 << 20,
+        _ => 64 << 20,
+    }
+}
 const WORKERS: usize = 4;
 /// Kinds Quick Look renders from their contents; the rest get generic icons without a download.
 const SHOWN: [Face; 9] = [
@@ -36,7 +41,7 @@ static BUSY: AtomicUsize = AtomicUsize::new(0);
 
 /// The cached copy the thumbnail service can read, fetched in the background when missing or stale.
 pub(crate) fn cached_copy(row: &Row) -> Option<PathBuf> {
-    if !SHOWN.contains(&row.face) || row.bytes > LIMIT {
+    if !SHOWN.contains(&row.face) || row.bytes > limit(row.face) {
         return None;
     }
     let local = cached(&row.path)?;
