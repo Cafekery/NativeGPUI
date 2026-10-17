@@ -67,9 +67,11 @@ pub(crate) struct Connect {
 
 pub(crate) fn show(demo: WeakEntity<FinderDemo>, host: AnyWindowHandle, cx: &mut App) {
     let raised = open().is_some_and(|open| {
-        open.update(cx, |connect, window, _| {
+        open.update(cx, |connect, window, cx| {
             (connect.demo, connect.host) = (demo.clone(), host);
+            connect.favorites = prefs::favorite_servers();
             window.activate_window();
+            cx.notify();
         })
         .is_ok()
     });

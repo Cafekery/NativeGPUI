@@ -2,19 +2,21 @@ use std::cell::RefCell;
 
 use gpui::{
     AnyWindowHandle, App, Bounds, Context, FontWeight, Render, WeakEntity, Window, WindowBounds,
-    WindowHandle, WindowOptions, div, point, prelude::*, px, size,
+    WindowHandle, WindowOptions, div, point, prelude::*, px, relative, size,
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::{
-    LabelAlign, NativeTextField, native_button, native_label, native_root, native_text_field,
-    titlebar_band, window_options,
+    CheckState, LabelAlign, MenuEntry, NativeTextField, native_button, native_checkbox,
+    native_label, native_popup, native_root, native_text_field, titlebar_band, window_options,
 };
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSWindowTitleVisibility;
 
+use super::strs;
 use super::toolbar::{system_corners, titled_height};
 use crate::app::FinderDemo;
 use crate::form::text_height;
+use crate::prefs;
 
 const WIDTH: f32 = 470.;
 const EDGE: f32 = 20.;
@@ -28,7 +30,7 @@ const BUTTON_H: f32 = 32.;
 const DEFAULT_PORT: &str = "22";
 const TITLE: &str = "Browse a computer over SSH";
 const INTRO: &str = "Anything you can reach with ssh, Found\u{2019}er can browse like a folder. Files you preview or open are copied to a local cache first, so browsing stays fast.";
-const HINT: &str = "Next time you can type that address straight into Go \u{25B8} Connect to Server (\u{2318}K). You\u{2019}ll be asked for the password on the first connection; tick Remember to keep it in your keychain.";
+const HINT: &str = "Saved connections also appear under Favorite Servers in Go \u{25B8} Connect to Server (\u{2318}K), where you can remove them. You\u{2019}ll be asked for the password on the first connection; tick Remember to keep it in your keychain.";
 
 thread_local! {
     static OPEN: RefCell<Option<WindowHandle<SftpForm>>> = const { RefCell::new(None) };
@@ -41,6 +43,8 @@ pub(crate) struct SftpForm {
     user: String,
     port: String,
     folder: String,
+    saved: Vec<String>,
+    remember: bool,
     fresh: bool,
 }
 
@@ -79,6 +83,8 @@ pub(crate) fn show(demo: WeakEntity<FinderDemo>, host: AnyWindowHandle, cx: &mut
                 user: String::new(),
                 port: DEFAULT_PORT.into(),
                 folder: String::new(),
+                saved: saved(),
+                remember: true,
                 fresh: true,
             })
         },
@@ -88,7 +94,31 @@ pub(crate) fn show(demo: WeakEntity<FinderDemo>, host: AnyWindowHandle, cx: &mut
     }
 }
 
+fn saved() -> Vec<String> {
+    let mut favorites = prefs::favorite_servers();
+    favorites.retain(|address| crate::remote::address(address).is_some());
+    favorites
+}
+
 impl SftpForm {
+    fn pick(&mut self, at: usize) {
+        let picked = at
+            .checked_sub(2)
+            .and_then(|at| self.saved.get(at))
+            .and_then(|address| crate::remote::address(address));
+        let Some(address) = picked else {
+            self.server.clear();
+            self.user.clear();
+            self.port = DEFAULT_PORT.into();
+            self.folder.clear();
+            return;
+        };
+        self.server = address.host;
+        self.user = address.user.unwrap_or_default();
+        self.port = address.port.map_or(DEFAULT_PORT.into(), |port| port.to_string());
+        self.folder = address.path;
+    }
+
     fn address(&self) -> String {
         let mut address = String::from("sftp://");
         let user = self.user.trim();
@@ -116,7 +146,15 @@ impl SftpForm {
         if self.server.trim().is_empty() {
             return;
         }
-        super::connect::connect_to(self.address(), self.demo.clone(), self.host, cx);
+        let address = self.address();
+        if self.remember {
+            let mut favorites = prefs::favorite_servers();
+            if !favorites.contains(&address) {
+                favorites.push(address.clone());
+                prefs::set_favorite_servers(&strs(&favorites));
+            }
+        }
+        super::connect::connect_to(address, self.demo.clone(), self.host, cx);
         self.close(window);
     }
 
@@ -180,7 +218,7 @@ fn note(id: &'static str, text: &'static str) -> impl IntoElement {
     )
 }
 
-/// Content height: eleven stacked children, the two notes measured at the window's text width.
+/// Content height: fourteen stacked children, the two notes measured at the window's text width.
 fn height() -> f32 {
     let title = text_height(
         TITLE,
@@ -188,13 +226,27 @@ fn height() -> f32 {
         FontWeight::BOLD,
         TEXT_W,
     );
-    let rows = 2. * 4. + 4. * FIELD_H + small("Address:") + BUTTON_H;
-    2. * EDGE + 10. * GAP + title + small(INTRO) + rows + small(HINT)
+    let rows = 3. * 4. + 6. * FIELD_H + small("Address:") + BUTTON_H;
+    2. * EDGE + 13. * GAP + title + small(INTRO) + rows + small(HINT)
 }
 
 impl Render for SftpForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ready = !self.server.trim().is_empty();
+        let address = self.address();
+        let chosen = self.saved.iter().position(|saved| *saved == address);
+        let mut entries = vec![MenuEntry::item("New Connection")];
+        if !self.saved.is_empty() {
+            entries.push(MenuEntry::separator());
+            entries.extend(self.saved.iter().cloned().map(MenuEntry::item));
+        }
+        let saved = native_popup("ng.finder.sftp.saved", chosen.map_or(0, |at| at + 2))
+            .entries(entries)
+            .width(relative(1.))
+            .on_change(cx.listener(|form, at: &usize, _, cx| {
+                form.pick(*at);
+                cx.notify();
+            }));
         let mut server = self.field(
             "ng.finder.sftp.server",
             &self.server,
@@ -244,6 +296,8 @@ impl Render for SftpForm {
                 )
                 .child(note("ng.finder.sftp.intro", INTRO))
                 .child(div().h(px(4.)))
+                .child(row("Saved:", saved))
+                .child(div().h(px(4.)))
                 .child(row("Server:", server))
                 .child(row("User Name:", user))
                 .child(row(
@@ -269,11 +323,26 @@ impl Render for SftpForm {
                         )
                         .child(
                             div().flex_1().child(
-                                native_label("ng.finder.sftp.address", &self.address())
+                                native_label("ng.finder.sftp.address", &address)
                                     .font_size(tokens::small_system_font_size())
                                     .color(SystemColor::SecondaryLabel)
                                     .truncates(true),
                             ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .h(px(FIELD_H))
+                        .pl(px(LABEL_W + 8.))
+                        .child(
+                            native_checkbox("ng.finder.sftp.remember", self.remember)
+                                .title("Save this connection in Favorites")
+                                .on_change(cx.listener(|form, state: &CheckState, _, _| {
+                                    form.remember = *state == CheckState::On;
+                                })),
                         ),
                 )
                 .child(note("ng.finder.sftp.hint", HINT))
