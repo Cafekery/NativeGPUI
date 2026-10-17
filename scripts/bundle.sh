@@ -5,9 +5,10 @@ set -uo pipefail
 name=${1:-storybook}
 features=${2:-}
 
-if [ "$name" = storybook ] && [ -z "$features" ]; then
+# Both ship the private-api build: the scroll-edge blur under a transparent titlebar lives behind it.
+if [ -z "$features" ] && { [ "$name" = storybook ] || [ "$name" = finder_demo ]; }; then
   features=private-api
-  echo "storybook: defaulting to --features private-api" >&2
+  echo "$name: defaulting to --features private-api" >&2
 fi
 
 cd "$(dirname "$0")/.." || exit 1
