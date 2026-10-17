@@ -401,7 +401,6 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// Move to…: lands as a drop on that folder would, a copy when it is on another server.
     pub(crate) fn move_to(
         &mut self,
         items: Vec<PathBuf>,
@@ -415,11 +414,11 @@ impl FinderDemo {
         if items.is_empty() {
             return;
         }
-        let into = PathBuf::from(into);
-        let remote = crate::remote::is_remote(into.to_str().unwrap_or_default())
+        let remote = crate::remote::is_remote(into)
             || items
                 .iter()
                 .any(|item| crate::remote::is_remote(&item.to_string_lossy()));
+        let into = PathBuf::from(into);
         let same = items
             .iter()
             .all(|item| crate::remote::same_server(item, &into));

@@ -272,7 +272,6 @@ impl FinderDemo {
             .collect()
     }
 
-    /// The chosen items an operation can take, server roots aside.
     pub(crate) fn items(&self) -> Vec<PathBuf> {
         self.chosen_keys()
             .iter()

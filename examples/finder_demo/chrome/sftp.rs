@@ -83,7 +83,9 @@ pub(crate) fn show(demo: WeakEntity<FinderDemo>, host: AnyWindowHandle, cx: &mut
                 user: String::new(),
                 port: DEFAULT_PORT.into(),
                 folder: String::new(),
-                saved: saved(),
+                saved: (prefs::favorite_servers().into_iter())
+                    .filter(|address| crate::remote::address(address).is_some())
+                    .collect(),
                 remember: true,
                 fresh: true,
             })
@@ -92,12 +94,6 @@ pub(crate) fn show(demo: WeakEntity<FinderDemo>, host: AnyWindowHandle, cx: &mut
     if let Ok(opened) = opened {
         OPEN.set(Some(opened));
     }
-}
-
-fn saved() -> Vec<String> {
-    let mut favorites = prefs::favorite_servers();
-    favorites.retain(|address| crate::remote::address(address).is_some());
-    favorites
 }
 
 impl SftpForm {
@@ -218,7 +214,6 @@ fn note(id: &'static str, text: &'static str) -> impl IntoElement {
     )
 }
 
-/// Content height: fourteen stacked children, the two notes measured at the window's text width.
 fn height() -> f32 {
     let title = text_height(
         TITLE,

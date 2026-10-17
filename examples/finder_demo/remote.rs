@@ -255,7 +255,6 @@ fn rows(server: &Server, dir: &'static str) -> Result<Vec<Arc<Row>>, Error> {
         .collect())
 }
 
-/// Every row under `dir` the filter admits, breadth first; hidden folders are not entered.
 pub(crate) fn find(
     dir: &'static str,
     admits: &dyn Fn(&Row) -> bool,
@@ -466,12 +465,9 @@ impl FinderDemo {
         true
     }
 
-    /// Search hits count too: a deep search lists folders the cache has never seen.
     pub(crate) fn remote_row(&self, dir: &'static str, key: &str) -> Option<Arc<Row>> {
-        let cached = self.folders.get(dir).map(|folder| folder.rows.iter());
-        cached
-            .into_iter()
-            .flatten()
+        (self.folders.get(dir).into_iter())
+            .flat_map(|folder| folder.rows.iter())
             .chain(&self.hits)
             .find(|row| row.path.as_ref() == key)
             .cloned()
@@ -489,7 +485,7 @@ impl FinderDemo {
         })
     }
 
-    /// Downloads into the cache, then hands the cached copies on. Returns the job's id.
+    /// Downloads into the cache, then hands the cached copies on.
     pub(crate) fn fetch(
         &mut self,
         ids: Vec<PathBuf>,

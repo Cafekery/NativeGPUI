@@ -128,7 +128,6 @@ pub(crate) struct FinderDemo {
     pub(crate) tag_editor: Option<crate::tag_editor::TagEditor>,
     pub(crate) customizer: Option<crate::customize::Customizer>,
     pub(crate) ql_shown: Option<(SharedString, Option<Bounds<Pixels>>)>,
-    /// The Quick Look download in flight, cancelled when the selection moves on.
     pub(crate) ql_fetch: Option<u64>,
     pub(crate) list_look: ListLook,
     pub(crate) list_zoom: Option<(f32, f32, Instant)>,

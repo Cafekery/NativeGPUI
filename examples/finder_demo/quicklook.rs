@@ -76,7 +76,6 @@ impl FinderDemo {
             shown,
             update,
         };
-        // Moving on before a file lands leaves its download hogging the next one's bandwidth.
         if let Some(job) = self.ql_fetch.take() {
             self.remote_jobs.cancel(job);
         }
@@ -91,13 +90,17 @@ impl FinderDemo {
             update,
             ..
         } = look;
-        if !update && !quick_look_visible() {
-            self.ql_shown = Some(shown.clone());
-            quick_look(window, items, current, shown.1, key_forwarder(window, cx));
-        } else if update && quick_look_visible() {
-            if let Some(now) = self.ql_shown.as_ref().filter(|now| now.0 == shown.0) {
-                quick_look_update(window, items, current, now.1);
+        match (update, quick_look_visible()) {
+            (false, false) => {
+                self.ql_shown = Some(shown.clone());
+                quick_look(window, items, current, shown.1, key_forwarder(window, cx));
             }
+            (true, true) => {
+                if let Some(now) = self.ql_shown.as_ref().filter(|now| now.0 == shown.0) {
+                    quick_look_update(window, items, current, now.1);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -152,7 +155,6 @@ impl FinderDemo {
         };
         let remote = crate::remote::is_remote(&subject.0);
         let settled = match self.ql_shown.as_mut() {
-            // A server file is fetched once; its icon moving only moves the zoom anchor.
             Some(shown) if remote && shown.0 == subject.0 => {
                 shown.1 = subject.1;
                 true

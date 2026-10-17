@@ -12,7 +12,6 @@ use parking_lot::Mutex;
 use super::{connected, jobs::cached, split};
 use crate::data::{Face, Row, reference_seconds, reference_time};
 
-/// Larger files stay icons until opened; a camera raw runs to about 100 MB.
 fn limit(face: Face) -> u64 {
     match face {
         Face::Image => 256 << 20,
@@ -20,11 +19,9 @@ fn limit(face: Face) -> u64 {
     }
 }
 const WORKERS: usize = 4;
-/// Up to this many pixels a camera's 160×120 EXIF thumbnail is enough.
 const SMALL: u32 = 160;
-/// A JPEG's EXIF segment, thumbnail included, ends inside this much of the file.
+/// An EXIF segment is at most 64 KB, so the thumbnail ends inside this.
 const HEAD: u64 = 72 << 10;
-/// Kinds Quick Look renders from their contents; the rest get generic icons without a download.
 const SHOWN: [Face; 9] = [
     Face::Image,
     Face::Movie,
@@ -56,8 +53,6 @@ static ASKED: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(Default::default);
 static QUEUE: Mutex<Vec<(Key, PathBuf)>> = Mutex::new(Vec::new());
 static BUSY: AtomicUsize = AtomicUsize::new(0);
 
-/// What the thumbnail service reads for `row` at `pixels`, fetched in the background when
-/// missing or stale: the whole file, or just the JPEG a camera embeds.
 pub(crate) fn cached_copy(row: &Row, pixels: u32) -> Option<PathBuf> {
     if !SHOWN.contains(&row.face) {
         return None;
@@ -92,7 +87,6 @@ pub(crate) fn cached_copy(row: &Row, pixels: u32) -> Option<PathBuf> {
     None
 }
 
-/// Drops queued fetches for rows no longer on screen; running ones finish.
 pub(crate) fn prune_fetches(drawn: &HashSet<SharedString>) {
     let mut queue = QUEUE.lock();
     let mut asked = ASKED.lock();
@@ -148,7 +142,6 @@ fn work() {
                     Want::Whole => None,
                     want => preview(&server.server, remote, want).ok(),
                 };
-                // A JPEG without an EXIF thumbnail falls back to the whole file.
                 let Some(bytes) = embedded else {
                     let whole = cached(&key.0).ok_or(Error::Disconnected)?;
                     return server.server.download(remote, &whole, &mut |_, _| true);
@@ -171,7 +164,6 @@ fn work() {
     BUSY.fetch_sub(1, Ordering::Relaxed);
 }
 
-/// The JPEG a camera embeds: the EXIF thumbnail, or a raw's full-size preview.
 fn preview(server: &Server, remote: &str, want: Want) -> Result<Vec<u8>, Error> {
     let bad = || Error::Protocol(format!("{remote} has no embedded preview"));
     let (start, head) = match embedded(remote) {
@@ -191,7 +183,6 @@ fn preview(server: &Server, remote: &str, want: Want) -> Result<Vec<u8>, Error> 
     }
 }
 
-/// Where a RAF keeps its embedded JPEG: offset and length at bytes 84 and 88 of the header.
 fn raf_jpeg(header: &[u8]) -> Option<(u64, u64)> {
     if !header.starts_with(b"FUJIFILMCCD-RAW ") {
         return None;
@@ -201,7 +192,6 @@ fn raf_jpeg(header: &[u8]) -> Option<(u64, u64)> {
     Some((field(84)?, field(88)?)).filter(|(_, len)| *len > 0)
 }
 
-/// The EXIF thumbnail's offset and length in a JPEG: IFD1's JPEGInterchangeFormat pair.
 fn exif_thumbnail(jpeg: &[u8]) -> Option<(usize, usize)> {
     if !jpeg.starts_with(&[0xFF, 0xD8]) {
         return None;

@@ -363,7 +363,7 @@ impl FinderDemo {
         );
     }
 
-    /// `fetch` pairs remote files with the cache paths they download to. Returns the job's id.
+    /// `fetch` pairs remote files with the cache paths they download to.
     pub(crate) fn submit_remote(
         &mut self,
         op: Op,
@@ -374,7 +374,6 @@ impl FinderDemo {
     ) -> u64 {
         let artwork = subject(&op).and_then(|path| self.remote_artwork(path));
         let sound = Sound::of(&op, false).filter(|_| fetch.is_empty());
-        // Quick Look paging through a server folder would otherwise keep raising the window.
         let quiet = matches!(then, Some(Then::QuickLook(_)));
         let job = self.remote_jobs.start(op.clone(), fetch, then);
         let mut row = JobRow::new(

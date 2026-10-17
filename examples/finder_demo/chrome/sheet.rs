@@ -75,7 +75,6 @@ pub(crate) struct GoPanel {
     demo: WeakEntity<FinderDemo>,
     host: AnyWindowHandle,
     here: &'static str,
-    /// Empty when the sheet navigates; otherwise what the typed folder receives.
     moving: Vec<PathBuf>,
     typed: String,
     lines: Vec<GoLine>,
