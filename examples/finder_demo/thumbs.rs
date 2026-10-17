@@ -131,15 +131,25 @@ fn sweep_thumbnails() {
         LARGEST.with_borrow_mut(|largest| largest.retain(|(path, _), _| drawn.contains(path)));
         RETRY.with_borrow_mut(|retry| retry.retain(|(path, _, _), _| drawn.contains(path)));
     }
-    let paths: Vec<PathBuf> = drawn
-        .iter()
-        .map(|path| PathBuf::from(path.as_ref()))
-        .collect();
+    crate::remote::prune_fetches(&drawn);
+    let paths: Vec<PathBuf> = drawn.iter().filter_map(|path| local_path(path)).collect();
     thumbnails::cancel_thumbnails_outside(&paths);
 }
 
+pub(crate) fn wake() {
+    LANDING.ring();
+}
+
 fn renderable(row: &Row) -> bool {
-    row.opens.is_none() && row.face != Face::Program && !crate::remote::is_remote(&row.path)
+    row.opens.is_none() && row.face != Face::Program
+}
+
+fn local_path(id: &str) -> Option<PathBuf> {
+    if crate::remote::is_remote(id) {
+        crate::remote::cached(id)
+    } else {
+        Some(PathBuf::from(id))
+    }
 }
 
 fn key_of(row: &Row, size: f32, scale: f32, icon: bool) -> Thumb {
@@ -181,7 +191,12 @@ pub(crate) fn thumb(
     if ASKED.with_borrow(|asked| asked.contains(&key)) {
         return largest(&row.path, icon);
     }
-    let path = Path::new(row.path.as_ref());
+    let path = if crate::remote::is_remote(&row.path) {
+        crate::remote::cached_copy(row)?
+    } else {
+        PathBuf::from(row.path.as_ref())
+    };
+    let path = path.as_path();
     let modified = Duration::try_from_secs_f64(row.modified_at)
         .ok()
         .map(|since| UNIX_EPOCH + since);

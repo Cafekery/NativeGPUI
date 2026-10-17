@@ -1,7 +1,9 @@
 mod jobs;
+mod preview;
 mod promise;
 
-pub(crate) use self::jobs::{Ended, Jobs};
+pub(crate) use self::jobs::{Ended, Jobs, cached};
+pub(crate) use self::preview::{cached_copy, prune_fetches};
 
 use std::fs;
 use std::io::{self, Write};
