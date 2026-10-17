@@ -1,8 +1,8 @@
 use std::cell::Cell;
 
 use gpui::{
-    AnyWindowHandle, App, Bounds, Context, Entity, FontWeight, Render, SharedString, Window,
-    WindowBounds, WindowOptions, div, point, prelude::*, px, relative, size,
+    AnyElement, AnyWindowHandle, App, Bounds, Context, Div, Entity, FontWeight, Render,
+    SharedString, Window, WindowBounds, WindowOptions, div, point, prelude::*, px, relative, size,
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::{
@@ -16,13 +16,18 @@ use crate::form::text_height;
 use crate::frame::ns_window;
 use crate::servers::{Protocol, Saved};
 
-const WIDTH: f32 = 480.;
+const WIDTH: f32 = 520.;
 const EDGE: f32 = 20.;
-const GAP: f32 = 10.;
+const GAP: f32 = 12.;
+const SECTION_GAP: f32 = 16.;
+const HEADER_GAP: f32 = 6.;
+const CARD_PAD: f32 = 12.;
+const CARD_RADIUS: f32 = 10.;
 const LABEL_W: f32 = 100.;
 const LABEL_GAP: f32 = 8.;
-const FIELD_W: f32 = WIDTH - 2. * EDGE - LABEL_W - LABEL_GAP;
+const FIELD_W: f32 = WIDTH - 2. * (EDGE + CARD_PAD) - LABEL_W - LABEL_GAP;
 const FIELD_H: f32 = 22.;
+const HINT_TOP: f32 = 4.;
 const PORT_W: f32 = 64.;
 const CHOOSE_W: f32 = 84.;
 const BUTTON_W: f32 = 84.;
@@ -38,6 +43,7 @@ pub(crate) struct ServerForm {
     at: Option<usize>,
     saved: Saved,
     address: String,
+    height: f32,
     fresh: bool,
 }
 
@@ -51,11 +57,12 @@ pub(crate) fn open(
     if OPEN.replace(true) {
         return;
     }
+    let height = height(saved.protocol);
     let opened = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: point(px(0.), px(0.)),
-                size: size(px(WIDTH), px(height())),
+                size: size(px(WIDTH), px(height)),
             })),
             show: false,
             is_minimizable: false,
@@ -69,6 +76,7 @@ pub(crate) fn open(
                 at,
                 address: saved.address(),
                 saved,
+                height,
                 fresh: true,
             })
         },
@@ -101,6 +109,10 @@ fn folder_hint(protocol: Protocol) -> &'static str {
     }
 }
 
+fn has_option(protocol: Protocol) -> bool {
+    matches!(protocol, Protocol::Sftp | Protocol::WebDav)
+}
+
 fn hint_height() -> f32 {
     let small = f32::from(tokens::small_system_font_size());
     Protocol::ALL
@@ -109,17 +121,26 @@ fn hint_height() -> f32 {
         .fold(0., f32::max)
 }
 
-fn height() -> f32 {
-    let title = text_height(
-        "Edit Server",
+fn height(protocol: Protocol) -> f32 {
+    let (regular, small) = (
         f32::from(tokens::system_font_size()),
-        FontWeight::BOLD,
-        FIELD_W,
+        f32::from(tokens::small_system_font_size()),
     );
-    2. * EDGE + 9. * GAP + 4. + title + 8. * FIELD_H + hint_height() + BUTTON_H
+    let title = text_height("Edit Server", regular, FontWeight::BOLD, FIELD_W);
+    let card =
+        text_height("Login", small, FontWeight::SEMIBOLD, FIELD_W) + HEADER_GAP + 2. * CARD_PAD;
+    let general = 2. * FIELD_H + GAP + HINT_TOP + hint_height();
+    let server = 3. * FIELD_H + 2. * GAP;
+    let login = FIELD_H
+        + if has_option(protocol) {
+            FIELD_H + GAP
+        } else {
+            0.
+        };
+    2. * EDGE + title + 5. * SECTION_GAP + 4. * card + general + server + login + FIELD_H + BUTTON_H
 }
 
-fn row(label: &str, field: impl IntoElement) -> impl IntoElement {
+fn row(label: &str, field: impl IntoElement) -> Div {
     div()
         .flex()
         .flex_shrink_0()
@@ -134,6 +155,32 @@ fn row(label: &str, field: impl IntoElement) -> impl IntoElement {
             ),
         )
         .child(div().flex_1().h(px(FIELD_H)).child(field))
+}
+
+fn section(name: &'static str, rows: impl IntoIterator<Item = AnyElement>) -> Div {
+    div()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .gap(px(HEADER_GAP))
+        .child(
+            div().pl(px(4.)).child(
+                native_label(format!("ng.finder.server.section.{name}"), name)
+                    .font_size(tokens::small_system_font_size())
+                    .weight(FontWeight::SEMIBOLD)
+                    .color(SystemColor::SecondaryLabel),
+            ),
+        )
+        .child(
+            div()
+                .rounded(px(CARD_RADIUS))
+                .bg(system_color(SystemColor::QuaternarySystemFill))
+                .p(px(CARD_PAD))
+                .flex()
+                .flex_col()
+                .gap(px(GAP))
+                .children(rows),
+        )
 }
 
 impl ServerForm {
@@ -178,6 +225,25 @@ impl ServerForm {
         }
     }
 
+    fn fit(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let wanted = height(self.saved.protocol);
+        if self.height == wanted {
+            return;
+        }
+        self.height = wanted;
+        let Some(ns) = ns_window(window) else {
+            return;
+        };
+        // AppKit re-enters gpui as it resizes the sheet, so not inside this render.
+        cx.spawn(async move |_, _| {
+            let mut frame = ns.frame();
+            frame.origin.y += frame.size.height - f64::from(wanted);
+            frame.size.height = f64::from(wanted);
+            ns.setFrame_display_animate(frame, true, true);
+        })
+        .detach();
+    }
+
     fn field(
         &self,
         id: &'static str,
@@ -198,54 +264,59 @@ impl ServerForm {
             .on_cancel(cx.listener(|form, _, window, cx| form.close(window, cx)))
     }
 
-    fn extra_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn option_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         match self.saved.protocol {
-            Protocol::Sftp => row(
-                "Identity file:",
-                div()
-                    .flex()
-                    .gap(px(LABEL_GAP))
-                    .child(div().flex_1().h(px(FIELD_H)).child(self.field(
-                        "ng.finder.server.identity",
-                        &self.saved.identity,
-                        "Optional; ssh picks a key when empty",
-                        |saved, text| saved.identity = text,
-                        cx,
-                    )))
-                    .child(
-                        native_button("ng.finder.server.choose", "Choose\u{2026}")
-                            .width(px(CHOOSE_W))
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                let ssh = crate::home().join(".ssh");
-                                crate::form::choose_file(cx, Some(ssh), |form, path, cx| {
-                                    form.saved.identity = path.to_string_lossy().into_owned();
-                                    cx.notify();
-                                });
-                            })),
-                    ),
-            )
-            .into_any_element(),
-            Protocol::WebDav => div()
-                .flex_shrink_0()
-                .h(px(FIELD_H))
-                .pl(px(LABEL_W + LABEL_GAP))
-                .child(
-                    native_checkbox("ng.finder.server.https", self.saved.https)
-                        .title("Secure connection (HTTPS)")
-                        .on_change(cx.listener(|form, state: &CheckState, _, cx| {
-                            form.saved.https = *state == CheckState::On;
-                            form.address = form.saved.address();
-                            cx.notify();
-                        })),
+            Protocol::Sftp => Some(
+                row(
+                    "Identity file:",
+                    div()
+                        .flex()
+                        .gap(px(LABEL_GAP))
+                        .child(div().flex_1().h(px(FIELD_H)).child(self.field(
+                            "ng.finder.server.identity",
+                            &self.saved.identity,
+                            "Optional; ssh picks a key when empty",
+                            |saved, text| saved.identity = text,
+                            cx,
+                        )))
+                        .child(
+                            native_button("ng.finder.server.choose", "Choose\u{2026}")
+                                .width(px(CHOOSE_W))
+                                .on_click(cx.listener(|_, _, _, cx| {
+                                    let ssh = crate::home().join(".ssh");
+                                    crate::form::choose_file(cx, Some(ssh), |form, path, cx| {
+                                        form.saved.identity = path.to_string_lossy().into_owned();
+                                        cx.notify();
+                                    });
+                                })),
+                        ),
                 )
                 .into_any_element(),
-            _ => div().flex_shrink_0().h(px(FIELD_H)).into_any_element(),
+            ),
+            Protocol::WebDav => Some(
+                div()
+                    .flex_shrink_0()
+                    .h(px(FIELD_H))
+                    .pl(px(LABEL_W + LABEL_GAP))
+                    .child(
+                        native_checkbox("ng.finder.server.https", self.saved.https)
+                            .title("Secure connection (HTTPS)")
+                            .on_change(cx.listener(|form, state: &CheckState, _, cx| {
+                                form.saved.https = *state == CheckState::On;
+                                form.address = form.saved.address();
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element(),
+            ),
+            _ => None,
         }
     }
 }
 
 impl Render for ServerForm {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.fit(window, cx);
         let protocol = self.saved.protocol;
         let title = if self.at.is_some() {
             "Edit Server"
@@ -274,6 +345,24 @@ impl Render for ServerForm {
                 form.set_protocol(popup_protocol(*at));
                 cx.notify();
             }));
+        let connect_using = div()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap(px(HINT_TOP))
+            .child(row("Connect using:", protocols))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .pl(px(LABEL_W + LABEL_GAP))
+                    .h(px(hint_height()))
+                    .child(
+                        native_label("ng.finder.server.hint", protocol.hint())
+                            .font_size(tokens::small_system_font_size())
+                            .color(SystemColor::SecondaryLabel)
+                            .wraps(true),
+                    ),
+            );
         let server = self.field(
             "ng.finder.server.host",
             &self.saved.host,
@@ -281,15 +370,6 @@ impl Render for ServerForm {
             |saved, text| saved.host = text,
             cx,
         );
-        let user = self
-            .field(
-                "ng.finder.server.user",
-                &self.saved.user,
-                "Your login on the server",
-                |saved, text| saved.user = text,
-                cx,
-            )
-            .enabled(protocol != Protocol::Nfs);
         let port = self.field(
             "ng.finder.server.port",
             &self.saved.port,
@@ -304,6 +384,15 @@ impl Render for ServerForm {
             |saved, text| saved.path = text,
             cx,
         );
+        let user = self
+            .field(
+                "ng.finder.server.user",
+                &self.saved.user,
+                "Your login on the server",
+                |saved, text| saved.user = text,
+                cx,
+            )
+            .enabled(protocol != Protocol::Nfs);
         let address = native_text_field("ng.finder.server.address", &self.address)
             .stretch()
             .placeholder("smb://user@server/share")
@@ -319,7 +408,7 @@ impl Render for ServerForm {
                 .bg(system_color(SystemColor::WindowBackground))
                 .flex()
                 .flex_col()
-                .gap(px(GAP))
+                .gap(px(SECTION_GAP))
                 .p(px(EDGE))
                 .child(
                     div().flex_shrink_0().child(
@@ -328,39 +417,45 @@ impl Render for ServerForm {
                             .weight(FontWeight::BOLD),
                     ),
                 )
-                .child(row("Name:", name))
-                .child(row("Connect using:", protocols))
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .mt(px(4. - GAP))
-                        .pl(px(LABEL_W + LABEL_GAP))
-                        .h(px(hint_height()))
-                        .child(
-                            native_label("ng.finder.server.hint", protocol.hint())
-                                .font_size(tokens::small_system_font_size())
-                                .color(SystemColor::SecondaryLabel)
-                                .wraps(true),
-                        ),
-                )
-                .child(row("Server:", server))
-                .child(row("User Name:", user))
-                .child(row(
-                    "Port:",
-                    div()
-                        .flex()
-                        .child(div().w(px(PORT_W)).h(px(FIELD_H)).child(port)),
+                .child(section(
+                    "General",
+                    [
+                        row("Name:", name).into_any_element(),
+                        connect_using.into_any_element(),
+                    ],
                 ))
-                .child(row(
-                    if protocol.shares() {
-                        "Share:"
-                    } else {
-                        "Folder:"
-                    },
-                    folder,
+                .child(section(
+                    "Server",
+                    [
+                        row("Server:", server).into_any_element(),
+                        row(
+                            "Port:",
+                            div()
+                                .flex()
+                                .child(div().w(px(PORT_W)).h(px(FIELD_H)).child(port)),
+                        )
+                        .into_any_element(),
+                        row(
+                            if protocol.shares() {
+                                "Share:"
+                            } else {
+                                "Folder:"
+                            },
+                            folder,
+                        )
+                        .into_any_element(),
+                    ],
                 ))
-                .child(self.extra_row(cx))
-                .child(row("Address:", address))
+                .child(section(
+                    "Login",
+                    [row("User Name:", user).into_any_element()]
+                        .into_iter()
+                        .chain(self.option_row(cx)),
+                ))
+                .child(section(
+                    "Address",
+                    [div().h(px(FIELD_H)).child(address).into_any_element()],
+                ))
                 .child(
                     div()
                         .flex()
