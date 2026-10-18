@@ -16,7 +16,7 @@ use crate::app::FinderDemo;
 use crate::data::split_key;
 use crate::menus::CopyNames;
 use crate::ops::After;
-use crate::remote::file_provider;
+use crate::remote::{cache, file_provider, prefetch};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Pasting {
@@ -67,6 +67,7 @@ impl FinderDemo {
                 return;
             };
             let ids: Vec<&str> = keys.iter().map(|key| key.as_ref()).collect();
+            let mut caches = Vec::new();
             let items: Vec<Retained<NSPasteboardItem>> = keys
                 .iter()
                 .enumerate()
@@ -77,11 +78,12 @@ impl FinderDemo {
                         item.setString_forType(&NSString::from_str(&ids.join("\n")), &server);
                         item.setString_forType(&text, unsafe { NSPasteboardTypeString });
                     }
-                    if let Some(row) = split_key(key).and_then(|(dir, _)| self.remote_row(dir, key))
-                    {
-                        let provider = file_provider(mtm, key, &row);
+                    let row = split_key(key).and_then(|(dir, _)| self.remote_row(dir, key));
+                    if let Some(cache) = row.and_then(|row| cache(key, row)) {
+                        let provider = file_provider(mtm, &cache, true);
                         let types = NSArray::from_slice(&[unsafe { NSPasteboardTypeFileURL }]);
                         item.setDataProvider_forTypes(ProtocolObject::from_ref(&*provider), &types);
+                        caches.push(cache);
                     }
                     item
                 })
@@ -93,6 +95,7 @@ impl FinderDemo {
                 .map(ProtocolObject::from_retained)
                 .collect();
             board.writeObjects(&NSArray::from_retained_slice(&items));
+            prefetch(caches);
             OWN_CHANGE.set(board.changeCount());
             return;
         }

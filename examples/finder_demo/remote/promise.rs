@@ -1,7 +1,9 @@
 use std::cell::RefCell;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::thread;
 
 use block2::DynBlock;
 use finder_fs::ops::Op;
@@ -27,18 +29,51 @@ use crate::data::{Row, split_key};
 use crate::ops::After;
 
 const DRAG_ICON: f64 = 32.;
+const FETCHERS: usize = 4;
 
 struct Promised {
     id: PathBuf,
     name: String,
+    cache: Arc<Cache>,
     demo: WeakEntity<FinderDemo>,
     app: AsyncApp,
 }
 
-pub(crate) struct Cached {
+/// A remote file on its way into the cache from the moment it is copied or dragged.
+pub(crate) struct Cache {
     id: String,
     row: Arc<Row>,
     local: PathBuf,
+    done: OnceLock<bool>,
+    stop: AtomicBool,
+}
+
+impl Cache {
+    fn fetch(&self) {
+        let ok = fresh(&self.local, &self.row, true) || self.download().is_ok();
+        let _ = self.done.set(ok);
+    }
+
+    fn download(&self) -> Result<(), Error> {
+        let server = connected(&self.id).ok_or(Error::Disconnected)?;
+        if let Some(parent) = self.local.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let remote = split(&self.id).1;
+        let mut going = |_, _| !self.stop.load(Ordering::Relaxed);
+        server.server.download(remote, &self.local, &mut going)
+    }
+}
+
+pub(crate) struct Cached {
+    cache: Arc<Cache>,
+    wait: bool,
+}
+
+impl Drop for Cached {
+    fn drop(&mut self) {
+        self.cache.stop.store(true, Ordering::Relaxed);
+    }
 }
 
 thread_local! {
@@ -62,8 +97,13 @@ define_class!(
             item: &NSPasteboardItem,
             kind: &NSPasteboardType,
         ) {
-            let Cached { id, row, local } = self.ivars();
-            let Some(path) = local.to_str().filter(|_| whole(id, row, local)) else {
+            let Cached { cache, wait } = self.ivars();
+            let done = if *wait {
+                *cache.done.wait()
+            } else {
+                cache.done.get() == Some(&true)
+            };
+            let Some(path) = cache.local.to_str().filter(|_| done) else {
                 return;
             };
             if let Some(url) = NSURL::fileURLWithPath(&NSString::from_str(path)).absoluteString() {
@@ -99,7 +139,23 @@ define_class!(
             let Some(to) = url.to_file_path() else {
                 return promised(&done, false);
             };
-            let Promised { id, demo, app, .. } = self.ivars();
+            let Promised {
+                id,
+                cache,
+                demo,
+                app,
+                ..
+            } = self.ivars();
+            if cache.done.get() == Some(&true) {
+                let local = cache.local.clone();
+                app.spawn(async move |cx| {
+                    let copy = async move { fs::copy(local, to).is_ok() };
+                    promised(&done, cx.background_executor().spawn(copy).await);
+                })
+                .detach();
+                return;
+            }
+            cache.stop.store(true, Ordering::Relaxed);
             let (id, demo) = (id.clone(), demo.clone());
             app.spawn(async move |cx| {
                 let into = to.parent().unwrap_or(&to).to_path_buf();
@@ -150,19 +206,23 @@ impl FinderDemo {
         );
         let mut promises = Vec::new();
         let mut items = Vec::new();
+        let mut caches = Vec::new();
         for key in keys {
-            let Some(row) = split_key(key).and_then(|(dir, _)| self.remote_row(dir, key)) else {
+            let row = split_key(key).and_then(|(dir, _)| self.remote_row(dir, key));
+            let Some(cache) = row.and_then(|row| cache(key, row)) else {
                 continue;
             };
+            caches.push(cache.clone());
             let ivars = Promised {
                 id: PathBuf::from(key.as_ref()),
-                name: row.name.to_string(),
+                name: cache.row.name.to_string(),
+                cache: cache.clone(),
                 demo: cx.entity().downgrade(),
                 app: cx.to_async(),
             };
             let promise: Retained<Promise> =
                 unsafe { msg_send![super(Promise::alloc(mtm).set_ivars(ivars)), init] };
-            let kind = NSString::from_str(&row.uti);
+            let kind = NSString::from_str(&cache.row.uti);
             let provider = NSFilePromiseProvider::initWithFileType_delegate(
                 NSFilePromiseProvider::alloc(),
                 &kind,
@@ -170,7 +230,7 @@ impl FinderDemo {
             );
             // Undocumented, so a provider that lost it still drags as a promise alone.
             if provider.respondsToSelector(sel!(setDataProvider:forTypes:)) {
-                let source = file_provider(mtm, key, &row);
+                let source = file_provider(mtm, &cache, false);
                 let source = ProtocolObject::<dyn NSPasteboardItemDataProvider>::from_ref(&*source);
                 let types = NSArray::from_slice(&[unsafe { NSPasteboardTypeFileURL }]);
                 let _: () =
@@ -189,6 +249,7 @@ impl FinderDemo {
         let Some(source) = promises.first().cloned() else {
             return false;
         };
+        prefetch(caches);
         view.beginDraggingSessionWithItems_event_source(
             &NSArray::from_retained_slice(&items),
             &event,
@@ -200,25 +261,41 @@ impl FinderDemo {
     }
 }
 
-pub(crate) fn file_provider(mtm: MainThreadMarker, id: &str, row: &Arc<Row>) -> Retained<Provider> {
-    let cached = Cached {
+pub(crate) fn cache(id: &str, row: Arc<Row>) -> Option<Arc<Cache>> {
+    Some(Arc::new(Cache {
         id: id.to_string(),
-        row: row.clone(),
-        local: cached(id).unwrap_or_default(),
+        row,
+        local: cached(id)?,
+        done: OnceLock::new(),
+        stop: AtomicBool::new(false),
+    }))
+}
+
+pub(crate) fn prefetch(caches: Vec<Arc<Cache>>) {
+    thread::spawn(move || {
+        let next = AtomicUsize::new(0);
+        thread::scope(|scope| {
+            for _ in 0..FETCHERS.min(caches.len()) {
+                scope.spawn(|| {
+                    while let Some(cache) = caches.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        cache.fetch();
+                    }
+                });
+            }
+        });
+    });
+}
+
+pub(crate) fn file_provider(
+    mtm: MainThreadMarker,
+    cache: &Arc<Cache>,
+    wait: bool,
+) -> Retained<Provider> {
+    let cached = Cached {
+        cache: cache.clone(),
+        wait,
     };
     unsafe { msg_send![super(Provider::alloc(mtm).set_ivars(cached)), init] }
-}
-
-fn whole(id: &str, row: &Row, local: &Path) -> bool {
-    fresh(local, row, true) || download(id, local).is_ok()
-}
-
-fn download(id: &str, local: &Path) -> Result<(), Error> {
-    let server = connected(id).ok_or(Error::Disconnected)?;
-    if let Some(parent) = local.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    server.server.download(split(id).1, local, &mut |_, _| true)
 }
 
 fn icon(uti: &NSString) -> Option<Retained<NSImage>> {
