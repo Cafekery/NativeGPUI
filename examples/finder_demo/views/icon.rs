@@ -18,7 +18,7 @@ use objc2_app_kit::NSFont;
 use crate::app::FinderDemo;
 use crate::art::{Anchor, art_at, item_art};
 use crate::data::{Column, Line, Order, Row};
-use crate::dragdrop::{Grabbed, KeyDrag, Lit, drop_hover, drop_target};
+use crate::dragdrop::{GHOST_ALPHA, Grabbed, KeyDrag, Lit, drop_hover, drop_target};
 use crate::elastic::stretching;
 use crate::item_info::item_info;
 use crate::menus::tiles_menu;
@@ -62,7 +62,6 @@ const SIZE_GRAIN: f32 = 4.;
 const SIZE_STOPS: [f32; 8] = [128., 164., 204., 244., 296., 356., 428., 512.];
 pub(crate) const SIZE_STEPS: f64 = 112.;
 
-const GHOST_ALPHA: f32 = 0.7;
 const SOURCE_ALPHA: f32 = 0.35;
 const FINDER_WAIT: Duration = Duration::from_millis(30);
 

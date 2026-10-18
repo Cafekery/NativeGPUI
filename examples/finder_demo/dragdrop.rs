@@ -6,13 +6,14 @@ use std::time::{Duration, Instant};
 
 use finder_fs::ops::Op;
 use gpui::{
-    App, Div, DragMoveEvent, ExternalPaths, Hsla, Pixels, Point, SharedString, Stateful,
-    WeakEntity, Window, div, prelude::*, px,
+    AnyElement, App, Div, DragMoveEvent, ExternalPaths, Hsla, Pixels, Point, SharedString,
+    Stateful, WeakEntity, Window, div, prelude::*, px,
 };
+use native_gpui::tokens;
 use objc2_foundation::{NSNumber, NSString, NSUserDefaults};
 
 use crate::app::FinderDemo;
-use crate::data::split_key;
+use crate::data::{Line, Row, split_key};
 use crate::ops::After;
 use crate::view::{COLUMN_VIEW, ICON_VIEW};
 use crate::views::list::TWIST_W;
@@ -27,6 +28,10 @@ const FLASH_DIM: f32 = 0.83;
 
 /// Finder ignores a drop until the press has travelled this far; gpui starts a drag at 2.
 const DRAG_START: f64 = 7.;
+
+pub(crate) const GHOST_ALPHA: f32 = 0.7;
+const GHOST_PAD: f32 = 4.;
+const GHOST_RADIUS: f32 = 4.;
 
 #[derive(Clone)]
 pub(crate) struct RowDrag {
@@ -246,6 +251,52 @@ pub(crate) struct DragGhost;
 impl Render for DragGhost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
+    }
+}
+
+/// A row's icon and name, laid out where the row drew them so the grab offset holds.
+pub(crate) struct RowGhost {
+    pub(crate) line: Line,
+    pub(crate) art: fn(&Row, f32, f32, bool) -> AnyElement,
+    pub(crate) left: f32,
+    pub(crate) icon: f32,
+    pub(crate) gap: f32,
+    pub(crate) width: f32,
+    pub(crate) text: f32,
+    pub(crate) row_h: f32,
+    pub(crate) scale: f32,
+    pub(crate) previews: bool,
+    pub(crate) fill: Hsla,
+    pub(crate) ink: Hsla,
+}
+
+impl Render for RowGhost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let row = &self.line.row;
+        div()
+            .h(px(self.row_h))
+            .pl(px(self.left))
+            .flex()
+            .items_center()
+            .font_family(tokens::system_font_family())
+            .text_size(px(self.text))
+            .opacity(GHOST_ALPHA)
+            .when(self.icon > 0., |ghost| {
+                ghost.child((self.art)(row, self.icon, self.scale, self.previews))
+            })
+            .child(
+                div()
+                    .ml(px(self.gap - GHOST_PAD))
+                    .px(px(GHOST_PAD))
+                    .max_w(px(self.width + 2. * GHOST_PAD))
+                    .rounded(px(GHOST_RADIUS))
+                    .bg(self.fill)
+                    .text_color(self.ink)
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis_middle()
+                    .child(row.display.clone()),
+            )
     }
 }
 

@@ -15,7 +15,7 @@ use native_gpui::tokens::{self, SystemColor};
 use crate::app::FinderDemo;
 use crate::art::{Anchor, Art, art_at, list_art, small_glyph};
 use crate::data::{Column, Line, Row, date_style, intern, kind_text, list_date, today};
-use crate::dragdrop::{DragGhost, RowDrag, flashed};
+use crate::dragdrop::{RowDrag, RowGhost, flashed};
 use crate::elastic::{shifted, stretching};
 use crate::listing::Slot;
 use crate::menus::rows_menu;
@@ -807,7 +807,27 @@ fn shell(drawn: &Drawn, pixels: Div, window: &Window) -> AnyElement {
             RowDrag {
                 key: line.key.clone(),
             },
-            move |_, _, _, cx| cx.new(|_| DragGhost),
+            {
+                let (line, look) = (line.clone(), look.clone());
+                move |_, _, _, cx| {
+                    cx.new(|_| RowGhost {
+                        line: line.clone(),
+                        art: |row, size, scale, previews| {
+                            list_art(row, size, scale, previews).element(size)
+                        },
+                        left: indent(&line),
+                        icon: look.icon,
+                        gap: label_gap(look.icon),
+                        width: look.name_w - name_prefix(&line, look.icon),
+                        text: look.text,
+                        row_h: look.row_h,
+                        scale: look.scale,
+                        previews: look.previews,
+                        fill: look.selection,
+                        ink: look.selection_text,
+                    })
+                }
+            },
         );
     match line.row.opens {
         Some(into) => {

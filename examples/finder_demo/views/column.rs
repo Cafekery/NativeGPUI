@@ -13,7 +13,7 @@ use native_gpui::tokens::{self, SystemColor, system_color};
 use crate::app::FinderDemo;
 use crate::art::{art_at, item_art};
 use crate::data::{Line, Row, is_volume_root, split_key};
-use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_lands, flashed};
+use crate::dragdrop::{Lit, RowDrag, RowGhost, drop_lands, flashed};
 use crate::elastic::{shifted, stretching};
 use crate::fit;
 use crate::locations::{COMPUTER, place};
@@ -365,7 +365,29 @@ impl FinderDemo {
                                 RowDrag {
                                     key: line.key.clone(),
                                 },
-                                move |_, _, _, cx| cx.new(|_| DragGhost),
+                                {
+                                    let line = line.clone();
+                                    move |_, _, _, cx| {
+                                        cx.new(|_| RowGhost {
+                                            line: line.clone(),
+                                            art: item_art,
+                                            left: ICON_X,
+                                            icon: if look.icons { ICON } else { 0. },
+                                            gap: if look.icons {
+                                                LABEL_X - ICON_X - ICON
+                                            } else {
+                                                0.
+                                            },
+                                            width: content_w - TRAIL - LABEL_X,
+                                            text: look.text,
+                                            row_h,
+                                            scale,
+                                            previews,
+                                            fill: highlight,
+                                            ink: highlight_text,
+                                        })
+                                    }
+                                },
                             );
                         match line.row.opens {
                             Some(into) => {
