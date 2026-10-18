@@ -125,7 +125,7 @@ pub(crate) fn prune_fetches(drawn: &HashSet<SharedString>) {
     });
 }
 
-fn fresh(local: &Path, row: &Row, whole: bool) -> bool {
+pub(super) fn fresh(local: &Path, row: &Row, whole: bool) -> bool {
     fs::metadata(local).ok().is_some_and(|meta| {
         (!whole || meta.len() == row.bytes)
             && meta.modified().ok().map(reference_seconds) == Some(row.modified_at)
