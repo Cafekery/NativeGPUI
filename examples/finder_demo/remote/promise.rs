@@ -24,7 +24,7 @@ use parking_lot::{Condvar, Mutex};
 use super::preview::fresh;
 use super::{Then, connected, jobs::cached, split};
 use crate::app::FinderDemo;
-use crate::data::split_key;
+use crate::data::{Row, split_key};
 use crate::ops::After;
 
 const DRAG_ICON: f64 = 32.;
@@ -181,13 +181,11 @@ impl FinderDemo {
             let promise: Retained<Promise> =
                 unsafe { msg_send![super(Promise::alloc(mtm).set_ivars(ivars)), init] };
             let kind = NSString::from_str(&row.uti);
-            let provider = unsafe {
-                NSFilePromiseProvider::initWithFileType_delegate(
-                    NSFilePromiseProvider::alloc(),
-                    &kind,
-                    ProtocolObject::from_ref(&*promise),
-                )
-            };
+            let provider = NSFilePromiseProvider::initWithFileType_delegate(
+                NSFilePromiseProvider::alloc(),
+                &kind,
+                ProtocolObject::from_ref(&*promise),
+            );
             // Undocumented, so a provider that lost it still drags as a promise alone.
             if provider.respondsToSelector(sel!(setDataProvider:forTypes:)) {
                 let source =
@@ -211,7 +209,7 @@ impl FinderDemo {
         };
         thread::spawn(move || {
             for (id, row, local, fetched) in copies {
-                fetched.finish(fresh(&local, &row, true) || download(&id, &local).is_ok());
+                fetched.finish(whole(&id, &row, &local));
             }
         });
         view.beginDraggingSessionWithItems_event_source(
@@ -223,6 +221,11 @@ impl FinderDemo {
         PROMISES.set(promises);
         true
     }
+}
+
+/// The whole file in the cache, downloaded now if the copy there is stale.
+pub(crate) fn whole(id: &str, row: &Row, local: &Path) -> bool {
+    fresh(local, row, true) || download(id, local).is_ok()
 }
 
 fn download(id: &str, local: &Path) -> Result<(), Error> {
