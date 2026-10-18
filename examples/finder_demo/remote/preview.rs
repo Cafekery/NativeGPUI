@@ -50,7 +50,7 @@ enum Embedded {
 type Key = (SharedString, u64, Want);
 
 static ASKED: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(Default::default);
-static QUEUE: Mutex<Vec<(Key, PathBuf)>> = Mutex::new(Vec::new());
+static QUEUE: Mutex<Vec<(Key, PathBuf, bool)>> = Mutex::new(Vec::new());
 static BUSY: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn cached_copy(row: &Row, pixels: u32) -> Option<PathBuf> {
@@ -66,6 +66,12 @@ pub(crate) fn cached_copy(row: &Row, pixels: u32) -> Option<PathBuf> {
         (Some(Embedded::Raf), false) => Want::Large,
         _ => Want::Whole,
     };
+    if want == Want::Small && embedded(&row.path) == Some(Embedded::Raf) {
+        let large = sidecar(whole.clone(), "large");
+        if !fresh(&large, row, false) {
+            fetch(row, Want::Large, large, true);
+        }
+    }
     let local = match want {
         Want::Whole if row.bytes > limit(row.face) => return None,
         Want::Whole => whole,
@@ -75,22 +81,42 @@ pub(crate) fn cached_copy(row: &Row, pixels: u32) -> Option<PathBuf> {
     if want != Want::Whole && fresh(&local, row, false) {
         return Some(local);
     }
-    let key = (row.path.clone(), row.modified_at.to_bits(), want);
-    if ASKED.lock().insert(key.clone()) {
-        QUEUE.lock().push((key, local));
-        if BUSY.fetch_add(1, Ordering::Relaxed) < WORKERS {
-            thread::spawn(work);
-        } else {
-            BUSY.fetch_sub(1, Ordering::Relaxed);
-        }
-    }
+    fetch(row, want, local, false);
     None
+}
+
+/// `ahead` fetches wait behind everything a view is drawing right now.
+fn fetch(row: &Row, want: Want, local: PathBuf, ahead: bool) {
+    let key = (row.path.clone(), row.modified_at.to_bits(), want);
+    let mut queue = QUEUE.lock();
+    if !ASKED.lock().insert(key.clone()) {
+        if let Some(item) = queue.iter_mut().find(|item| item.0 == key) {
+            item.2 &= ahead;
+        }
+        return;
+    }
+    queue.push((key, local, ahead));
+    if BUSY.fetch_add(1, Ordering::Relaxed) < WORKERS {
+        thread::spawn(work);
+    } else {
+        BUSY.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+fn next() -> Option<(Key, PathBuf)> {
+    let mut queue = QUEUE.lock();
+    let at = queue
+        .iter()
+        .rposition(|item| !item.2)
+        .or(queue.len().checked_sub(1))?;
+    let (key, local, _) = queue.remove(at);
+    Some((key, local))
 }
 
 pub(crate) fn prune_fetches(drawn: &HashSet<SharedString>) {
     let mut queue = QUEUE.lock();
     let mut asked = ASKED.lock();
-    queue.retain(|(key, _)| {
+    queue.retain(|(key, ..)| {
         let kept = drawn.contains(&key.0);
         if !kept {
             asked.remove(key);
@@ -126,11 +152,7 @@ fn embedded(path: &str) -> Option<Embedded> {
 }
 
 fn work() {
-    loop {
-        // A `while let` guard would hold the queue lock through the whole download.
-        let Some((key, local)) = QUEUE.lock().pop() else {
-            break;
-        };
+    while let Some((key, local)) = next() {
         let fetched = connected(&key.0)
             .ok_or(Error::Disconnected)
             .and_then(|server| {
