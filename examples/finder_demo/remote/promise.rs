@@ -1,7 +1,7 @@
 use std::cell::RefCell;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::{fs, thread};
 
 use block2::DynBlock;
 use finder_fs::ops::Op;
@@ -19,7 +19,6 @@ use objc2_app_kit::{
     NSWorkspace,
 };
 use objc2_foundation::{NSArray, NSError, NSObject, NSPoint, NSRect, NSSize, NSString, NSURL};
-use parking_lot::{Condvar, Mutex};
 
 use super::preview::fresh;
 use super::{Then, connected, jobs::cached, split};
@@ -32,36 +31,47 @@ const DRAG_ICON: f64 = 32.;
 struct Promised {
     id: PathBuf,
     name: String,
-    local: PathBuf,
-    fetched: Arc<Fetch>,
     demo: WeakEntity<FinderDemo>,
     app: AsyncApp,
 }
 
-#[derive(Default)]
-struct Fetch {
-    done: Mutex<Option<bool>>,
-    ready: Condvar,
-}
-
-impl Fetch {
-    fn finish(&self, ok: bool) {
-        *self.done.lock() = Some(ok);
-        self.ready.notify_all();
-    }
-
-    fn wait(&self) -> bool {
-        let mut done = self.done.lock();
-        while done.is_none() {
-            self.ready.wait(&mut done);
-        }
-        done.unwrap_or(false)
-    }
+pub(crate) struct Cached {
+    id: String,
+    row: Arc<Row>,
+    local: PathBuf,
 }
 
 thread_local! {
     static PROMISES: RefCell<Vec<Retained<Promise>>> = const { RefCell::new(Vec::new()) };
 }
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGRemoteFile"]
+    #[ivars = Cached]
+    pub(crate) struct Provider;
+
+    unsafe impl NSObjectProtocol for Provider {}
+
+    unsafe impl NSPasteboardItemDataProvider for Provider {
+        #[unsafe(method(pasteboard:item:provideDataForType:))]
+        fn provide(
+            &self,
+            _: Option<&NSPasteboard>,
+            item: &NSPasteboardItem,
+            kind: &NSPasteboardType,
+        ) {
+            let Cached { id, row, local } = self.ivars();
+            let Some(path) = local.to_str().filter(|_| whole(id, row, local)) else {
+                return;
+            };
+            if let Some(url) = NSURL::fileURLWithPath(&NSString::from_str(path)).absoluteString() {
+                item.setString_forType(&url, kind);
+            }
+        }
+    }
+);
 
 define_class!(
     #[unsafe(super(NSObject))]
@@ -109,26 +119,6 @@ define_class!(
         }
     }
 
-    /// A plain file URL to the cached copy, for receivers that know no promises.
-    unsafe impl NSPasteboardItemDataProvider for Promise {
-        #[unsafe(method(pasteboard:item:provideDataForType:))]
-        fn provide(
-            &self,
-            _: Option<&NSPasteboard>,
-            item: &NSPasteboardItem,
-            kind: &NSPasteboardType,
-        ) {
-            let Promised { local, fetched, .. } = self.ivars();
-            let Some(path) = local.to_str().filter(|_| fetched.wait()) else {
-                return;
-            };
-            let url = NSURL::fileURLWithPath(&NSString::from_str(path));
-            if let Some(url) = url.absoluteString() {
-                item.setString_forType(&url, kind);
-            }
-        }
-    }
-
     unsafe impl NSDraggingSource for Promise {
         #[unsafe(method(draggingSession:sourceOperationMaskForDraggingContext:))]
         fn operation_mask(&self, _: &NSDraggingSession, _: NSDraggingContext) -> NSDragOperation {
@@ -160,21 +150,13 @@ impl FinderDemo {
         );
         let mut promises = Vec::new();
         let mut items = Vec::new();
-        let mut copies = Vec::new();
         for key in keys {
             let Some(row) = split_key(key).and_then(|(dir, _)| self.remote_row(dir, key)) else {
                 continue;
             };
-            let Some(local) = cached(key) else {
-                continue;
-            };
-            let fetched = Arc::new(Fetch::default());
-            copies.push((key.clone(), row.clone(), local.clone(), fetched.clone()));
             let ivars = Promised {
                 id: PathBuf::from(key.as_ref()),
                 name: row.name.to_string(),
-                local,
-                fetched,
                 demo: cx.entity().downgrade(),
                 app: cx.to_async(),
             };
@@ -188,8 +170,8 @@ impl FinderDemo {
             );
             // Undocumented, so a provider that lost it still drags as a promise alone.
             if provider.respondsToSelector(sel!(setDataProvider:forTypes:)) {
-                let source =
-                    ProtocolObject::<dyn NSPasteboardItemDataProvider>::from_ref(&*promise);
+                let source = file_provider(mtm, key, &row);
+                let source = ProtocolObject::<dyn NSPasteboardItemDataProvider>::from_ref(&*source);
                 let types = NSArray::from_slice(&[unsafe { NSPasteboardTypeFileURL }]);
                 let _: () =
                     unsafe { msg_send![&*provider, setDataProvider: source, forTypes: &*types] };
@@ -207,11 +189,6 @@ impl FinderDemo {
         let Some(source) = promises.first().cloned() else {
             return false;
         };
-        thread::spawn(move || {
-            for (id, row, local, fetched) in copies {
-                fetched.finish(whole(&id, &row, &local));
-            }
-        });
         view.beginDraggingSessionWithItems_event_source(
             &NSArray::from_retained_slice(&items),
             &event,
@@ -223,8 +200,16 @@ impl FinderDemo {
     }
 }
 
-/// The whole file in the cache, downloaded now if the copy there is stale.
-pub(crate) fn whole(id: &str, row: &Row, local: &Path) -> bool {
+pub(crate) fn file_provider(mtm: MainThreadMarker, id: &str, row: &Arc<Row>) -> Retained<Provider> {
+    let cached = Cached {
+        id: id.to_string(),
+        row: row.clone(),
+        local: cached(id).unwrap_or_default(),
+    };
+    unsafe { msg_send![super(Provider::alloc(mtm).set_ivars(cached)), init] }
+}
+
+fn whole(id: &str, row: &Row, local: &Path) -> bool {
     fresh(local, row, true) || download(id, local).is_ok()
 }
 

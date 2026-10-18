@@ -254,7 +254,6 @@ impl Render for DragGhost {
     }
 }
 
-/// A row's icon and name, laid out where the row drew them so the grab offset holds.
 pub(crate) struct RowGhost {
     pub(crate) line: Line,
     pub(crate) art: fn(&Row, f32, f32, bool) -> AnyElement,

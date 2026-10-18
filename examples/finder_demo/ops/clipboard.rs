@@ -1,23 +1,22 @@
 use std::cell::Cell;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use finder_fs::ops::Op;
 use gpui::{Context, Window};
+use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSPasteboard, NSPasteboardItem, NSPasteboardItemDataProvider, NSPasteboardType,
-    NSPasteboardTypeFileURL, NSPasteboardTypeString, NSPasteboardWriting,
+    NSPasteboard, NSPasteboardItem, NSPasteboardTypeFileURL, NSPasteboardTypeString,
+    NSPasteboardWriting,
 };
-use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString, NSURL};
+use objc2_foundation::{NSArray, NSString, NSURL};
 
 use crate::app::FinderDemo;
-use crate::data::{Row, split_key};
+use crate::data::split_key;
 use crate::menus::CopyNames;
 use crate::ops::After;
-use crate::remote::{cached, whole};
+use crate::remote::file_provider;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Pasting {
@@ -47,41 +46,6 @@ thread_local! {
         ))
     };
 }
-
-struct Clip {
-    id: String,
-    row: Arc<Row>,
-    local: PathBuf,
-}
-
-define_class!(
-    #[unsafe(super(NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[name = "NGRemoteClip"]
-    #[ivars = Clip]
-    struct Provider;
-
-    unsafe impl NSObjectProtocol for Provider {}
-
-    /// A copied remote file as a file URL, fetched into the cache when another app pastes it.
-    unsafe impl NSPasteboardItemDataProvider for Provider {
-        #[unsafe(method(pasteboard:item:provideDataForType:))]
-        fn provide(
-            &self,
-            _: Option<&NSPasteboard>,
-            item: &NSPasteboardItem,
-            kind: &NSPasteboardType,
-        ) {
-            let Clip { id, row, local } = self.ivars();
-            let Some(path) = local.to_str().filter(|_| whole(id, row, local)) else {
-                return;
-            };
-            if let Some(url) = NSURL::fileURLWithPath(&NSString::from_str(path)).absoluteString() {
-                item.setString_forType(&url, kind);
-            }
-        }
-    }
-);
 
 impl FinderDemo {
     pub(crate) fn copy_names(&mut self, _: &CopyNames, _: &mut Window, _: &mut Context<Self>) {
@@ -113,15 +77,9 @@ impl FinderDemo {
                         item.setString_forType(&NSString::from_str(&ids.join("\n")), &server);
                         item.setString_forType(&text, unsafe { NSPasteboardTypeString });
                     }
-                    let row = split_key(key).and_then(|(dir, _)| self.remote_row(dir, key));
-                    if let Some((row, local)) = row.zip(cached(key)) {
-                        let clip = Clip {
-                            id: key.to_string(),
-                            row,
-                            local,
-                        };
-                        let provider: Retained<Provider> =
-                            unsafe { msg_send![super(Provider::alloc(mtm).set_ivars(clip)), init] };
+                    if let Some(row) = split_key(key).and_then(|(dir, _)| self.remote_row(dir, key))
+                    {
+                        let provider = file_provider(mtm, key, &row);
                         let types = NSArray::from_slice(&[unsafe { NSPasteboardTypeFileURL }]);
                         item.setDataProvider_forTypes(ProtocolObject::from_ref(&*provider), &types);
                     }
