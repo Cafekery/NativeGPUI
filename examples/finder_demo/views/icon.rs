@@ -17,7 +17,7 @@ use native_gpui::tokens::{SystemColor, system_color};
 use objc2_app_kit::NSFont;
 
 use crate::app::FinderDemo;
-use crate::art::{Anchor, art_at, item_art};
+use crate::art::{Anchor, HIDDEN_ALPHA, art_at, item_art, marked};
 use crate::data::{Column, Line, Order, Row};
 use crate::dragdrop::{GHOST_ALPHA, Grabbed, KeyDrag, Lit, drop_hover, drop_target};
 use crate::elastic::stretching;
@@ -940,7 +940,7 @@ fn tile(
                 .bg(look.backdrop),
         );
     }
-    let icon = icon.child(art_at(art, size, anchor));
+    let icon = icon.child(art_at(marked(&line.row, size, art), size, anchor));
 
     let dots = tag_dots_w(tags);
     let room = if options.bottom {
@@ -971,6 +971,7 @@ fn tile(
                 })
                 .text_color(if lit { look.selection_text } else { look.label })
                 .when(lit, |label| label.bg(pill))
+                .when(line.row.hidden, |label| label.opacity(HIDDEN_ALPHA))
                 .child(shown);
             if clipped {
                 native_tooltip("ng.finder.name.tip", line.row.display.clone(), caption)

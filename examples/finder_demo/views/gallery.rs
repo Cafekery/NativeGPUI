@@ -5,7 +5,7 @@ use gpui::{AnyElement, Pixels, Point, Window, div, point, prelude::*, px};
 use native_gpui::{native_callout, native_scroll_bars, tokens};
 
 use crate::app::FinderDemo;
-use crate::art::{Poster, art_at, item_art, picture_art, poster_art};
+use crate::art::{HIDDEN_ALPHA, Poster, art_at, item_art, marked, picture_art, poster_art};
 use crate::data::Line;
 use crate::elastic::stretching;
 use crate::menus::tiles_menu;
@@ -150,7 +150,11 @@ impl FinderDemo {
                     .justify_center()
                     .rounded(px(STRIP_RADIUS))
                     .when(is_selected, |cell| cell.bg(palette.tertiary))
-                    .child(item_art(&line.row, strip.icon, self.scale, previews))
+                    .child(marked(
+                        &line.row,
+                        strip.icon,
+                        item_art(&line.row, strip.icon, self.scale, previews),
+                    ))
                     .on_click(pick_on_click(line, this.clone()));
                 native_callout(
                     ("ng.finder.strip.tip", index),
@@ -179,6 +183,7 @@ impl FinderDemo {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis_middle()
+                                .when(lines[index].row.hidden, |title| title.opacity(HIDDEN_ALPHA))
                                 .child(lines[index].row.display.clone()),
                         )
                         .children(tag_dots(&row_tags(&lines[index].key)))

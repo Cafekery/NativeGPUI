@@ -11,7 +11,7 @@ use native_gpui::native_scroll_bars;
 use native_gpui::tokens::{self, SystemColor, system_color};
 
 use crate::app::FinderDemo;
-use crate::art::{art_at, item_art};
+use crate::art::{HIDDEN_ALPHA, art_at, item_art, marked};
 use crate::data::{Line, Row, is_volume_root, split_key};
 use crate::dragdrop::{Lit, RowDrag, RowGhost, drop_lands, flashed};
 use crate::elastic::{shifted, stretching};
@@ -318,7 +318,11 @@ impl FinderDemo {
                             })
                             .when(look.icons, |cell| {
                                 cell.child(art_at(
-                                    item_art(&line.row, ICON, scale, previews),
+                                    marked(
+                                        &line.row,
+                                        ICON,
+                                        item_art(&line.row, ICON, scale, previews),
+                                    ),
                                     ICON,
                                     (cursor.as_ref() == Some(&line.key)).then(|| ql_icon.clone()),
                                 ))
@@ -333,6 +337,7 @@ impl FinderDemo {
                             } else {
                                 name.text_ellipsis_middle()
                                     .whitespace_nowrap()
+                                    .when(line.row.hidden, |name| name.opacity(HIDDEN_ALPHA))
                                     .child(line.row.display.clone())
                             })
                             .children(dots.map(|(_, dots)| {

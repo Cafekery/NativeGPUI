@@ -14,7 +14,7 @@ use native_gpui::native_tooltip;
 use native_gpui::tokens::{self, SystemColor};
 
 use crate::app::FinderDemo;
-use crate::art::{Anchor, Art, art_at, list_art, small_glyph};
+use crate::art::{Anchor, Art, HIDDEN_ALPHA, art_at, list_art, marked, small_glyph};
 use crate::data::{Column, Line, Row, date_style, intern, kind_text, list_date, today};
 use crate::dragdrop::{RowDrag, RowGhost, flashed};
 use crate::elastic::{shifted, stretching};
@@ -598,7 +598,7 @@ fn name_cell(drawn: &Drawn, rename: Option<AnyElement>) -> Div {
         .whitespace_nowrap()
         .child(div().w(px(indent(line))).h_full().flex_none())
         .child(art_at(
-            drawn.art.element(look.icon),
+            marked(&line.row, look.icon, drawn.art.element(look.icon)),
             look.icon,
             drawn.anchor.clone(),
         ))
@@ -608,6 +608,7 @@ fn name_cell(drawn: &Drawn, rename: Option<AnyElement>) -> Div {
                 let label = label
                     .overflow_hidden()
                     .text_ellipsis_middle()
+                    .when(line.row.hidden, |label| label.opacity(HIDDEN_ALPHA))
                     .child(line.row.display.clone());
                 if drawn.clipped {
                     native_tooltip("ng.finder.name.tip", line.row.display.clone(), label)

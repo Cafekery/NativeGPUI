@@ -18,6 +18,7 @@ use crate::views::column::OPTIONS as COLUMN_OPTIONS;
 
 const PREVIEWS: &str = "showIconPreview";
 const COLUMN_PREVIEWS: &str = "ShowIconThumbnails";
+pub(crate) const HIDDEN_ALPHA: f32 = 0.5;
 
 pub(crate) struct Previews {
     pub(crate) list: bool,
@@ -247,6 +248,16 @@ pub(crate) fn art_at(art: AnyElement, size: f32, anchor: Option<Anchor>) -> AnyE
         .flex_none()
         .size(px(size))
         .child(native_anchor(&anchor, art))
+        .into_any_element()
+}
+
+pub(crate) fn marked(row: &Row, size: f32, art: AnyElement) -> AnyElement {
+    if !row.hidden {
+        return art;
+    }
+    square(size)
+        .opacity(HIDDEN_ALPHA)
+        .child(art)
         .into_any_element()
 }
 
