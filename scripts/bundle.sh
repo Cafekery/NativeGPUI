@@ -109,6 +109,13 @@ $doc_keys
 	<key>NSNetworkVolumesUsageDescription</key>	<string>$product lists mounted network shares under Locations.</string>
 	<key>NSFileProviderDomainUsageDescription</key>	<string>$product lists cloud folders such as iCloud Drive.</string>
 	<key>NSAppDataUsageDescription</key>		<string>$product lists other apps' data folders while browsing your Library.</string>
+	<key>NSLocalNetworkUsageDescription</key>	<string>$product asks nearby computers what they are, to show each server with its own icon as Finder does.</string>
+	<key>NSBonjourServices</key>	<array>
+		<string>_device-info._tcp</string>
+		<string>_smb._tcp</string>
+		<string>_afpovertcp._tcp</string>
+		<string>_rfb._tcp</string>
+	</array>
 </dict>
 </plist>
 PLIST
