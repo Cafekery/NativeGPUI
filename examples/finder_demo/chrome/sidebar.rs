@@ -13,7 +13,12 @@ use native_gpui::sidebar::{
     SidebarOptions, sidebar_group, sidebar_item, system_symbol,
 };
 use native_gpui::{CheckState, Material};
-use objc2_foundation::{NSError, NSFileManager, NSFileManagerUnmountOptions, NSString, NSURL};
+use objc2::MainThreadMarker;
+use objc2_app_kit::{NSAlert, NSAlertSecondButtonReturn, NSRunningApplication};
+use objc2_foundation::{
+    NSError, NSFileManager, NSFileManagerUnmountDissentingProcessIdentifierErrorKey,
+    NSFileManagerUnmountOptions, NSNumber, NSString, NSURL,
+};
 
 use super::strs;
 use crate::app::FinderDemo;
@@ -1070,10 +1075,21 @@ impl FinderDemo {
         let (sent, refusals) = channel();
         for share in &shares {
             let sent = sent.clone();
+            let at = share.clone();
             let refused = RcBlock::new(move |error: *mut NSError| {
                 let error = unsafe { error.as_ref() };
-                sent.send(error.map(|error| error.localizedDescription().to_string()))
-                    .ok();
+                sent.send(error.map(|error| {
+                    let key = unsafe { NSFileManagerUnmountDissentingProcessIdentifierErrorKey };
+                    let holder = (error.userInfo().objectForKey(key))
+                        .and_then(|pid| pid.downcast::<NSNumber>().ok())
+                        .map(|pid| pid.intValue());
+                    Refused {
+                        share: at.clone(),
+                        text: error.localizedDescription().to_string(),
+                        holder,
+                    }
+                }))
+                .ok();
             });
             let url = NSURL::fileURLWithPath(&NSString::from_str(share));
             unsafe {
@@ -1098,8 +1114,12 @@ impl FinderDemo {
                 .await;
             this.update_in(cx, |this, window, cx| {
                 this.sidebar_took(groups);
-                if let Some(refused) = refused {
-                    this.complain(&refused);
+                match refused {
+                    Some(refused) if refused.holder.is_some() && this.host.is_some() => {
+                        this.ask_force_eject(refused, cx)
+                    }
+                    Some(refused) => this.complain(&refused.text),
+                    None => {}
                 }
                 if left && this.here().starts_with(id.as_str()) {
                     if let Some(home) = finder_fs::volumes::standard(Standard::Home) {
@@ -1112,4 +1132,70 @@ impl FinderDemo {
         })
         .detach();
     }
+
+    fn ask_force_eject(&mut self, refused: Refused, cx: &mut Context<Self>) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let name = crate::data::volume_at(&refused.share).map_or_else(
+            || {
+                Path::new(&refused.share)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            },
+            |volume| volume.name.to_owned(),
+        );
+        let app = (refused.holder)
+            .and_then(NSRunningApplication::runningApplicationWithProcessIdentifier)
+            .and_then(|app| app.localizedName());
+        let text = match app {
+            Some(app) => format!(
+                "The volume \u{201c}{name}\u{201d} wasn\u{2019}t ejected because \u{201c}{app}\u{201d} is using it."
+            ),
+            None => format!(
+                "The volume \u{201c}{name}\u{201d} wasn\u{2019}t ejected because one or more programs may be using it."
+            ),
+        };
+        let alert = NSAlert::new(mtm);
+        alert.setMessageText(&NSString::from_str(&text));
+        alert.setInformativeText(&NSString::from_str(
+            "Quit the app and try again, or force it to eject. An app still writing to the volume can lose data.",
+        ));
+        alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+        alert.addButtonWithTitle(&NSString::from_str("Force Eject"));
+        let share = refused.share;
+        self.sheet(&alert, NSAlertSecondButtonReturn, cx, move |this, cx| {
+            this.force_eject(share.clone(), cx)
+        });
+    }
+
+    fn force_eject(&mut self, share: String, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let (forced, groups) = cx
+                .background_executor()
+                .spawn(async move {
+                    let forced = finder_fs::volumes::force_unmount(Path::new(&share));
+                    crate::data::refresh_volumes();
+                    (forced, groups())
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.sidebar_took(groups);
+                if let Err(error) = forced {
+                    this.complain(&error.to_string());
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+struct Refused {
+    share: String,
+    text: String,
+    holder: Option<i32>,
 }

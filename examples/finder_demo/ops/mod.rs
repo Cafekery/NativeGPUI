@@ -196,7 +196,7 @@ impl FinderDemo {
         self.sheet(&alert, NSAlertFirstButtonReturn, cx, run);
     }
 
-    fn sheet(
+    pub(crate) fn sheet(
         &self,
         alert: &NSAlert,
         accept: NSModalResponse,

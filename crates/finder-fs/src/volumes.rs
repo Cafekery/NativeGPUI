@@ -135,6 +135,12 @@ pub(crate) fn mount_point(path: &Path) -> Option<PathBuf> {
     statfs(path).map(|stats| mount_path(&stats))
 }
 
+/// Unmounts even while a process holds files open on the volume.
+pub fn force_unmount(path: &Path) -> std::io::Result<()> {
+    let path = crate::c_path(path)?;
+    crate::check(unsafe { libc::unmount(path.as_ptr(), libc::MNT_FORCE) })
+}
+
 /// Reads the kernel's cached mount table, so a share that stopped answering can't stall it.
 pub(crate) fn mount_table() -> Vec<libc::statfs> {
     let mut stats: Vec<libc::statfs> = Vec::new();
