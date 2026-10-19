@@ -1066,8 +1066,10 @@ impl FinderDemo {
                 }
             }
             let holders: Vec<&'static str> = (dir.ancestors().skip(1))
-                .filter_map(|up| self.folders.known(&up.to_string_lossy()))
-                .filter(|&id| self.weighs(id))
+                .enumerate()
+                .filter_map(|(up, dir)| Some((up, self.folders.known(&dir.to_string_lossy())?)))
+                .filter(|&(up, id)| self.weighs(id) || up == 0 && self.folders.shown(id))
+                .map(|(_, id)| id)
                 .collect();
             for id in holders {
                 self.read_folder(id, cx);
