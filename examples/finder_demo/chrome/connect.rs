@@ -194,6 +194,11 @@ impl FinderDemo {
             self.connect_sftp(sftp, address, window, cx);
             return;
         }
+        // Finder reads a bare host as an SMB server.
+        let address = match address.contains("://") {
+            true => address,
+            false => format!("smb://{address}"),
+        };
         let handle = window.window_handle();
         cx.spawn(async move |this, cx| {
             set_connecting(true, cx);
