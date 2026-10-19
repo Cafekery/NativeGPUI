@@ -8,7 +8,7 @@ use std::thread;
 
 use parking_lot::Mutex;
 
-use crate::ops::transfer::{Kind, OnError, Progress, Transfer};
+use crate::ops::transfer::{End, Failure, Kind, OnError, Progress, Transfer};
 use crate::ops::{self, Carried, Conflict, Done, Op, Unfinished};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -127,8 +127,10 @@ fn run(id: JobId, op: Op, conflict: Conflict, transfer: &Transfer) -> Event {
         };
     };
     transfer.begin_steps(items.len() as u64);
+    let keeps_going = matches!(op, Op::Trash(_) | Op::DeleteImmediately(_));
     let mut results = Vec::with_capacity(items.len());
     let mut undos = Vec::with_capacity(items.len());
+    let mut failures = Vec::new();
     for (at, item) in items.iter().enumerate() {
         if !transfer.next_step() {
             return Event::Cancelled {
@@ -151,6 +153,15 @@ fn run(id: JobId, op: Op, conflict: Conflict, transfer: &Transfer) -> Event {
                     }
                     Err(error) => error,
                 };
+                if keeps_going {
+                    failures.push(Failure {
+                        source: item.clone(),
+                        dest: item.clone(),
+                        error,
+                    });
+                    transfer.step_done();
+                    continue;
+                }
                 return Event::Failed {
                     job: id,
                     done: batch_done(results, undos),
@@ -160,7 +171,23 @@ fn run(id: JobId, op: Op, conflict: Conflict, transfer: &Transfer) -> Event {
             }
         }
     }
-    Event::Finished(id, Ok(batch_done(results, undos)))
+    let done = batch_done(results, undos);
+    if failures.is_empty() {
+        return Event::Finished(id, Ok(done));
+    }
+    let left = failures
+        .iter()
+        .map(|failure| failure.source.clone())
+        .collect();
+    Event::Carried(
+        id,
+        Carried {
+            done,
+            failures,
+            end: End::Finished,
+            left: Some(with_items(&op, left)),
+        },
+    )
 }
 
 fn batch_done(results: Vec<PathBuf>, mut undos: Vec<Op>) -> Done {
@@ -538,6 +565,27 @@ mod tests {
         for alias in &done.results {
             assert!(alias.exists(), "a result that never landed: {alias:?}");
         }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_delete_goes_past_an_item_that_fails() {
+        let dir = temp_dir("delete-past");
+        let missing = dir.join("missing.txt");
+        let real = dir.join("real.txt");
+        fs::write(&real, "x").unwrap();
+
+        let (queue, rx) = listen();
+        let id = queue.submit(
+            Op::DeleteImmediately(vec![missing.clone(), real.clone()]),
+            Conflict::KeepBoth,
+        );
+        let carried = carried(&rx, id);
+        assert_eq!(carried.failures.len(), 1);
+        assert_eq!(carried.failures[0].source, missing);
+        assert!(!real.exists(), "the item after the one that failed stayed");
+        assert!(matches!(carried.left, Some(Op::DeleteImmediately(left)) if left == [missing]));
 
         let _ = fs::remove_dir_all(&dir);
     }

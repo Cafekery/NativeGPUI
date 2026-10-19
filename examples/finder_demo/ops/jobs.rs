@@ -218,6 +218,7 @@ fn failed_title(op: &Op, failed: &Failed) -> String {
         Op::Move { .. } | Op::Trash(_) => "moved",
         Op::Retry(request) if request.kind() == Kind::Move => "moved",
         Op::PutBack(_) => "put back",
+        Op::DeleteImmediately(_) => "deleted",
         Op::Duplicate(_) => "duplicated",
         _ => "copied",
     };
