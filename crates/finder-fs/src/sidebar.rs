@@ -238,6 +238,9 @@ fn arrange(
         }
     };
     let mut rows = Vec::new();
+    if has(Special::Computer) {
+        rows.push(Listed::new("Computer", None, Some(Special::Computer)));
+    }
     if has(Special::ICloudDrive) {
         rows.push(Listed::new(
             "iCloud Drive",
@@ -262,8 +265,21 @@ fn arrange(
     if has(Special::AirDrop) {
         rows.push(Listed::new("AirDrop", None, Some(Special::AirDrop)));
     }
+    rows.extend(server_rows(
+        mounted.iter().filter(|volume| volume.network).filter(shown),
+    ));
+    rows.push(Listed::new("Network", None, Some(Special::Network)));
+    if has(Special::Trash) {
+        let trash = volumes::standard(Standard::Trash);
+        rows.push(Listed::new("Trash", trash, Some(Special::Trash)));
+    }
+    rows
+}
+
+/// One row per computer, however many of its shares are mounted, in Finder's order.
+pub fn server_rows<'a>(volumes: impl Iterator<Item = &'a Volume>) -> Vec<Listed> {
     let mut servers: Vec<Listed> = Vec::new();
-    for volume in mounted.iter().filter(|volume| volume.network).filter(shown) {
+    for volume in volumes {
         let title = crate::servers::title(volume.server.as_deref().unwrap_or(&volume.name));
         let same = |row: &Listed| match (&row.server, &volume.server) {
             (Some(known), Some(server)) => crate::servers::same_host(known, server),
@@ -274,13 +290,7 @@ fn arrange(
         }
     }
     servers.sort_by(|a, b| sort::name_cmp(&a.title, &b.title));
-    rows.extend(servers);
-    rows.push(Listed::new("Network", None, Some(Special::Network)));
-    if has(Special::Trash) {
-        let trash = volumes::standard(Standard::Trash);
-        rows.push(Listed::new("Trash", trash, Some(Special::Trash)));
-    }
-    rows
+    servers
 }
 
 fn read(name: &'static str) -> Option<(Vec<Item>, Flags)> {

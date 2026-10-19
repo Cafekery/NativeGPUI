@@ -21,7 +21,7 @@ const FAMILIES: [(&str, &str); 11] = [
     ("com.apple.macpro-2019-rackmount", "macpro.gen3.server"),
     ("com.apple.macpro", "macpro.gen3"),
     ("com.apple.macstudio", "macstudio"),
-    ("com.apple.xserve", "doc"),
+    ("com.apple.xserve", "server.rack"),
     ("com.apple.airport-extreme-tower", "airport.extreme.tower"),
     ("com.apple.time-capsule", "airport.extreme"),
     ("public.generic-pc", "pc"),
@@ -114,25 +114,30 @@ pub fn models(hosts: &[String], wait: Duration, mut found: impl FnMut(&str, Opti
         let Some(at) = left.iter().position(|(name, ..)| same_host(name, &host)) else {
             continue;
         };
-        let [unknown, unrecorded] = &mut left[at].2;
         let model = match said {
             Said::Model(model) => Some(model),
             Said::Unknown => {
-                *unknown = true;
+                left[at].2[0] = true;
                 None
             }
             Said::Unrecorded => {
-                *unrecorded = true;
+                left[at].2[1] = true;
                 None
             }
         };
-        if model.is_some() || *unknown && *unrecorded {
-            autoreleasepool(|_| found(left.swap_remove(at).1, model.as_deref()));
+        if let Some(model) = model {
+            autoreleasepool(|_| found(left.swap_remove(at).1, Some(&model)));
+        }
+    }
+    // sharingd lists a computer before it has fetched its model, so a host says None only at the end.
+    for (_, host, said) in left {
+        if said.contains(&true) {
+            autoreleasepool(|_| found(host, None));
         }
     }
 }
 
-pub(crate) fn title(host: &str) -> String {
+pub fn title(host: &str) -> String {
     let name = named(host);
     match instance(&name) {
         Some(instance) => instance.to_owned(),
@@ -142,6 +147,7 @@ pub(crate) fn title(host: &str) -> String {
 
 /// A mount source percent-encodes a Bonjour name; sharingd's URL host does not.
 fn named(host: &str) -> Cow<'_, str> {
+    let host = host.strip_suffix('.').unwrap_or(host);
     if !host.contains('%') {
         return Cow::Borrowed(host);
     }
@@ -174,11 +180,17 @@ fn label(name: &str) -> String {
     label.trim_matches('-').to_owned()
 }
 
+/// A name that can only mean a computer on this network: one label, `.local`, or a Bonjour instance.
+fn nearby(name: &str) -> bool {
+    !name.contains('.') || name.ends_with(".local") || instance(name).is_some()
+}
+
 /// Two names reach one computer when equal or advertised under the same Bonjour name.
 pub fn same_host(a: &str, b: &str) -> bool {
     let (a, b) = (named(a), named(b));
     a.eq_ignore_ascii_case(&b)
-        || matches!((advertised(&a), advertised(&b)), (Some(a), Some(b)) if label(a) == label(b))
+        || (nearby(&a) || nearby(&b))
+            && matches!((advertised(&a), advertised(&b)), (Some(a), Some(b)) if label(a) == label(b))
 }
 
 fn device_model(instance: &str, deadline: Instant) -> Option<String> {
@@ -250,12 +262,23 @@ unsafe extern "C" fn txt(
 
 fn device_type(model: Option<&str>) -> Option<Retained<UTType>> {
     let tag = ns_string!("com.apple.device-model-code");
+    let apple = model.is_some_and(|model| {
+        ["Mac", "iMac", "Xserve", "AirPort", "TimeCapsule"]
+            .iter()
+            .any(|family| model.starts_with(family))
+    });
     model
         .and_then(|model| {
             UTType::typeWithTag_tagClass_conformingToType(&NSString::from_str(model), tag, None)
         })
         .filter(|kind| !kind.isDynamic())
-        .or_else(|| UTType::typeWithIdentifier(ns_string!("com.apple.mac")))
+        .or_else(|| {
+            UTType::typeWithIdentifier(if apple {
+                ns_string!("com.apple.mac")
+            } else {
+                ns_string!("public.generic-pc")
+            })
+        })
 }
 
 /// The type identifier and kind name of a computer of this model.
@@ -300,7 +323,7 @@ fn type_symbol(kind: &UTType) -> Option<String> {
     let icon: Allocated<AnyObject> = unsafe { msg_send![class, alloc] };
     let icon: Option<Retained<AnyObject>> =
         unsafe { msg_send![icon, initWithType: &*kind.identifier()] };
-    Some(symbol_name(&*icon?).unwrap_or_else(|| "doc".into()))
+    symbol_name(&*icon?)
 }
 
 pub(crate) fn bundle_symbol(identifier: &str) -> Option<String> {
@@ -548,6 +571,12 @@ mod tests {
             "NG%20Alex%E2%80%99s%20Mini._smb._tcp.local"
         ));
         assert!(!same_host("ng-mini.local", "NG Alex’s Mini"));
+        assert!(same_host(
+            "Bakery._smb._tcp.local.",
+            "bakery.tail1234.ts.net"
+        ));
+        assert!(!same_host("dav.a.example", "dav.b.example"));
+        assert!(!same_host("nas.office.example.com", "nas.home.example.net"));
         assert!(same_host("192.0.2.62", "192.0.2.62"));
         assert!(!same_host("192.0.2.62", "192.0.2.63"));
         assert!(!same_host("bakery.local", "nas.local"));
