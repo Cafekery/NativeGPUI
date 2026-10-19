@@ -205,7 +205,11 @@ fn volume_from(stats: &libc::statfs) -> Volume {
 fn host_of(source: &str) -> Option<String> {
     let rest = source.split_once("//").map_or(source, |(_, rest)| rest);
     let host = rest.split('/').next()?.rsplit('@').next()?;
-    let host = host.split(':').next()?;
+    let host = match host.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next()?,
+        None if host.matches(':').count() > 1 => host,
+        None => host.split(':').next()?,
+    };
     (!host.is_empty()).then(|| host.to_owned())
 }
 
@@ -331,6 +335,12 @@ mod tests {
         ] {
             assert_eq!(host_of(source).as_deref(), Some("192.0.2.62"), "{source}");
         }
+        assert_eq!(
+            host_of("//me@[fe80::1%en0]/Archive").as_deref(),
+            Some("fe80::1%en0")
+        );
+        assert_eq!(host_of("[fe80::1]:/export").as_deref(), Some("fe80::1"));
+        assert_eq!(host_of("//fe80::1/Archive").as_deref(), Some("fe80::1"));
         assert_eq!(host_of("//"), None);
     }
 }
