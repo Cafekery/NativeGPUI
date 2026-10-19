@@ -990,7 +990,6 @@ impl ToolbarItem {
         self
     }
 
-    /// A disabled group greys every segment.
     pub fn enabled(mut self, on: bool) -> Self {
         match &mut self {
             ToolbarItem::Symbol { enabled, .. }

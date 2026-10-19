@@ -78,7 +78,6 @@ impl NativeImage {
         self
     }
 
-    /// A fixed colour in place of a system tint.
     pub fn ink(mut self, ink: impl Into<Hsla>) -> Self {
         self.tint = Tint::Fixed(ink.into());
         self

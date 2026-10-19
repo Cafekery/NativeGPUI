@@ -48,13 +48,11 @@ pub enum MenuEntry {
         symbol: Option<String>,
         /// A filled disc in this sRGB colour, drawn where the symbol would go.
         dot: Option<(u8, u8, u8)>,
-        /// Drawn where the symbol would go; set by [`MenuEntry::file_icon`].
         file_icon: Option<String>,
         enabled: bool,
         checked: CheckState,
         /// Drawn at the trailing edge only; a transient menu is not listening.
         key: Option<(String, Modifiers)>,
-        /// Stands in for the row above it while ⌥ is held.
         alternate: bool,
         submenu: Vec<MenuEntry>,
     },
@@ -1212,7 +1210,6 @@ pub struct NativeContextMenu {
 }
 
 impl NativeContextMenu {
-    /// Opens on a plain click too, as a button's menu does.
     pub fn opens_on_click(mut self) -> Self {
         self.on_click = true;
         self
@@ -1446,7 +1443,7 @@ mod tests {
     fn checked_and_key_reach_the_entry_identity() {
         let plain = MenuEntry::item("Use Groups");
         assert_ne!(plain, plain.clone().checked(true));
-        assert_ne!(hash_of(&plain), hash_of(&plain.clone().checked(true)));
+        assert_ne!(hash_of(&plain), hash_of(plain.clone().checked(true)));
         let chord = plain.clone().key("j", Modifiers::command());
         assert_ne!(plain, chord);
         assert_ne!(chord, plain.clone().key("j", Modifiers::command_shift()));
