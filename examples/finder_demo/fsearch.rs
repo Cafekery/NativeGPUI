@@ -158,6 +158,7 @@ fn entry_of(found: Found) -> Entry {
         custom_icon: false,
         dataless: false,
         readable: true,
+        executable: false,
         file_id: 0,
         children: None,
     }

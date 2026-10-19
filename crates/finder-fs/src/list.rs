@@ -25,6 +25,7 @@ const COMMON_ATTRS: libc::attrgroup_t = libc::ATTR_CMN_RETURNED_ATTRS
     | libc::ATTR_CMN_CRTIME
     | libc::ATTR_CMN_ADDEDTIME
     | libc::ATTR_CMN_FNDRINFO
+    | libc::ATTR_CMN_ACCESSMASK
     | libc::ATTR_CMN_FLAGS
     | libc::ATTR_CMN_USERACCESS
     | libc::ATTR_CMN_FILEID;
@@ -257,6 +258,7 @@ fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
     let mut created = SystemTime::UNIX_EPOCH;
     let mut modified = SystemTime::UNIX_EPOCH;
     let mut finder_flags = 0u16;
+    let mut mode = 0u32;
     let mut flags = 0u32;
     let mut file_id = 0u64;
     let mut readable = true;
@@ -288,6 +290,9 @@ fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
     if returned_common & libc::ATTR_CMN_FNDRINFO != 0 {
         let info: [u8; 32] = read(record, &mut p);
         finder_flags = u16::from_be_bytes([info[8], info[9]]);
+    }
+    if returned_common & libc::ATTR_CMN_ACCESSMASK != 0 {
+        mode = u32::from_ne_bytes(read(record, &mut p));
     }
     if returned_common & libc::ATTR_CMN_FLAGS != 0 {
         flags = u32::from_ne_bytes(read(record, &mut p));
@@ -350,6 +355,7 @@ fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
         custom_icon: finder_flags & HAS_CUSTOM_ICON != 0,
         dataless,
         readable,
+        executable: kind == EntryKind::File && mode & 0o111 != 0,
         file_id,
         children,
     })

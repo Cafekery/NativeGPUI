@@ -25,6 +25,7 @@ pub struct Entry {
     pub custom_icon: bool,
     pub dataless: bool,
     pub readable: bool,
+    pub executable: bool,
     pub file_id: u64,
     pub children: Option<u32>,
 }

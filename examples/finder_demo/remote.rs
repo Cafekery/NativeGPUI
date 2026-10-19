@@ -310,6 +310,8 @@ fn row(dir: &'static str, entry: Entry, followed: Option<Option<Attrs>>) -> Arc<
         custom_icon: false,
         dataless: false,
         readable: true,
+        executable: attrs.kind() == Kind::File
+            && attrs.permissions.is_some_and(|mode| mode & 0o111 != 0),
         file_id: 0,
         children: None,
         name: entry.name,

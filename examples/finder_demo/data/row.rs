@@ -329,7 +329,9 @@ pub(crate) fn weighed_folders(rows: &mut [Arc<Row>]) {
 pub(crate) fn kind_at(path: &str, entry: &Entry) -> kind::Kind {
     match entry.kind {
         EntryKind::Directory | EntryKind::Symlink if !entry.package => kind::kind_of(entry),
-        EntryKind::File if entry.alias => kind::kind_of(entry),
+        EntryKind::File if entry.alias || entry.executable && entry.extension().is_none() => {
+            kind::kind_of(entry)
+        }
         _ => kind::kind_of_path(Path::new(path)),
     }
 }

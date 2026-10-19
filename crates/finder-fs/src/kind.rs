@@ -151,22 +151,24 @@ pub fn save_kinds(to: &Path) -> usize {
 }
 
 pub fn kind_of(entry: &Entry) -> Kind {
-    static FIXED: LazyLock<[Kind; 3]> = LazyLock::new(|| {
+    static FIXED: LazyLock<[Kind; 4]> = LazyLock::new(|| {
         [
             ("public.folder", "Folder"),
             ("public.symlink", "Alias"),
             ("com.apple.alias-file", "Alias"),
+            ("public.unix-executable", "Unix Executable File"),
         ]
         .map(|(uti, label)| Kind {
             uti: uti.into(),
             label: label.into(),
         })
     });
-    let [folder, symlink, alias] = &*FIXED;
+    let [folder, symlink, alias, executable] = &*FIXED;
     match entry.kind {
         EntryKind::Directory if !entry.package => folder.clone(),
         EntryKind::Symlink => symlink.clone(),
         EntryKind::File if entry.alias => alias.clone(),
+        EntryKind::File if entry.executable && entry.extension().is_none() => executable.clone(),
         _ => kind_for_extension(entry.extension().unwrap_or("")),
     }
 }
@@ -335,6 +337,7 @@ mod tests {
             custom_icon: false,
             dataless: false,
             readable: true,
+            executable: false,
             file_id: 0,
             children: None,
         }
@@ -381,6 +384,15 @@ mod tests {
     fn unknown_and_missing_extensions_are_documents() {
         assert_eq!(&*kind_for_extension("zzzqqqxyz123").label, "Document");
         assert_eq!(&*kind_for_extension("").label, "Document");
+    }
+
+    #[test]
+    fn an_executable_without_an_extension_is_a_unix_executable() {
+        let mut e = file("runme");
+        e.executable = true;
+        assert_eq!(&*kind_of(&e).uti, "public.unix-executable");
+        e.name = "runme.txt".into();
+        assert_eq!(&*kind_of(&e).uti, "public.plain-text");
     }
 
     #[test]
