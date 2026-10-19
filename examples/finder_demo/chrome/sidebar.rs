@@ -392,6 +392,27 @@ pub(crate) fn shown_sections() -> Vec<(&'static str, Vec<(Shown, String, CheckSt
 
 pub(crate) fn set_row_shown(shown: Shown, on: bool) {
     prefs::set_setting_on(&key(shown), on);
+    let Some(id) = on.then(|| row_id(shown)).flatten() else {
+        return;
+    };
+    for group in [FAVOURITES, LOCATIONS] {
+        let mut removed = prefs::removed(group);
+        removed.retain(|gone| gone != id);
+        prefs::set_removed(group, &strs(&removed));
+    }
+}
+
+/// The row a settings checkbox stands for, so ticking it undoes "Remove from Sidebar".
+fn row_id(shown: Shown) -> Option<&'static str> {
+    let which = match shown {
+        Shown::AirDrop => return Some(crate::locations::AIRDROP),
+        Shown::Bonjour => return Some(crate::locations::NETWORK),
+        Shown::Computer => return Some(COMPUTER),
+        Shown::Home => Standard::Home,
+        Shown::Trash => Standard::Trash,
+        _ => FOLDERS.iter().find(|(row, _)| *row == shown)?.1,
+    };
+    Some(intern_path(&finder_fs::volumes::standard(which)?))
 }
 
 pub(crate) fn tag_shown(id: &str) -> CheckState {
@@ -565,6 +586,7 @@ pub(crate) fn groups() -> Vec<Group> {
             .unwrap_or(locations.len());
         let servers = crate::remote::servers().into_iter().map(|server| Row {
             eject: true,
+            drops: true,
             muted: true,
             server: true,
             ..row(server.path, server.title(), server_glyph(server.known()))
