@@ -9,6 +9,8 @@ use finder_fs::kind;
 use finder_fs::volumes::{Standard, standard};
 use gpui::SharedString;
 use native_gpui::tokens::FileType;
+use objc2_app_kit::NSWorkspace;
+use objc2_foundation::NSString;
 
 use super::extra::{Extra, extra_of};
 use super::face::{Face, face_of};
@@ -549,6 +551,14 @@ pub(crate) fn icloud_rows() -> Vec<Arc<Row>> {
                 .into_iter()
                 .find(|entry| entry.name == "Documents")?;
             let mut row = indexed_row(dir, &entry);
+            let app = folder.app().and_then(|id| {
+                NSWorkspace::sharedWorkspace()
+                    .URLForApplicationWithBundleIdentifier(&NSString::from_str(&id))?
+                    .path()
+            });
+            if let Some(app) = app {
+                row.artwork = Some(FileType::Path(intern(&app.to_string())));
+            }
             row.name = folder.name.clone().into();
             row.display = folder.name.into();
             Some(Arc::new(row))

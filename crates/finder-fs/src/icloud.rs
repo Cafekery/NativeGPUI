@@ -13,6 +13,26 @@ pub struct AppFolder {
     pub documents: PathBuf,
 }
 
+impl AppFolder {
+    pub fn app(&self) -> Option<String> {
+        let id = self.documents.parent()?.file_name()?.to_str()?;
+        Some(app_of(id))
+    }
+}
+
+fn app_of(container: &str) -> String {
+    let id = container
+        .split_once('~')
+        .filter(|(team, _)| {
+            team.len() == 10
+                && team
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+        })
+        .map_or(container, |(_, id)| id);
+    id.strip_prefix("iCloud~").unwrap_or(id).replace('~', ".")
+}
+
 fn containers() -> Option<PathBuf> {
     Some(crate::home()?.join("Library/Mobile Documents"))
 }
@@ -115,6 +135,20 @@ pub fn download(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_container_names_the_app_that_owns_it() {
+        assert_eq!(app_of("com~apple~Pages"), "com.apple.Pages");
+        assert_eq!(app_of("iCloud~md~obsidian"), "md.obsidian");
+        assert_eq!(
+            app_of("4R6749AYRE~com~pixelmatorteam~pixelmator"),
+            "com.pixelmatorteam.pixelmator"
+        );
+        assert_eq!(
+            app_of("777W53UFB2~iCloud~com~burbn~instagram"),
+            "com.burbn.instagram"
+        );
+    }
 
     #[test]
     fn a_placeholder_names_the_file_it_stands_in_for() {
