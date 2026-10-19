@@ -20,7 +20,7 @@ default = []
 private-api = []
 
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "90d8514059561f0e44af0a32e84e1c329cef3232" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "56934ec0560bce8929025497411de7f5322fb6ca" }
 image = "0.25"
 raw-window-handle = "0.6"
 
@@ -47,7 +47,7 @@ objc2-quick-look-thumbnailing = { version = "0.3.2", default-features = false, f
     "QLThumbnailRepresentation",
 ] }
 # without font-kit you get NoopTextSystem and no text.
-gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "5de9f7df3867725c31f5e5d501fadbe3667e5670", features = [
+gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "a24940ca8cb97bd510343221c70f5a0eea1e4025", features = [
     "font-kit",
 ] }
 
@@ -56,7 +56,7 @@ convert = { path = "crates/convert" }
 finder-fs = { path = "crates/finder-fs" }
 finder-sftp = { path = "crates/finder-sftp" }
 fsearch = { path = "crates/fsearch" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "90d8514059561f0e44af0a32e84e1c329cef3232", features = ["font-kit"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "56934ec0560bce8929025497411de7f5322fb6ca", features = ["font-kit"] }
 parking_lot = "0.12"
 
 [[example]]
@@ -76,7 +76,7 @@ lto = false
 incremental = true
 
 [patch."https://github.com/zed-industries/zed"]
-gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "5de9f7df3867725c31f5e5d501fadbe3667e5670" }
+gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "a24940ca8cb97bd510343221c70f5a0eea1e4025" }
 
 [lints.clippy]
 type_complexity = "allow"
