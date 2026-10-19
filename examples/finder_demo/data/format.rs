@@ -1,12 +1,14 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::{LazyLock, Mutex};
 use std::thread::LocalKey;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use gpui::{FontWeight, SharedString};
+use block2::StackBlock;
+use gpui::{App, FontWeight, SharedString};
 use native_gpui::tokens;
 use objc2::AllocAnyThread;
 use objc2::rc::Retained;
@@ -16,9 +18,10 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{
     NSAttributedString, NSBundle, NSByteCountFormatter, NSByteCountFormatterCountStyle,
-    NSByteCountFormatterUnits, NSCalendar, NSCalendarOptions, NSCalendarUnit, NSDate,
-    NSDateFormatter, NSDateFormatterStyle, NSDictionary, NSNumber, NSNumberFormatter,
-    NSNumberFormatterStyle, NSString,
+    NSByteCountFormatterUnits, NSCalendar, NSCalendarDayChangedNotification, NSCalendarOptions,
+    NSCalendarUnit, NSDate, NSDateFormatter, NSDateFormatterStyle, NSDictionary, NSNotification,
+    NSNotificationCenter, NSNumber, NSNumberFormatter, NSNumberFormatterStyle, NSString,
+    NSSystemTimeZoneDidChangeNotification, NSTimeZone,
 };
 
 use finder_fs::meta::Sharer;
@@ -26,6 +29,7 @@ use finder_fs::words;
 
 use super::face::Face;
 use super::row::{Column, Row};
+use crate::signal::Signal;
 
 const UNIX_TO_REFERENCE: f64 = 978_307_200.;
 const SEEN_MAX: usize = 4096;
@@ -43,10 +47,39 @@ pub(crate) fn reference_seconds(at: SystemTime) -> f64 {
     }
 }
 
-fn midnights() -> [f64; 6] {
-    thread_local! {
-        static DAYS: Cell<[f64; 6]> = const { Cell::new([0.; 6]) };
+static CLOCK: Signal = Signal::new();
+
+thread_local! {
+    static DAYS: Cell<[f64; 6]> = const { Cell::new([0.; 6]) };
+}
+
+/// Nothing on screen asks for a date again when the day or the time zone changes under it.
+pub(crate) fn follow_clock(cx: &mut App) {
+    let block = StackBlock::new(|_: NonNull<NSNotification>| CLOCK.ring()).copy();
+    let center = NSNotificationCenter::defaultCenter();
+    for name in unsafe {
+        [
+            NSCalendarDayChangedNotification,
+            NSSystemTimeZoneDidChangeNotification,
+        ]
+    } {
+        unsafe {
+            center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block)
+        };
     }
+    cx.spawn(async move |cx| {
+        let mut seen = 0;
+        loop {
+            seen = CLOCK.after(seen).await;
+            NSTimeZone::resetSystemTimeZone();
+            DAYS.set([0.; 6]);
+            cx.update(|cx| crate::settings::each_window(cx, |_, cx| cx.notify()));
+        }
+    })
+    .detach();
+}
+
+fn midnights() -> [f64; 6] {
     let now = reference_seconds(SystemTime::now());
     let days = DAYS.get();
     if (days[3]..days[4]).contains(&now) {
@@ -109,6 +142,10 @@ fn minute(seconds: f64) -> i64 {
 }
 
 fn formatted(formatter: &NSDateFormatter, seconds: f64) -> String {
+    let zone = NSTimeZone::defaultTimeZone();
+    if !formatter.timeZone().isEqualToTimeZone(&zone) {
+        formatter.setTimeZone(Some(&zone));
+    }
     formatter
         .stringFromDate(&NSDate::dateWithTimeIntervalSinceReferenceDate(seconds))
         .to_string()
