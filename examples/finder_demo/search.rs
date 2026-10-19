@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -18,7 +18,7 @@ use crate::chrome::scope_bar;
 use crate::chrome::toolbar::SEARCH_ID;
 use crate::data::{self, Row};
 use crate::listing::next_rev;
-use crate::terms::Search;
+use crate::terms::{Matcher, Search};
 use crate::{fsearch, prefs};
 
 const HITS: usize = 200;
@@ -147,6 +147,37 @@ fn spotlight(
     (!stale()).then(|| fsearch::reachable_only(found))
 }
 
+fn walk(
+    roots: &[PathBuf],
+    matcher: &Matcher,
+    limit: usize,
+    stale: &impl Fn() -> bool,
+) -> Option<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    let mut pending: VecDeque<PathBuf> = roots.iter().cloned().collect();
+    while let Some(dir) = pending.pop_front() {
+        if stale() {
+            return None;
+        }
+        let Ok(entries) = finder_fs::list::list_dir(&dir) else {
+            continue;
+        };
+        for entry in entries {
+            let path = entry.path_in(&dir);
+            if matcher.fits_name(&entry.name) {
+                found.push(path.clone());
+                if found.len() >= limit {
+                    return Some(found);
+                }
+            }
+            if entry.is_dir() && !entry.hidden {
+                pending.push_back(path);
+            }
+        }
+    }
+    Some(found)
+}
+
 fn gather(
     search: &Search,
     under: &[PathBuf],
@@ -169,6 +200,9 @@ fn gather(
     }
     let (named, found) = match search.tagged() {
         Some(query) => (Vec::new(), spotlight(&query, under, limit, stale)?),
+        None if !under.iter().all(|at| fsearch::indexes(at)) => {
+            (walk(under, &matcher, limit, stale)?, found)
+        }
         None => (fsearch::search(&search.names(), under, limit)?, found),
     };
     let mut seen = HashSet::new();
@@ -255,11 +289,15 @@ impl FinderDemo {
         let wanted = self.query.clone();
         let criteria = self.criteria.clone();
         let extras = self.wants_extras();
-        let indexed = self.scope != scope_bar::NETWORK;
         let under: Vec<PathBuf> = match self.scope {
             scope_bar::THIS_MAC => Vec::new(),
+            scope_bar::NETWORK => data::network_roots()
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
             _ => vec![PathBuf::from(self.here())],
         };
+        let nowhere = under.is_empty() && self.scope == scope_bar::NETWORK;
         let here = self.here();
         let cached = crate::remote::is_remote(here).then(|| {
             self.folder()
@@ -275,7 +313,7 @@ impl FinderDemo {
                 let found = cx
                     .background_executor()
                     .spawn(async move {
-                        if search.is_empty() || !indexed {
+                        if search.is_empty() || nowhere {
                             return Some((Vec::new(), true));
                         }
                         let stale = || pass.load(Ordering::Relaxed) != generation;

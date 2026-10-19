@@ -226,6 +226,12 @@ impl Matcher {
             && self.admits_found(row, |_| false)
     }
 
+    /// The part of a match the index answers, for folders it does not hold.
+    pub(crate) fn fits_name(&self, name: &str) -> bool {
+        (self.typed.is_empty() || folds_to(name, &self.typed))
+            && (self.names.iter().chain(&self.everything)).all(|word| folds_to(name, word))
+    }
+
     pub(crate) fn fits(&self, row: &Row) -> bool {
         self.kinds
             .iter()
