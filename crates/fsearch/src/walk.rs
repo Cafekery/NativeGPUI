@@ -14,7 +14,6 @@ pub static SKIP: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
 /// Folders a scan was refused (EPERM); recorded only while `SKIP` is set.
 pub static DENIED: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
-/// Entries listed by scans so far.
 pub static LISTED: AtomicUsize = AtomicUsize::new(0);
 
 pub fn blocked(path: &[u8]) -> bool {
@@ -31,9 +30,7 @@ pub const KIND_LINK: u8 = 2;
 pub const KIND_OTHER: u8 = 3;
 
 pub const FLAG_HIDDEN: u8 = 1 << 2;
-/// A mount point not descended into.
 pub const FLAG_MOUNT: u8 = 1 << 3;
-/// A file with more than one hard link.
 pub const FLAG_HARDLINK: u8 = 1 << 4;
 /// Parse-time only: the parent reports the directory empty, which grafts do falsely, so it is rechecked.
 const MAYBE_EMPTY: u8 = 1 << 7;
@@ -45,10 +42,8 @@ pub struct RawEnt {
     /// Kind in the low 2 bits, `FLAG_*` above.
     pub kind: u8,
     pub size: u64,
-    /// Bytes allocated on disk.
     pub alloc: u64,
     pub mtime: u32,
-    /// Temp id of this directory's listing, or `NONE`.
     pub child: u32,
 }
 
@@ -67,7 +62,6 @@ thread_local! {
     static BUF: RefCell<Vec<u8>> = RefCell::new(vec![0u8; 256 * 1024]);
 }
 
-/// Scan `root` recursively. Listing id 0 is `root` itself.
 pub fn scan(root: &[u8], threads: usize) -> Vec<Listing> {
     let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).start_handler(|_| crate::no_materialize()).build().unwrap();
     let ctx = Ctx { next_id: AtomicU32::new(1), out: (0..threads + 1).map(|_| Mutex::new(Vec::new())).collect() };
@@ -90,7 +84,6 @@ fn raise_fd_limit() {
     unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &r) };
 }
 
-/// List one directory without recursion; subdirectories come back with `child == NONE`.
 pub fn list_one(path: &[u8]) -> Option<Listing> {
     if blocked(path) {
         return None;

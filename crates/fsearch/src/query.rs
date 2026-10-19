@@ -22,7 +22,6 @@ pub struct Token {
     pub negate: bool,
     /// Char classes a typo may leave out of a matching name.
     pub loose: u64,
-    /// `index::start_bit` of the first letter when the token takes typos.
     pub start: u64,
 }
 
@@ -32,9 +31,7 @@ impl Token {
         let miss = self.mask & !m;
         (miss == 0) | ((((miss & !self.loose) | (miss & miss.wrapping_sub(1))) == 0) & (m & self.start != 0))
     }
-}
 
-impl Token {
     fn literal(text: Vec<u8>) -> Token {
         let mask = text.iter().fold(0, |m, &b| m | char_bit(b));
         Token { text, mask, mode: Mode::Exact, negate: false, loose: 0, start: 0 }
@@ -53,7 +50,6 @@ struct Cand {
     flags: u8,
 }
 
-/// Alone on its cache line, so one thread's hot scratch doesn't share a line with another's.
 #[derive(Clone, Copy)]
 #[repr(align(128))]
 struct Line<T>(T);
@@ -158,6 +154,11 @@ fn name_hit(idx: &Index, q: &Query, pos: &[&Token], neg: &[&Token], re: Option<&
     (ok || h.bits != 0 || h.flags & NF_NEG != 0).then_some(h)
 }
 
+fn space_bits(idx: &Index) -> [&[u64]; 2] {
+    let c = char_bit(b' ').trailing_zeros() as usize;
+    [idx.bitmap(BM_FIRST + c), idx.bitmap(BM_SECOND + c)]
+}
+
 fn re_literals(re: &regex::bytes::Regex) -> Option<Vec<Vec<u8>>> {
     let hir = regex_syntax::ParserBuilder::new().utf8(false).build().parse(re.as_str()).ok()?;
     let mut lits: Vec<Vec<u8>> =
@@ -204,7 +205,6 @@ pub struct Query {
     pub name_re: Option<regex::bytes::Regex>,
     pub path_re: Option<regex::bytes::Regex>,
     pub limit: usize,
-    /// Content search, handled by the content layer.
     pub grep: Option<String>,
     pub grep_mode: GrepMode,
 }
@@ -219,7 +219,7 @@ pub enum GrepMode {
 
 pub struct Hit {
     pub score: i32,
-    /// Base entry, or u32::MAX for an overlay entry (then `over` is its path).
+    /// u32::MAX for an overlay entry, whose path is then `over`.
     pub idx: u32,
     pub over: Option<Vec<u8>>,
 }
@@ -264,7 +264,6 @@ impl Query {
         } else if let Some(r) = t.strip_suffix('$') {
             (t, mode) = (r, Mode::Suffix);
         }
-        // Positive tokens are tracked in a u8 bitset.
         if t.is_empty() || (!negate && self.tokens.iter().filter(|t| !t.negate).count() >= 8) {
             return;
         }
@@ -274,7 +273,6 @@ impl Query {
         self.tokens.push(Token { text, mask, mode, negate, loose, start });
     }
 
-    /// Apply filter `k:v`; false if `k` is not a filter name.
     pub fn filter(&mut self, k: &str, v: &str, home: &str) -> Result<bool, String> {
         match k {
             "ext" => self.exts.extend(v.split(',').map(|e| e.trim_start_matches('.').to_ascii_lowercase().into_bytes())),
@@ -323,7 +321,6 @@ impl Query {
         Ok(true)
     }
 
-    /// The parts of a query that pick files for a content scan.
     pub fn clone_for_scan(&self) -> Query {
         Query { grep: None, ..self.clone() }
     }
@@ -336,12 +333,10 @@ impl Query {
         }
     }
 
-    /// The score of a full path that passes every filter and token.
     pub fn match_path(&self, path: &[u8], kind: u8, size: u64, mtime: u32) -> Option<i32> {
         self.match_path_with(path, kind, size, mtime, |dirs| self.dir_match(dirs))
     }
 
-    /// `match_path`, with the folder half (`dir_match`) supplied by the caller so it can memoize per folder.
     pub fn match_path_with(&self, path: &[u8], kind: u8, size: u64, mtime: u32, dirs: impl FnOnce(&[u8]) -> DirMatch) -> Option<i32> {
         if let Some(s) = &self.scope
             && !(path.starts_with(s) && path.get(s.len()) == Some(&b'/'))
@@ -397,7 +392,6 @@ impl Query {
         Some(score)
     }
 
-    /// How the folders of a path (`/a/b` for `/a/b/name`) match the tokens.
     pub fn dir_match(&self, dirs: &[u8]) -> DirMatch {
         let comps = || dirs.split(|&b| b == b'/').filter(|c| !c.is_empty());
         let mut d = DirMatch { negated: false, best: [None; 8] };
@@ -415,7 +409,7 @@ pub struct DirMatch {
     best: [Option<i32>; 8],
 }
 
-/// The real path of `p`, or `p`: the index holds real paths (/etc is /private/etc).
+/// The index holds real paths (/etc is /private/etc).
 fn real_path(p: String) -> String {
     static LAST: std::sync::Mutex<Option<(String, String, std::time::Instant)>> = std::sync::Mutex::new(None);
     let mut last = LAST.lock().unwrap();
@@ -563,7 +557,6 @@ fn bonus(prev: Class, cur: Class) -> i32 {
     }
 }
 
-/// fzf-v1 style fuzzy score; None when no match.
 pub fn fuzzy_score(name: &[u8], q: &[u8]) -> Option<i32> {
     fuzzy_score_capped(name, None, q, 100)
 }
@@ -955,7 +948,6 @@ pub struct Searcher<'a> {
 }
 
 impl Searcher<'_> {
-    /// Entry range to scan, from the `in:` scope.
     pub fn scope_range(&self, q: &Query) -> Option<(usize, usize)> {
         let idx = &self.live.base;
         let Some(scope) = &q.scope else { return Some((1, idx.n)) };
@@ -1028,8 +1020,7 @@ impl Searcher<'_> {
         let (prior, info, ne_off, ne) = (idx.name_prior(), idx.name_info(), idx.name_ents_off(), idx.name_ents());
         let tb = TokenBits::new(idx, t);
         let start = idx.bitmap(BM_START + crate::index::start_hash(t.text[0]));
-        let space = char_bit(b' ').trailing_zeros() as usize;
-        let space = [idx.bitmap(BM_FIRST + space), idx.bitmap(BM_SECOND + space)];
+        let space = space_bits(idx);
         let tweak = |flags: u8| 10 + if flags & NF_APP != 0 { 25 } else { 0 } - if flags & NF_DOT != 0 { 8 } else { 0 };
         let neg: Vec<&Token> = q.tokens.iter().filter(|t| t.negate).collect();
         let scoped = within.is_some();
@@ -1308,8 +1299,7 @@ impl Searcher<'_> {
     fn drive(&self, q: &Query, pos: &[&Token], neg: &[&Token], lo: usize, hi: usize, t: usize) -> Result<Vec<Hit>, bool> {
         let idx = &self.live.base;
         let tb = TokenBits::new(idx, pos[t]);
-        let space = char_bit(b' ').trailing_zeros() as usize;
-        let space = [idx.bitmap(BM_FIRST + space), idx.bitmap(BM_SECOND + space)];
+        let space = space_bits(idx);
         let (ne_off, ne, kind, en, parent) = (idx.name_ents_off(), idx.name_ents(), idx.kind(), idx.ent_name(), idx.parent());
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
         let chunks = idx.words.div_ceil(CHUNK_WORDS);
@@ -1494,8 +1484,7 @@ impl Searcher<'_> {
         let ne_off = idx.name_ents_off();
         let by_ext = pos.len() == 1 && neg.is_empty() && !q.exts.is_empty();
         let toks: Vec<TokenBits> = pos.iter().chain(neg).map(|t| TokenBits::new(idx, t)).collect();
-        let space = char_bit(b' ').trailing_zeros() as usize;
-        let space = [idx.bitmap(BM_FIRST + space), idx.bitmap(BM_SECOND + space)];
+        let space = space_bits(idx);
         let filter = |lits: Vec<Vec<u8>>| lits.into_iter().map(Token::literal).collect::<Vec<_>>();
         let re_toks = q.name_re.as_ref().and_then(re_literals).map(filter);
         let re_bits = re_toks.as_ref().map(|t| t.iter().map(|t| TokenBits::new(idx, t)).collect::<Vec<_>>());
@@ -1699,7 +1688,6 @@ impl Searcher<'_> {
     }
 }
 
-/// Debug switch: always take the full pass.
 pub static FULL_PASS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 struct Scan<'a> {
@@ -1882,7 +1870,6 @@ impl NameKey {
     }
 }
 
-/// The last query's name table, and its dir memo once built.
 pub struct Scored {
     at: std::time::Instant,
     key: NameKey,
@@ -1910,7 +1897,6 @@ pub struct NameCache {
 }
 
 impl NameCache {
-    /// Drop the cached table and spare buffers once searches have been idle for `idle`.
     pub fn trim_if_idle(&self, idle: std::time::Duration) {
         let mut g = self.last.lock().unwrap();
         if g.as_ref().is_some_and(|s| s.at.elapsed() > idle) {
@@ -1953,7 +1939,6 @@ impl DirMemo {
 
 static HIT_POOL: std::sync::Mutex<Vec<Vec<NameHit>>> = std::sync::Mutex::new(Vec::new());
 
-/// Free the spare buffers searches keep for speed.
 pub fn trim_pools() {
     BITS_POOL.lock().unwrap().clear();
     HIT_POOL.lock().unwrap().clear();

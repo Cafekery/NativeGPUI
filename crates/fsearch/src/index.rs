@@ -43,18 +43,15 @@ pub struct Index {
     map: Mmap,
     pub n: usize,
     pub d: usize,
-    /// Distinct names.
     pub u: usize,
     names_len: usize,
     u1: usize,
-    /// Words per name bitmap.
     pub words: usize,
     bits_len: usize,
     zones_len: usize,
     ext_slots: usize,
-    /// FSEvents id the index is current as of.
     pub event_id: u64,
-    /// Wall-clock second the index is known complete as of (0: unknown).
+    /// Wall-clock second the index is known complete as of; 0 if unknown.
     pub synced_at: u32,
     nbig: usize,
     off: [usize; NSEC],
@@ -65,42 +62,31 @@ pub struct Index {
     marked: std::sync::OnceLock<Vec<u32>>,
 }
 
-/// Per distinct name, what bounds its score for one fuzzy token without reading the name.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct NameInfo {
-    /// Best location prior among the name's folders, plus its best rank tweak, less the length penalty.
     pub key: i8,
-    /// Length past a leading dot.
     pub len: u8,
-    /// Stem length past a leading dot.
     pub stem: u8,
-    /// First byte past a leading dot, ASCII-folded.
     pub head: u8,
 }
 
-/// The names whose `NameInfo::key` is at least `cover`, best first, and how many have each key.
 pub struct ByKey {
     pub cover: i32,
     pub list: Vec<(i8, u32)>,
     pub counts: Vec<u32>,
-    /// Per `NameInfo::head`: its names in `list`.
     pub heads: Vec<Vec<u32>>,
-    /// Per `NameInfo::head`: the names whose length or stem is at most `SHORT`.
     pub short: Vec<Vec<u32>>,
 }
 
 pub const SHORT: usize = 3;
 
-/// How to fold per-dir data down the tree in parallel.
 pub struct MemoPlan {
-    /// Dirs to do one by one, parents first.
     pub upper: Vec<u32>,
-    /// (dir, its descendants' id range), each independent once `upper` is done.
+    /// Each independent once `upper` is done.
     pub chunks: Vec<(u32, std::ops::Range<u32>)>,
 }
 
-/// A typed view of one section of `self.map`, `self.$len` long.
 macro_rules! sec {
     ($name:ident, $s:expr, $t:ty, $len:ident) => {
         pub fn $name(&self) -> &[$t] {
@@ -127,10 +113,10 @@ impl Index {
     sec!(dir_end, Sec::DirEnd, u32, d);
     sec!(dir_prior, Sec::DirPrior, i8, d);
     sec!(dir_parent, Sec::DirParent, u32, d);
-    // Per dir: its whole subtree's bytes and allocation, as built.
+    // Whole-subtree bytes and allocation, as built.
     sec!(dir_bytes, Sec::DirBytes, u64, d);
     sec!(dir_alloc, Sec::DirAlloc, u64, d);
-    // Per distinct name, its entries, best location prior first.
+    // Entries per name, best location prior first.
     sec!(name_ents_off, Sec::NameEntsOff, u32, u1);
     sec!(name_ents, Sec::NameEnts, u32, n);
     sec!(name_prior, Sec::NamePrior, i8, u);
@@ -140,7 +126,6 @@ impl Index {
     // Slot i is `[len, lowercased bytes..]`; slots 0 and 255 are unused.
     sec!(ext_table, Sec::Exts, [u8; 16], ext_slots);
 
-    /// The `name_ext` slot of lowercase extension `e`, 255 if it is not in the table.
     pub fn ext_slot(&self, e: &[u8]) -> u8 {
         let t = self.ext_table();
         (1..255).find(|&i| t[i][0] as usize == e.len() && &t[i][1..1 + e.len()] == e).unwrap_or(255) as u8
@@ -153,12 +138,10 @@ impl Index {
         &self.name_bits()[b * self.words..][..self.words]
     }
 
-    /// How many names have each char class.
     pub fn class_counts(&self) -> &[u32; CLASSES] {
         &self.counts()[0]
     }
 
-    /// How many names have each char class at least twice.
     pub fn double_counts(&self) -> &[u32; CLASSES] {
         &self.counts()[1]
     }
@@ -214,7 +197,6 @@ impl Index {
         &self.names()[o[id as usize] as usize..o[id as usize + 1] as usize]
     }
 
-    /// The 64 bytes of the map from name `id` on, if the name fits in them and the map goes that far.
     #[inline]
     pub fn uname_wide(&self, id: u32) -> Option<&[u8; 64]> {
         let o = self.name_off();
@@ -231,7 +213,6 @@ impl Index {
         unpack(self.size_raw()[i], 1, self.big())
     }
 
-    /// Bytes allocated on disk.
     pub fn alloc_of(&self, i: usize) -> u64 {
         unpack(self.alloc_raw()[i], ALLOC_UNIT, self.big())
     }
@@ -245,7 +226,6 @@ impl Index {
         s..s + self.dir_len()[d as usize] as usize
     }
 
-    /// Dir ids of `k`'s strict descendants, one contiguous range.
     pub fn descendants(&self, k: u32) -> std::ops::Range<u32> {
         let de = self.dir_entry();
         let (s, e) = (self.dir_start()[k as usize], self.dir_end()[k as usize]);
@@ -276,7 +256,6 @@ impl Index {
         })
     }
 
-    /// Entries that are mount points or hard links, ascending.
     pub fn marked(&self) -> &[u32] {
         self.marked.get_or_init(|| (0..self.n as u32).filter(|&i| self.kind()[i as usize] & (FLAG_MOUNT | FLAG_HARDLINK) != 0).collect())
     }
@@ -321,7 +300,7 @@ impl Index {
         Some(e)
     }
 
-    /// Lay listings out as blocks in DFS order; listing id 0 is the root.
+    /// Listing id 0 is the root.
     pub fn build(mut ls: Vec<Listing>, event_id: u64, synced_at: u32, home: &[u8]) -> Index {
         ls.par_iter_mut().for_each(|l| {
             let names = &l.names;
@@ -348,7 +327,7 @@ impl Index {
         let mut names = Vec::with_capacity(names_max);
         kind[0] = KIND_DIR;
         let mut pos = 1usize;
-        let mut blocks: Vec<(u32, u32, u32)> = Vec::with_capacity(ls.len()); // (dir entry, start, len)
+        let mut blocks: Vec<(u32, u32, u32)> = Vec::with_capacity(ls.len());
         let mut stack: Vec<(u32, u32)> = vec![(0, by_id[0])];
         let mut kids: Vec<(u32, u32)> = Vec::new();
         while let Some((e, li)) = stack.pop() {
@@ -446,7 +425,7 @@ impl Index {
         let comps: Vec<&[u8]> = home.split(|&b| b == b'/').filter(|c| !c.is_empty()).collect();
         let mut prior = vec![0i8; d];
         let mut depth = vec![0u8; d];
-        // Leading components of `home` this dir's path matches; u8::MAX once it diverges.
+        // How many leading components of `home` this dir matches; u8::MAX once it diverges.
         let mut hm = vec![0u8; d];
         for k in 1..d {
             let e = dir_entry[k] as usize;
@@ -542,7 +521,6 @@ impl Index {
         })
     }
 
-    /// Write atomically (tmp + rename).
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let tmp = path.with_extension("tmp");
         let mut f = std::fs::File::create(&tmp)?;
@@ -555,7 +533,6 @@ impl Index {
         std::fs::rename(tmp, path)
     }
 
-    /// The event id a saved index is current as of, from its header alone.
     pub fn saved_event_id(path: &Path) -> Option<u64> {
         use std::io::Read;
         let mut h = [0u8; 64];
@@ -572,7 +549,6 @@ impl Index {
         self.map.len()
     }
 
-    /// Fault in the arrays every query scans.
     pub fn prefault(&self) {
         let mut sum = 0u8;
         for s in [Sec::NameBits, Sec::NameOff, Sec::Names, Sec::EntName, Sec::Kind, Sec::Parent] {
@@ -590,7 +566,6 @@ impl Index {
     }
 }
 
-/// Section files: a 4 KiB header (magic, then little-endian u64 fields), then 64-byte-aligned sections.
 pub(crate) const HDR: usize = 4096;
 
 pub(crate) fn header(magic: &[u8; 8], fields: &[u64]) -> Vec<u8> {
@@ -602,12 +577,10 @@ pub(crate) fn header(magic: &[u8; 8], fields: &[u64]) -> Vec<u8> {
     h
 }
 
-/// The header's fields, if `b` starts with `magic`.
 pub(crate) fn fields<const N: usize>(b: &[u8], magic: &[u8; 8]) -> Option<[u64; N]> {
     (b.len() >= 8 + N * 8 && &b[..8] == magic).then(|| std::array::from_fn(|k| u64::from_le_bytes(b[8 + k * 8..16 + k * 8].try_into().unwrap())))
 }
 
-/// Section offsets for these lengths, and the file size.
 pub(crate) fn layout<const N: usize>(lens: &[usize; N]) -> ([usize; N], usize) {
     let mut off = [0usize; N];
     let mut at = HDR;
@@ -636,7 +609,6 @@ fn ext_key(name: &[u8]) -> Option<[u8; 16]> {
     Some(key)
 }
 
-/// The table of the most common extensions among `names`, and each name's slot in it.
 pub(crate) fn ext_slots(names: &[u8], off: &[u32]) -> (Vec<[u8; 16]>, Vec<u8>) {
     let name = |k: usize| &names[off[k] as usize..off[k + 1] as usize];
     let count = (0..off.len() - 1)
@@ -700,17 +672,14 @@ fn section_lens(n: usize, d: usize, u: usize, names_len: usize, big: usize) -> [
     ]
 }
 
-/// Entries per `Zone`.
 pub const ZONE: usize = 1024;
 
-/// What a filter on size, mtime or kind can skip in a run of `ZONE` entries.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct Zone {
     pub max_size: u64,
     pub min_mtime: u32,
     pub max_mtime: u32,
-    /// Bit `kind & 3` for every kind present.
     pub kinds: u32,
 }
 
@@ -728,11 +697,9 @@ pub(crate) fn zones(kind: &[u8], size: &[u32], big: &[u64], mtime: &[u32]) -> Ve
         .collect()
 }
 
-/// Marks a packed size that is an index into `big`.
 const BIG: u32 = 1 << 31;
 const ALLOC_UNIT: u64 = 4096;
 
-/// A size in 4 bytes, exact: in `unit`s when it fits, else an index into `big`.
 fn pack(v: u64, unit: u64, big: &mut Vec<u64>) -> u32 {
     if v.is_multiple_of(unit) && v / unit < BIG as u64 {
         return (v / unit) as u32;
@@ -767,19 +734,17 @@ impl std::hash::Hasher for FxH {
     }
 }
 
-/// Which character classes a name contains; a token matches only names whose mask is a superset of its own.
+/// A token matches only names whose mask is a superset of its own.
 pub fn char_mask(s: &[u8]) -> u64 {
     s.iter().fold(0, |m, &b| m | char_bit(b))
 }
 
-/// `char_mask`, plus in the high bits a hash of the first byte of the name (past a leading dot) and of each word.
 pub fn name_mask(s: &[u8]) -> u64 {
     let off = (s.len() > 1 && s[0] == b'.') as usize;
     let starts = s.get(off).into_iter().chain(s.windows(2).filter(|w| w[0] == b' ').map(|w| &w[1]));
     starts.fold(char_mask(s), |m, &b| m | start_bit(b))
 }
 
-/// The `name_mask` bit for a word starting with `b`.
 #[inline]
 pub fn start_bit(b: u8) -> u64 {
     1 << (CLASSES + start_hash(b))
@@ -791,14 +756,11 @@ pub fn start_hash(b: u8) -> usize {
 }
 
 pub const CLASSES: usize = 41;
-/// Per char class: names with it in their first half (`BM_FIRST`) or their second half (`BM_SECOND`).
 pub const BM_FIRST: usize = 0;
 pub const BM_SECOND: usize = CLASSES;
-/// Names with a word starting with a letter of this `start_bit` hash.
 pub const BM_START: usize = 2 * CLASSES;
 pub const BM_DOT: usize = BM_START + 23;
 pub const BM_APP: usize = BM_DOT + 1;
-/// Names with this char class at least twice.
 pub const BM_DOUBLE: usize = BM_APP + 1;
 pub const NBITMAPS: usize = BM_DOUBLE + CLASSES;
 
@@ -814,7 +776,6 @@ fn name_bitmaps(s: &[u8]) -> impl Iterator<Item = usize> {
         .chain(class(doubled(s), BM_DOUBLE))
 }
 
-/// The char classes `s` has at least twice.
 pub fn doubled(s: &[u8]) -> u64 {
     let (mut once, mut twice) = (0, 0);
     for &b in s {

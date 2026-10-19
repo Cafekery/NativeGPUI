@@ -25,14 +25,12 @@ const SYNC_MARGIN: u32 = 120;
 const REPLAY_QUIET: Duration = Duration::from_secs(2);
 
 pub struct Options {
-    /// Where the index lives (`index.bin`, `content/`).
     pub dir: PathBuf,
     pub home: String,
     /// Folders never to open; `None` skips the consent-gated ones unless the process has Full Disk Access.
     pub skip: Option<Vec<PathBuf>>,
 }
 
-/// One name-search result.
 pub struct Found {
     pub path: PathBuf,
     /// `walk::KIND_*` in the low 2 bits, `walk::FLAG_*` above.
@@ -161,7 +159,7 @@ fn spawn(name: &str, f: impl FnOnce() + Send + 'static) {
 }
 
 impl Engine {
-    /// Start indexing in the background; searches answer `Err` while the first run builds the index.
+    /// Searches answer `Err` while the first run builds the index.
     pub fn start(opts: Options) -> Result<Engine, String> {
         std::fs::create_dir_all(&opts.dir).map_err(|e| e.to_string())?;
         let lock = std::fs::File::create(opts.dir.join("daemon.lock")).map_err(|e| e.to_string())?;
@@ -318,18 +316,15 @@ impl Engine {
         }
     }
 
-    /// The answer while the first index builds, with its progress.
     pub fn indexing(&self) -> String {
         indexing()
     }
 
-    /// Compact and save the name index soon.
     pub fn save(&self) {
         self.s.save_requested.store(true, Ordering::Relaxed);
         let _ = self.s.wake.send(Vec::new());
     }
 
-    /// What the folder at `path` holds; `None` until the index is loaded or if it doesn't list `path`.
     pub fn totals(&self, path: &Path) -> Option<Totals> {
         self.s.live.read().unwrap().as_ref()?.totals(path.as_os_str().as_bytes())
     }
@@ -360,7 +355,6 @@ impl Engine {
         g.as_ref().map_or_else(Vec::new, |l| l.extensions(limit).into_iter().map(to_path).collect())
     }
 
-    /// Bring folders the index lists up to date now, ahead of their FSEvents.
     pub fn refresh(&self, dirs: &[PathBuf]) {
         std::thread::scope(|s| {
             s.spawn(|| {
@@ -382,7 +376,7 @@ impl Engine {
     }
 }
 
-/// (dirs, trees) for the content worker to re-sync.
+/// (dirs, trees)
 type Resync = (Vec<Vec<u8>>, Vec<Vec<u8>>);
 
 fn indexing() -> String {
@@ -451,7 +445,6 @@ fn try_upgrade(s: &Arc<Shared>) -> bool {
     true
 }
 
-/// Next to index.bin: the folders it lacks for want of access, one per line.
 const SKIPPED: &str = "skipped";
 
 fn note_skipped(dir: &Path) {
@@ -837,7 +830,6 @@ fn apply_loop(shared: &Arc<Shared>, rx: Receiver<Vec<fsevents::Event>>) {
     }
 }
 
-/// Default data dir: `~/Library/Application Support/FSearch`.
 pub fn default_dir(home: &str) -> PathBuf {
     Path::new(home).join("Library/Application Support/FSearch")
 }

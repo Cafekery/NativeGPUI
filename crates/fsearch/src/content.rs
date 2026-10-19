@@ -123,12 +123,10 @@ impl Segment {
     sec!(mtime, S::Mtime, u32, ndocs);
     sec!(by_path, S::ByPath, u32, ndocs);
     sec!(rank, S::Rank, i8, ndocs);
-    // Doc ids, best-ranked first.
     sec!(by_rank, S::ByRank, u32, ndocs);
     // Per doc, its content's gid (NONE: not text); the same in by_rank order.
     sec!(doc_gid, S::DocGid, u32, ndocs);
     sec!(rank_gid, S::RankGid, u32, ndocs);
-    // The docs by gid: the gids (ascending), and the doc ids.
     sec!(gid_sorted, S::GidSorted, u32, ndocs);
     sec!(by_gid, S::ByGid, u32, ndocs);
     // Per own content: its gid, first doc holding it (or NONE), a two-u64 hash, SHORT and LONG blooms; then the contents in hash order.
@@ -467,7 +465,6 @@ fn symbols(buf: &[u8], out: &mut Vec<u32>) {
     out.extend(keys);
 }
 
-/// Paths with size and mtime, all in one buffer.
 #[derive(Default)]
 pub struct Docs {
     buf: Vec<u8>,
@@ -563,7 +560,6 @@ impl Docs {
         (i < self.items.len() && self.path(i) == path).then_some(i)
     }
 
-    /// Index ranges of about SEG_BYTES of file data each.
     pub fn batches(&self) -> Vec<std::ops::Range<usize>> {
         let (mut out, mut start, mut bytes) = (Vec::new(), 0, 0u64);
         for (i, it) in self.items.iter().enumerate() {
@@ -626,7 +622,6 @@ struct SplitContent {
     long: std::ops::Range<usize>,
 }
 
-/// Build one segment file from docs, in any order.
 pub fn build_segment(dir: &Path, id: u64, docs: &Docs, range: std::ops::Range<usize>) -> Option<Segment> {
     use std::io::Read;
     const RUN: usize = 256;
@@ -748,7 +743,6 @@ pub fn build_segment(dir: &Path, id: u64, docs: &Docs, range: std::ops::Range<us
     Some(seg)
 }
 
-/// Merge segments into one, dropping tombstoned docs and contents no live doc holds.
 pub fn merge(dir: &Path, id: u64, segs: &[&Segment]) -> Option<Segment> {
     let mut meta = Vec::new();
     for s in segs {
@@ -936,7 +930,6 @@ fn write_segment(dir: &Path, id: u64, docs: &[DocMeta<'_>], own: &[ContentMeta<'
     Segment::load(dir, id)
 }
 
-/// Should this file be in the content index?
 pub fn eligible(path: &[u8], size: u64, home: &[u8]) -> bool {
     let name = &path[path.iter().rposition(|&b| b == b'/').map_or(0, |p| p + 1)..];
     name_ok(name, size) && in_scope(path, home)
@@ -955,7 +948,6 @@ fn name_ok(name: &[u8], size: u64) -> bool {
     }
 }
 
-/// Is this path (file or directory) inside the indexed area?
 pub fn in_scope(path: &[u8], home: &[u8]) -> bool {
     let Some(rest) = path.strip_prefix(home) else { return false };
     if !rest.is_empty() && rest[0] != b'/' {
@@ -1073,7 +1065,6 @@ impl Content {
         c
     }
 
-    /// Open as the owner: also delete what the manifest doesn't list.
     pub fn open(dir: PathBuf) -> Content {
         std::fs::create_dir_all(&dir).ok();
         let c = Content::open_shared(dir);
@@ -1218,7 +1209,7 @@ impl Content {
         self.segs.iter().map(|s| s.map.len()).sum()
     }
 
-    /// Tombstone docs that changed or went away against what the name index wants; return what needs (re)indexing.
+    /// Tombstone docs that changed or went away; return what needs (re)indexing.
     pub fn diff(&mut self, wants: Vec<(Vec<u8>, bool, Docs)>) -> Docs {
         let mut todo = Docs::default();
         let mut touched = vec![false; self.segs.len()];
@@ -1324,7 +1315,6 @@ impl Content {
         self.save_manifest();
     }
 
-    /// The next group of segment ids to merge, if any.
     pub fn merge_plan(&self) -> Option<Vec<u64>> {
         let stale = |s: &&Segment| {
             let own = s.live_own();
@@ -1354,7 +1344,6 @@ impl Content {
         self.segs.iter().filter(|s| ids.contains(&s.id)).collect()
     }
 
-    /// Swap merged segments for their replacement, at the first one's place.
     pub fn replace(&mut self, ids: &[u64], seg: Segment) {
         let at = self.segs.iter().position(|s| ids.contains(&s.id)).unwrap_or(self.segs.len());
         self.drop_segments(ids);
@@ -1949,7 +1938,6 @@ fn take_best(per: &mut Vec<Cands>) -> Vec<Ranked> {
     top
 }
 
-/// What the name index says should be indexed under `dir` (direct children only unless `recursive`).
 pub fn wanted(live: &Live, home: &[u8], dir: &[u8], recursive: bool) -> Docs {
     let mut want = Docs::default();
     if !in_scope(dir, home) {
@@ -1982,7 +1970,6 @@ pub fn wanted(live: &Live, home: &[u8], dir: &[u8], recursive: bool) -> Docs {
     want
 }
 
-/// The dirs and trees from one batch of changes, each with what should be indexed there.
 pub fn wants(live: &Live, home: &[u8], dirs: &[Vec<u8>], trees: &[Vec<u8>]) -> Vec<(Vec<u8>, bool, Docs)> {
     let mut out: Vec<(Vec<u8>, bool)> = Vec::new();
     for (d, r) in dirs.iter().map(|d| (d, false)).chain(trees.iter().map(|d| (d, true))) {
@@ -2012,7 +1999,6 @@ pub struct Grep {
     pub pattern: String,
     pub mode: GrepMode,
     pub max_per_file: usize,
-    /// Stop reading candidates after this long (None = read them all).
     pub budget: Option<std::time::Duration>,
     re: std::sync::OnceLock<Regex>,
     src: String,
@@ -2026,7 +2012,6 @@ impl Grep {
         let src = match mode {
             GrepMode::Literal => regex::escape(pattern),
             GrepMode::Regex => pattern.to_string(),
-            // ASCII word boundaries keep the regex on the fast DFA path even in files with non-ASCII text.
             GrepMode::Symbol => format!(r"(?-u:\b)(?:{DEFINES})(?:<[^>\n]*>)?[ \t*&]+(?:mut[ \t]+)?{}(?-u:\b)", regex::escape(pattern)),
         };
         let case_insensitive = smart_ci && mode != GrepMode::Symbol;
@@ -2083,7 +2068,7 @@ impl Grep {
         match self.mode {
             GrepMode::Symbol if plain_identifier(self.pattern.as_bytes()) => TQ::Tri(symbol_key(self.pattern.as_bytes())),
             GrepMode::Literal | GrepMode::Symbol => literal_plan(self.pattern.as_bytes()),
-            GrepMode::Regex => regex_syntax::Parser::new().parse(&self.pattern).map_or(TQ::All, |h| regex_plan(&h)),
+            GrepMode::Regex => regex_syntax::Parser::new().parse(&self.pattern).map_or(TQ::All, |h| info(&h).query()),
         }
     }
 }
@@ -2093,7 +2078,6 @@ pub struct GrepResult {
     pub files: Vec<FileMatches>,
     pub candidates: usize,
     pub read: usize,
-    /// False if the time budget ran out before every candidate was read.
     pub complete: bool,
 }
 
@@ -2122,7 +2106,6 @@ pub struct FileMatches {
     pub lines: Vec<(usize, String)>,
 }
 
-/// Read candidates in rank order until `limit` files have matched or the time budget is spent.
 pub fn verify(g: &Grep, paths: &[impl AsRef<[u8]> + Sync], limit: usize) -> GrepResult {
     verify_from(g, paths.len(), limit, SCAN_READERS, std::time::Instant::now(), |i| Some(paths[i].as_ref())).0
 }
@@ -2300,7 +2283,6 @@ fn find_folded(hay: &[u8], from: usize, needle: &[u8], pair: (usize, usize)) -> 
     (i..=last).find(|&c| at(c))
 }
 
-/// A trigram query: which docs could possibly match.
 #[derive(Debug, Clone)]
 pub enum TQ {
     All,
@@ -2763,11 +2745,6 @@ fn concat(a: Info, b: Info) -> Info {
     Info { exact, prefix, suffix, q }
 }
 
-fn regex_plan(h: &Hir) -> TQ {
-    info(h).query()
-}
-
-/// Files to grep where the content index does not reach (e.g. `in:/etc`), picked from the name index, newest first.
 pub fn scan_paths(live: &Live, mut q: Query) -> Vec<Vec<u8>> {
     q.kind = Some(KIND_FILE);
     q.limit = 200_000;

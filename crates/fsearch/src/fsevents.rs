@@ -13,7 +13,6 @@ pub struct Event {
     pub path: Vec<u8>,
     pub flags: u32,
     pub id: u64,
-    /// Which `watch` delivered it.
     pub stream: u32,
 }
 
@@ -104,7 +103,6 @@ extern "C" fn on_events(_s: *mut c_void, info: *mut c_void, n: usize, paths: *mu
     let _ = info.tx.send(batch);
 }
 
-/// A running stream; dropping it stops it.
 pub struct Stream(*mut c_void);
 
 // Safety: the stream is only started and stopped, never shared mid-call.
@@ -122,7 +120,6 @@ impl Drop for Stream {
     }
 }
 
-/// Watch `/` from event id `since`; batches arrive on `tx` until the stream is dropped.
 pub fn watch(since: u64, latency: f64, tx: Sender<Vec<Event>>, stream: u32) -> Stream {
     let a = api();
     unsafe {

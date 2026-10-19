@@ -11,25 +11,21 @@ use std::path::PathBuf;
 pub struct OEnt {
     pub kind: u8,
     pub size: u64,
-    /// Bytes allocated on disk.
     pub alloc: u64,
     pub mtime: u32,
-    /// `index::name_mask` of the entry's name.
     pub mask: u64,
-    /// Location prior of the nearest folder the base knows.
     pub prior: i8,
     slot: u32,
 }
 
 impl OEnt {
-    /// `path` may be the whole path or just the name.
     pub fn new(path: &[u8], kind: u8, size: u64, alloc: u64, mtime: u32) -> OEnt {
         let name = &path[path.iter().rposition(|&b| b == b'/').map_or(0, |p| p + 1)..];
         OEnt { kind, size, alloc, mtime, mask: crate::index::name_mask(name), prior: 0, slot: 0 }
     }
 }
 
-/// The overlay laid out for searches; a free slot's mask is 0, which no name has.
+/// A free slot's mask is 0, which no name has.
 #[derive(Default)]
 pub struct Flat {
     pub masks: Vec<u64>,
@@ -64,19 +60,15 @@ pub struct Live {
     pub dead_count: usize,
     pub over: BTreeMap<Vec<u8>, OEnt>,
     pub flat: Flat,
-    /// Last FSEvents id fully applied.
     pub event_id: u64,
-    /// Directories added or removed since last drained, for the content index to re-sync.
+    /// Directories added or removed since last drained; the content index re-syncs them.
     pub trees: Vec<Vec<u8>>,
-    /// The last name search's scored names.
     pub names_cache: crate::query::NameCache,
-    /// Wall-clock second up to which every change is known applied.
     pub synced_at: u32,
     priors: HashMap<Vec<u8>, i8>,
     dirs: HashMap<u32, (u8, u32)>,
 }
 
-/// What `Live::fetch` read from disk for one folder update.
 pub struct Fetched {
     path: Vec<u8>,
     recursive: bool,
@@ -88,18 +80,15 @@ pub struct Fetched {
 
 pub enum Applied {
     Done,
-    /// The whole disk needs rescanning.
     Rebuild,
 }
 
-/// What a folder holds, as the index has it now.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Totals {
-    /// Logical bytes of everything below it.
     pub bytes: u64,
     pub allocated: u64,
     pub items: u64,
-    /// Its children that are neither dot-named nor hidden.
+    /// Direct children that are neither dot-named nor hidden.
     pub visible: u64,
     /// Entries below it with another hard link; each link counts in the totals.
     pub hardlinks: u64,
@@ -167,12 +156,10 @@ impl Live {
         }
     }
 
-    /// A base entry's kind, as it is now.
     pub fn kind_of(&self, i: u32) -> u8 {
         self.dirs.get(&i).map_or(self.base.kind()[i as usize], |d| d.0)
     }
 
-    /// A base entry's mtime, as it is now.
     pub fn mtime_of(&self, i: u32) -> u32 {
         self.dirs.get(&i).map_or(self.base.mtime()[i as usize], |d| d.1)
     }
@@ -220,16 +207,12 @@ impl Live {
         self.drop_over_subtree(path);
     }
 
-    /// Bring one directory (or, with `recursive`, its whole subtree) in line with the disk.
     pub fn apply_dir(&mut self, path: &[u8], recursive: bool) -> Applied {
-        let f = self.fetch(path, recursive);
-        self.apply(f)
+        self.apply(self.fetch(path, recursive))
     }
 
-    /// The disk half of `apply_dir`, which needs only `&self`.
     pub fn fetch(&self, path: &[u8], recursive: bool) -> Fetched {
-        let p = normalize(path);
-        let mut f = Fetched { path: p, recursive, blocked: false, attrs: None, listing: None, scans: HashMap::new() };
+        let mut f = Fetched { path: normalize(path), recursive, blocked: false, attrs: None, listing: None, scans: HashMap::new() };
         if walk::blocked(&f.path) {
             f.blocked = true;
             return f;
@@ -285,7 +268,6 @@ impl Live {
         cur
     }
 
-    /// The memory half of `apply_dir`: diff what `fetch` read into the index.
     pub fn apply(&mut self, mut f: Fetched) -> Applied {
         if f.blocked {
             return Applied::Done;
@@ -392,7 +374,7 @@ impl Live {
         });
     }
 
-    /// Folders whose mtime is at least `since`: adding, removing or renaming an entry bumps its folder's mtime.
+    /// Adding, removing or renaming an entry bumps its folder's mtime.
     pub fn changed_dirs(&self, since: u32) -> Vec<Vec<u8>> {
         use rayon::prelude::*;
         let idx = &self.base;
@@ -419,7 +401,6 @@ impl Live {
         out
     }
 
-    /// Everything alive, as listings for `Index::build`.
     pub fn to_listings(&self) -> Vec<Listing> {
         let mut by_parent: HashMap<&[u8], Vec<(&[u8], OEnt)>> = HashMap::new();
         for (k, v) in &self.over {
@@ -483,7 +464,6 @@ impl Live {
         self.folder(&normalize(path)).is_some()
     }
 
-    /// What the folder at `path` holds, if the index lists it.
     pub fn totals(&self, path: &[u8]) -> Option<Totals> {
         let p = normalize(path);
         let k = self.folder(&p)?;
@@ -598,7 +578,6 @@ impl Live {
         out
     }
 
-    /// What the index holds directly in `dir`: (path, kind, size, mtime) each.
     #[allow(clippy::type_complexity)]
     pub fn children(&self, dir: &[u8]) -> Option<Vec<(Vec<u8>, u8, u64, u32)>> {
         let p = normalize(dir);
@@ -616,7 +595,6 @@ impl Live {
         Some(out)
     }
 
-    /// The index's record of one path: (kind, size, mtime).
     pub fn entry(&self, path: &[u8]) -> Option<(u8, u64, u32)> {
         let p = normalize(path);
         if !p.starts_with(b"/") {
@@ -628,7 +606,7 @@ impl Live {
         }
     }
 
-    /// One file per extension in the base, the most common first.
+    /// One file per extension in the base, the most common extension first.
     pub fn extensions(&self, limit: usize) -> Vec<Vec<u8>> {
         let (off, ents) = (self.base.name_ents_off(), self.base.name_ents());
         let mut by_ext: HashMap<&[u8], (usize, u32)> = HashMap::new();
@@ -658,10 +636,7 @@ pub fn stat_pool() -> rayon::ThreadPool {
 }
 
 pub fn for_each_path(ls: &[Listing], root: &[u8], mut f: impl FnMut(Vec<u8>, &RawEnt)) {
-    let mut by_id: HashMap<u32, &Listing> = HashMap::with_capacity(ls.len());
-    for l in ls {
-        by_id.insert(l.id, l);
-    }
+    let by_id: HashMap<u32, &Listing> = ls.iter().map(|l| (l.id, l)).collect();
     let mut stack = vec![(0u32, root.to_vec())];
     while let Some((id, path)) = stack.pop() {
         let Some(l) = by_id.get(&id) else { continue };
@@ -700,7 +675,6 @@ fn subtree_bounds(path: &[u8]) -> (Vec<u8>, Vec<u8>) {
     (lo, hi)
 }
 
-/// The Finder shows what is neither dot-named nor hidden.
 fn shown(name: &[u8], kind: u8) -> bool {
     !name.starts_with(b".") && kind & FLAG_HIDDEN == 0
 }
