@@ -180,6 +180,14 @@ fn enclosing(id: &'static str) -> Option<(&'static str, SharedString)> {
 }
 
 fn refusal(id: &str, error: &std::io::Error) -> String {
+    use finder_fs::permissions::{Privilege, yours};
+    // macOS privacy protection refuses with EPERM where the mode alone would allow it.
+    let private = error.raw_os_error() == Some(1)
+        && !crate::remote::is_remote(id)
+        && matches!(
+            yours(Path::new(id)),
+            Privilege::ReadWrite | Privilege::ReadOnly
+        );
     let id = if crate::remote::is_remote(id) {
         crate::remote::title(id)
     } else {
@@ -190,6 +198,11 @@ fn refusal(id: &str, error: &std::io::Error) -> String {
         .map_or_else(|| id.into(), |name| name.to_string_lossy());
     let name = finder_fs::name::display(&name);
     match error.kind() {
+        std::io::ErrorKind::PermissionDenied if private => {
+            format!(
+                "The folder \u{201c}{name}\u{201d} can\u{2019}t be opened because Found\u{2019}er doesn\u{2019}t have permission to see its contents. To allow it, open System Settings > Privacy & Security, and turn on Found\u{2019}er under Files and Folders or Full Disk Access."
+            )
+        }
         std::io::ErrorKind::PermissionDenied => format!(
             "The folder \u{201c}{name}\u{201d} can\u{2019}t be opened because you don\u{2019}t have permission to see its contents."
         ),
