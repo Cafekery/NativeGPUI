@@ -145,6 +145,52 @@ pub fn title(host: &str) -> String {
     }
 }
 
+/// The name a bare address reverse-resolves to, the only name it can give a server.
+pub fn reverse(address: &str) -> Option<String> {
+    let ip: IpAddr = address.split('%').next()?.parse().ok()?;
+    let mut name = [0 as c_char; libc::NI_MAXHOST as usize];
+    let mut found = |sockaddr: *const libc::sockaddr, len: usize| unsafe {
+        libc::getnameinfo(
+            sockaddr,
+            len as libc::socklen_t,
+            name.as_mut_ptr(),
+            name.len() as libc::socklen_t,
+            std::ptr::null_mut(),
+            0,
+            libc::NI_NAMEREQD,
+        ) == 0
+    };
+    let found = match ip {
+        IpAddr::V4(ip) => {
+            let addr = libc::sockaddr_in {
+                sin_len: size_of::<libc::sockaddr_in>() as u8,
+                sin_family: libc::AF_INET as u8,
+                sin_port: 0,
+                sin_addr: libc::in_addr {
+                    s_addr: u32::from_ne_bytes(ip.octets()),
+                },
+                sin_zero: [0; 8],
+            };
+            found((&raw const addr).cast(), size_of_val(&addr))
+        }
+        IpAddr::V6(ip) => {
+            let addr = libc::sockaddr_in6 {
+                sin6_len: size_of::<libc::sockaddr_in6>() as u8,
+                sin6_family: libc::AF_INET6 as u8,
+                sin6_port: 0,
+                sin6_flowinfo: 0,
+                sin6_addr: libc::in6_addr {
+                    s6_addr: ip.octets(),
+                },
+                sin6_scope_id: 0,
+            };
+            found((&raw const addr).cast(), size_of_val(&addr))
+        }
+    };
+    let name = unsafe { CStr::from_ptr(name.as_ptr()) }.to_string_lossy();
+    found.then(|| name.trim_end_matches('.').to_owned())
+}
+
 /// A mount source percent-encodes a Bonjour name; sharingd's URL host does not.
 fn named(host: &str) -> Cow<'_, str> {
     let host = host.strip_suffix('.').unwrap_or(host);
@@ -554,6 +600,14 @@ mod tests {
         assert_eq!(advertised(&name), Some("NG Alex’s Mini"));
         assert_eq!(advertised("192.0.2.62"), None);
         assert_eq!(named("100%"), "100%");
+    }
+
+    #[test]
+    fn a_loopback_address_reverses_to_localhost() {
+        assert_eq!(reverse("127.0.0.1").as_deref(), Some("localhost"));
+        assert_eq!(reverse("::1").as_deref(), Some("localhost"));
+        assert_eq!(reverse("bakery.local"), None);
+        assert!(same_host("bakery.local", "Bakery"));
     }
 
     #[test]

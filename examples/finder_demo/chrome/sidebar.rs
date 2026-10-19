@@ -228,10 +228,6 @@ fn title_servers(locations: &mut [Listed]) {
     }
 }
 
-fn server_title(host: &str) -> String {
-    networked_name(host).unwrap_or_else(|| finder_fs::servers::title(host))
-}
-
 fn listed_rows(listed: Vec<Listed>, location: bool) -> Vec<Row> {
     listed
         .into_iter()
@@ -571,11 +567,7 @@ pub(crate) fn groups() -> Vec<Group> {
             eject: true,
             muted: true,
             server: true,
-            ..row(
-                server.path,
-                server_title(server.host),
-                server_glyph(server.host),
-            )
+            ..row(server.path, server.title(), server_glyph(server.known()))
         });
         locations.splice(end..end, servers);
         let end = locations

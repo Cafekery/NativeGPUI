@@ -47,8 +47,29 @@ pub(crate) struct Connected {
     pub(crate) prefix: &'static str,
     pub(crate) path: &'static str,
     pub(crate) host: &'static str,
+    pub(crate) name: Option<&'static str>,
     server: Server,
     uid: Option<u32>,
+}
+
+impl Connected {
+    /// Finder's title: the name the user gave it, else sharingd's name, else the host.
+    pub(crate) fn title(&self) -> String {
+        self.name.map_or_else(
+            || {
+                crate::locations::networked_name(self.host)
+                    .unwrap_or_else(|| finder_fs::servers::title(self.host))
+            },
+            str::to_owned,
+        )
+    }
+
+    /// Whichever of the given name and the host names a computer whose model is known.
+    pub(crate) fn known(&self) -> &'static str {
+        self.name
+            .filter(|name| crate::data::server_model(name).is_some())
+            .unwrap_or(self.host)
+    }
 }
 
 static SERVERS: RwLock<Vec<Connected>> = RwLock::new(Vec::new());
@@ -168,13 +189,13 @@ pub(crate) fn computer_rows() -> Vec<Arc<Row>> {
     servers()
         .into_iter()
         .map(|server| {
-            let art = match crate::data::server_model(server.host) {
+            let art = match crate::data::server_model(server.known()) {
                 Some(model) => FileType::Uti(crate::locations::computer_type(Some(&model)).0),
                 None => FileType::Named("NSNetwork"),
             };
             crate::locations::location_row(
                 server.path,
-                server.host.into(),
+                server.title().into(),
                 finder_fs::words::say("Server").into_owned().into(),
                 "",
                 Some(server.path),
@@ -229,10 +250,13 @@ fn connect(address: Address, askpass: Option<&Path>) -> Result<&'static str, Err
     let path = intern(&format!("{prefix}{path}"));
     if known.is_none() {
         let uid = server.stat(server.home()).ok().and_then(|attrs| attrs.uid);
+        let host =
+            finder_fs::servers::reverse(&address.host).unwrap_or_else(|| address.host.clone());
         SERVERS.write().push(Connected {
             prefix,
             path,
-            host: intern(&address.host),
+            host: intern(&host),
+            name: crate::servers::name_for(prefix).map(|name| intern(&name)),
             server,
             uid,
         });

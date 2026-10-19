@@ -213,6 +213,17 @@ pub(crate) fn store(saved: &[Saved]) {
     prefs::set_saved_servers(&records);
 }
 
+/// The name the user gave a server, whatever path they saved on it.
+pub(crate) fn name_for(root: &str) -> Option<String> {
+    let wanted = Saved::parse(root)?.host;
+    saved()
+        .into_iter()
+        .find(|saved| {
+            finder_fs::servers::same_host(&saved.host, &wanted) && !saved.name.trim().is_empty()
+        })
+        .map(|saved| saved.name.trim().to_owned())
+}
+
 pub(crate) fn identity_for(address: &str) -> Option<PathBuf> {
     let wanted = Saved::parse(address)?.address();
     saved()

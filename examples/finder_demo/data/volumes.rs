@@ -106,7 +106,9 @@ fn ask_servers(volumes: &[volumes::Volume]) {
         .chain(
             crate::remote::servers()
                 .iter()
-                .map(|server| server.host.to_owned()),
+                .flat_map(|server| [Some(server.host), server.name])
+                .flatten()
+                .map(str::to_owned),
         )
         .filter(|host| {
             host.split('%')
