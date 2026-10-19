@@ -549,9 +549,17 @@ impl FinderDemo {
         }
     }
 
-    pub(crate) fn reread_remote(&mut self, cx: &mut Context<Self>) {
+    /// Neither a server nor a share tells FSEvents what changed on it.
+    pub(crate) fn reread_unwatched(&mut self, cx: &mut Context<Self>) {
+        let shares = crate::data::network_roots();
+        let on_share = |id: &str| {
+            shares.iter().any(|root| {
+                id.strip_prefix(root)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+            })
+        };
         for (id, _) in self.folders.held() {
-            if !is_remote(id) {
+            if !is_remote(id) && !on_share(id) {
                 continue;
             }
             if self.folders.shown(id) {

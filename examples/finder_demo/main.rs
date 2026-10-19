@@ -229,7 +229,7 @@ fn finder_window(
                 // The app-wide Edit menu names the undo of whichever window is in front.
                 cx.observe_window_activation(window, |this: &mut FinderDemo, window, cx| {
                     if window.is_window_active() {
-                        this.reread_remote(cx);
+                        this.reread_unwatched(cx);
                         cx.notify();
                         cx.background_executor()
                             .spawn(async { icons::ask_app_management(icons::installed_apps()) })
