@@ -346,13 +346,15 @@ fn trash(from: &Place) -> Result<Place, Error> {
     let Place::There { server, prefix, .. } = from else {
         return Err(Error::Protocol("not on a server".into()));
     };
+    let path = crate::data::join(server.home(), ".Trash");
     let trash = Place::There {
         server: server.clone(),
         prefix,
-        path: crate::data::join(server.home(), ".Trash"),
+        path: path.clone(),
     };
     if trash.node()? != Some(Node::Dir) {
         trash.mkdir()?;
+        server.set_permissions(&path, 0o700)?;
     }
     Ok(trash)
 }
@@ -450,6 +452,7 @@ impl Run {
             }
             Op::Trash(items) => self.shift(landing(&items, |from| Ok((trash(from)?, "")))?),
             Op::Rename { path, name } => {
+                finder_fs::ops::check_name(&name)?;
                 let from = place(&path)?;
                 let to = from.parent().join(&name);
                 let case = from.name().to_lowercase() == name.to_lowercase();
@@ -460,6 +463,7 @@ impl Run {
                 self.shift(vec![(from, to)]);
             }
             Op::NewFolder { into, name } => {
+                finder_fs::ops::check_name(&name)?;
                 let to = place(&into)?.free(&name, "")?;
                 to.mkdir()?;
                 self.ended.results.push(to.id());

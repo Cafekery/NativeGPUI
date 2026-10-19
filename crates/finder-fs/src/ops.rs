@@ -478,7 +478,7 @@ fn remove_path(fm: &NSFileManager, path: &Path) -> io::Result<()> {
     fm.removeItemAtURL_error(&url(path)).map_err(io_error)
 }
 
-fn check_name(name: &str) -> io::Result<()> {
+pub fn check_name(name: &str) -> io::Result<()> {
     let advice = if name.len() > NAME_MAX {
         " Try using a name with fewer characters."
     } else if matches!(name, "" | "." | "..") || name.contains(['/', '\0']) {
