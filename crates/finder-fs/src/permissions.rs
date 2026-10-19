@@ -7,6 +7,7 @@ const ACL_TYPE_EXTENDED: c_int = 0x0000_0100;
 const ACL_FIRST_ENTRY: c_int = 0;
 const ACL_NEXT_ENTRY: c_int = -1;
 const ACL_EXTENDED_ALLOW: c_int = 1;
+const ACL_EXTENDED_DENY: c_int = 2;
 const ACL_READ_DATA: c_int = 1 << 1;
 const ACL_WRITE_DATA: c_int = 1 << 2;
 const ID_TYPE_GID: c_int = 1;
@@ -60,7 +61,7 @@ impl Class {
     }
 }
 
-/// `class` is `None` for an ACL entry.
+/// `class` is `None` for an ACL entry; `deny` marks one that takes `privilege` away.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Grant {
     pub name: String,
@@ -68,6 +69,7 @@ pub struct Grant {
     pub me: bool,
     pub privilege: Privilege,
     pub class: Option<Class>,
+    pub deny: bool,
 }
 
 pub fn grants(path: &Path) -> io::Result<Vec<Grant>> {
@@ -81,6 +83,7 @@ pub fn grants(path: &Path) -> io::Result<Vec<Grant>> {
             group,
             privilege: Privilege::of(bits & 4 != 0, bits & 2 != 0),
             class: Some(class),
+            deny: false,
         }
     };
     let mut grants = vec![posix(Class::Owner, user_name(meta.uid()), false)];
@@ -201,7 +204,6 @@ fn name_or(name: *const c_char, kind: &str, id: u32) -> String {
         .into_owned()
 }
 
-/// Deny entries grant nothing and get no row.
 fn acl_grants(path: &Path, me: libc::uid_t) -> Vec<Grant> {
     let Ok(path) = crate::c_path(path) else {
         return Vec::new();
@@ -218,7 +220,7 @@ fn acl_grants(path: &Path, me: libc::uid_t) -> Vec<Grant> {
         let mut tag = 0;
         let mut permset = std::ptr::null_mut();
         if unsafe { acl_get_tag_type(entry, &mut tag) } != 0
-            || tag != ACL_EXTENDED_ALLOW
+            || (tag != ACL_EXTENDED_ALLOW && tag != ACL_EXTENDED_DENY)
             || unsafe { acl_get_permset(entry, &mut permset) } != 0
         {
             continue;
@@ -245,6 +247,7 @@ fn acl_grants(path: &Path, me: libc::uid_t) -> Vec<Grant> {
             me: !group && id == me,
             privilege,
             class: None,
+            deny: tag == ACL_EXTENDED_DENY,
         });
     }
     unsafe { acl_free(acl) };

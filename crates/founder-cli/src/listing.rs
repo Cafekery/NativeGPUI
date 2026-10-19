@@ -256,6 +256,7 @@ fn facts(path: &Path, deep: bool) -> std::io::Result<Value> {
             "group": grant.group,
             "privilege": format!("{:?}", grant.privilege),
             "class": grant.class.map(|class| format!("{class:?}")),
+            "deny": grant.deny,
         })).collect::<Vec<_>>(),
         "acl": acl_text(path),
         "flags": flag_names(meta.st_flags()),

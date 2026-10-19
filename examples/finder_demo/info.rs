@@ -1991,10 +1991,17 @@ fn grant_row(
     } else {
         grant.name.clone()
     };
+    let title = |choice| {
+        if grant.deny {
+            format!("Deny {}", privilege_title(choice))
+        } else {
+            privilege_title(choice).to_owned()
+        }
+    };
     let popup = native_popup("privilege", chosen)
-        .items(choices.iter().map(|&choice| privilege_title(choice)))
+        .items(choices.iter().map(|&choice| title(choice)))
         .bordered(false)
-        .width(px(hugging(privilege_title(grant.privilege), false)))
+        .width(px(hugging(&title(grant.privilege), false)))
         .enabled(editable && grant.class.is_some())
         .on_change(move |&at, _, cx| {
             if let Some(&privilege) = choices.get(at) {
