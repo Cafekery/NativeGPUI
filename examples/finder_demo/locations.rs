@@ -66,7 +66,7 @@ fn sysctl_text(name: &CStr) -> String {
         .to_owned()
 }
 
-fn computer_type(model: Option<&str>) -> (&'static str, String) {
+pub(crate) fn computer_type(model: Option<&str>) -> (&'static str, String) {
     finder_fs::servers::model_type(model)
         .map(|(uti, kind)| (intern(&uti), kind))
         .unwrap_or(("com.apple.mac", String::new()))
@@ -146,6 +146,16 @@ thread_local! {
 }
 
 static NETWORK_CHANGED: Signal = Signal::new();
+
+/// What sharingd calls a computer reached by `host`: Finder's title for it.
+pub(crate) fn networked_name(host: &str) -> Option<String> {
+    NETWORKED.with_borrow(|(_, listed)| {
+        let computer = listed
+            .iter()
+            .find(|computer| finder_fs::servers::same_host(&computer.name, host))?;
+        Some(computer.name.clone())
+    })
+}
 
 fn server_key(name: &str) -> String {
     format!("{NETWORK}/{}", name.replace('/', ":"))
@@ -278,6 +288,7 @@ fn follow_network(cx: &mut App) {
                 }
             });
             let windows = cx.update(|cx| {
+                cx.refresh_windows();
                 cx.windows()
                     .into_iter()
                     .filter_map(|window| window.downcast::<FinderDemo>())

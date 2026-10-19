@@ -184,6 +184,11 @@ fn listed_row(listed: Listed, location: bool) -> Option<Row> {
         Some(ICloudDrive | AirDrop | Network | Trash) => {
             finder_fs::words::say(&listed.title).into_owned()
         }
+        None if listed.network => listed
+            .server
+            .as_deref()
+            .and_then(crate::locations::networked_name)
+            .unwrap_or(listed.title),
         _ => listed.title,
     };
     Some(Row {
