@@ -372,7 +372,6 @@ impl Server {
             .ok()
     }
 
-    /// None when the server cannot say.
     pub fn statvfs(&self, path: &str) -> Option<Space> {
         if !self.has("statvfs@openssh.com") {
             return None;
@@ -389,7 +388,6 @@ impl Server {
         })
     }
 
-    /// Copies a whole file on the server; None when the server cannot.
     pub fn copy_data(&self, from: &str, to: &str) -> Option<Result<(), Error>> {
         self.has("copy-data").then(|| {
             let session = self.inner.session(1)?;

@@ -10,10 +10,7 @@ pub const CACHE: &str = "FOUNDER_SFTP_CACHE";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Prompt {
     Password,
-    /// ssh's question about an unknown or changed host key, fingerprint included.
-    HostKey {
-        text: String,
-    },
+    HostKey { text: String },
     Other(String),
 }
 
