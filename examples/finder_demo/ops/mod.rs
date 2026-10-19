@@ -91,7 +91,7 @@ impl FinderDemo {
             conflicts::Split::Clean(op) => self.submit_op(op, Conflict::KeepBoth, after, cx),
             conflicts::Split::Locked { op, locked } => {
                 if let Some(op) = self.confirm_unlock(op, &locked) {
-                    self.submit_op(op, Conflict::KeepBoth, after, cx);
+                    self.checked(conflicts::unlocked(op, after), after, cx);
                 }
             }
             conflicts::Split::Conflicted { clean, sheet } => {
@@ -138,10 +138,12 @@ impl FinderDemo {
     }
 
     fn confirm_unlock(&self, op: Op, locked: &[PathBuf]) -> Option<Op> {
-        let (items, deleting) = match op {
-            Op::Trash(items) => (items, false),
-            Op::DeleteImmediately(items) => (items, true),
-            op => return Some(op),
+        let (items, question, action) = match &op {
+            Op::Trash(items) => (items.clone(), "move it to the Trash", "Move to Trash"),
+            Op::DeleteImmediately(items) => (items.clone(), "delete it", "Delete"),
+            Op::Move { items, .. } => (items.clone(), "move it", "Move"),
+            Op::Rename { path, .. } => (vec![path.clone()], "rename it", "Rename"),
+            _ => return Some(op),
         };
         let mut kept = Vec::with_capacity(items.len());
         let mut for_all = None;
@@ -152,7 +154,7 @@ impl FinderDemo {
             }
             let (yes, all) = match for_all {
                 Some(yes) => (yes, true),
-                None => ask_unlock(&item, deleting, locked.len() > 1),
+                None => ask_unlock(&item, question, action, locked.len() > 1),
             };
             if all {
                 for_all = Some(yes);
@@ -164,10 +166,11 @@ impl FinderDemo {
         if kept.is_empty() {
             return None;
         }
-        Some(if deleting {
-            Op::DeleteImmediately(kept)
-        } else {
-            Op::Trash(kept)
+        Some(match op {
+            Op::Trash(_) => Op::Trash(kept),
+            Op::DeleteImmediately(_) => Op::DeleteImmediately(kept),
+            Op::Move { into, .. } => Op::Move { items: kept, into },
+            op => op,
         })
     }
 
@@ -328,16 +331,11 @@ impl FinderDemo {
     }
 }
 
-fn ask_unlock(item: &Path, deleting: bool, offer_all: bool) -> (bool, bool) {
+fn ask_unlock(item: &Path, question: &str, action: &str, offer_all: bool) -> (bool, bool) {
     let Some(mtm) = MainThreadMarker::new() else {
         return (false, false);
     };
     let name = item.file_name().unwrap_or_default().to_string_lossy();
-    let (question, action) = if deleting {
-        ("delete it", "Delete")
-    } else {
-        ("move it to the Trash", "Move to Trash")
-    };
     let alert = NSAlert::new(mtm);
     alert.setMessageText(&NSString::from_str(&format!(
         "The item \u{201c}{name}\u{201d} is locked. Are you sure you want to {question}?"

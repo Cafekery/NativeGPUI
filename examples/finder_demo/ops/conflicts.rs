@@ -100,12 +100,19 @@ pub(crate) enum Split {
 }
 
 pub(crate) fn split(op: Op, after: After) -> Split {
-    if let Op::Trash(items) | Op::DeleteImmediately(items) = &op {
-        let held: Vec<PathBuf> = items.iter().filter(|item| locked(item)).cloned().collect();
-        if !held.is_empty() {
-            return Split::Locked { op, locked: held };
-        }
+    let items = match &op {
+        Op::Trash(items) | Op::DeleteImmediately(items) | Op::Move { items, .. } => &items[..],
+        Op::Rename { path, .. } => std::slice::from_ref(path),
+        _ => &[],
+    };
+    let held: Vec<PathBuf> = items.iter().filter(|item| locked(item)).cloned().collect();
+    if !held.is_empty() {
+        return Split::Locked { op, locked: held };
     }
+    unlocked(op, after)
+}
+
+pub(crate) fn unlocked(op: Op, after: After) -> Split {
     let (items, into, kind) = match op {
         Op::Move { items, into } => (items, into, Kind::Move),
         Op::Copy { items, into } => (items, into, Kind::Copy),

@@ -414,6 +414,21 @@ fn past_path_max(err: &NSError) -> bool {
 }
 
 fn transfer(fm: &NSFileManager, src: &Path, dst: &Path, is_move: bool) -> io::Result<()> {
+    let flags = std::fs::symlink_metadata(src)
+        .ok()
+        .filter(|meta| !meta.is_symlink())
+        .map_or(0, |meta| meta.st_flags());
+    if is_move && flags & libc::UF_IMMUTABLE != 0 {
+        // The lock goes with the item: off for the rename, back on wherever the item ends up.
+        let set = |path: &Path, flags| {
+            let name = crate::c_path(path)?;
+            crate::check(unsafe { libc::chflags(name.as_ptr(), flags) })
+        };
+        set(src, flags & !libc::UF_IMMUTABLE)?;
+        let moved = transfer(fm, src, dst, true);
+        let _ = set(if moved.is_ok() { dst } else { src }, flags);
+        return moved;
+    }
     let (from, to) = (url(src), url(dst));
     let landed = if is_move {
         fm.moveItemAtURL_toURL_error(&from, &to)
@@ -492,7 +507,7 @@ pub fn check_name(name: &str) -> io::Result<()> {
     ))
 }
 
-/// Finder asks before it clears a lock; `Op::Trash` and `Op::DeleteImmediately` clear it themselves.
+/// Finder asks before it clears a lock; trashing, deleting, moving and renaming clear it themselves.
 pub fn locked(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|meta| meta.st_flags() & libc::UF_IMMUTABLE != 0)
 }
@@ -2027,6 +2042,41 @@ mod tests {
         )
         .unwrap();
         assert!(!folder.exists(), "a locked child stopped nothing");
+
+        let _ = unlock(&dir, true);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_locked_item_moves_and_renames_and_stays_locked() {
+        let dir = temp_dir("locked-move");
+        let file = dir.join("locked.txt");
+        touch(&file, "locked");
+        lock(&file);
+        let into = dir.join("Folder");
+        fs::create_dir_all(&into).unwrap();
+
+        perform(
+            Op::Move {
+                items: vec![file.clone()],
+                into: into.clone(),
+            },
+            Conflict::KeepBoth,
+        )
+        .unwrap();
+        let moved = into.join("locked.txt");
+        assert!(locked(&moved), "the lock went with the item");
+
+        let renamed = into.join("renamed.txt");
+        perform(
+            Op::Rename {
+                path: moved,
+                name: "renamed.txt".into(),
+            },
+            Conflict::KeepBoth,
+        )
+        .unwrap();
+        assert!(locked(&renamed));
 
         let _ = unlock(&dir, true);
         let _ = fs::remove_dir_all(&dir);
