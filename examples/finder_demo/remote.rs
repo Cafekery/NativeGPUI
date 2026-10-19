@@ -304,7 +304,7 @@ fn row(dir: &'static str, entry: Entry, followed: Option<Option<Attrs>>) -> Arc<
         created: modified,
         added: None,
         hidden: entry.name.starts_with('.'),
-        package: false,
+        package: folder && finder_fs::kind::is_package_name(&entry.name),
         ext_hidden: false,
         alias: false,
         custom_icon: false,
@@ -321,7 +321,7 @@ fn row(dir: &'static str, entry: Entry, followed: Option<Option<Attrs>>) -> Arc<
     let bytes = attrs.size.filter(|_| !folder);
     let modified_at = attrs.mtime.map_or(f64::NAN, seconds);
     let artwork = match local.extension() {
-        _ if folder => FileType::Folder,
+        _ if folder && !local.package => FileType::Folder,
         Some(extension) => FileType::Extension(intern(&extension.to_ascii_lowercase())),
         None => FileType::Uti(intern(&kind.uti)),
     };
@@ -341,7 +341,7 @@ fn row(dir: &'static str, entry: Entry, followed: Option<Option<Attrs>>) -> Arc<
         discloses: folder,
         dataless: false,
         readable: true,
-        package: false,
+        package: local.package,
         artwork: Some(artwork),
         extra: None,
         app: None,
