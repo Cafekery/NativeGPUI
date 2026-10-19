@@ -176,17 +176,25 @@ fn user_name(uid: libc::uid_t) -> String {
         return "system".to_owned();
     }
     let user = unsafe { libc::getpwuid(uid).as_ref() };
-    name_or_unknown(user.map_or(std::ptr::null_mut(), |user| user.pw_name))
+    name_or(
+        user.map_or(std::ptr::null_mut(), |user| user.pw_name),
+        "uid",
+        uid,
+    )
 }
 
 fn group_name(gid: libc::gid_t) -> String {
     let group = unsafe { libc::getgrgid(gid).as_ref() };
-    name_or_unknown(group.map_or(std::ptr::null_mut(), |group| group.gr_name))
+    name_or(
+        group.map_or(std::ptr::null_mut(), |group| group.gr_name),
+        "gid",
+        gid,
+    )
 }
 
-fn name_or_unknown(name: *const c_char) -> String {
+fn name_or(name: *const c_char, kind: &str, id: u32) -> String {
     if name.is_null() {
-        return "(unknown)".to_owned();
+        return format!("{kind} {id}");
     }
     unsafe { CStr::from_ptr(name) }
         .to_string_lossy()
@@ -246,6 +254,13 @@ fn acl_grants(path: &Path, me: libc::uid_t) -> Vec<Grant> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_id_with_no_account_is_named_by_its_number() {
+        assert_eq!(user_name(0), "system");
+        assert_eq!(user_name(48_213), "uid 48213");
+        assert_eq!(group_name(48_213), "gid 48213");
+    }
 
     #[test]
     fn a_folder_searches_what_it_can_read_or_write() {
