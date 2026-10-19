@@ -999,6 +999,7 @@ pub(crate) struct Info {
     width: f32,
     preview: Shown,
     access: Option<Access>,
+    reading: bool,
     first_mode: Option<u32>,
     custom_icon: bool,
     icon_seen: u64,
@@ -1043,6 +1044,7 @@ impl Info {
             width: info_width(),
             preview: Shown::Icon,
             access: None,
+            reading: false,
             folds: panes_open().map(Fold::new),
         }
     }
@@ -1092,10 +1094,21 @@ impl Info {
         }
     }
 
-    fn ensure_access(&mut self) {
-        if self.subject != Subject::Place && self.access.is_none() {
-            self.access = Some(Access::of(self.path(), self.subject));
+    fn ensure_access(&mut self, cx: &mut Context<Self>) {
+        if self.subject != Subject::Place && self.access.is_none() && !self.reading {
+            self.reading = true;
+            self.read_access(cx);
         }
+    }
+
+    fn read_access(&mut self, cx: &mut Context<Self>) {
+        let path = self.path().to_path_buf();
+        let subject = self.subject;
+        in_background(
+            cx,
+            move || Access::of(&path, subject),
+            |info, access| info.access = Some(access),
+        );
     }
 
     fn set_check(&mut self, check: Check, on: bool, cx: &mut Context<Self>) {
@@ -1535,12 +1548,20 @@ impl Info {
         let access = self.access.as_ref()?;
         let path = &self.line.row.path;
         let folder = matches!(self.subject, Subject::Folder | Subject::Volume);
-        let grants = access
-            .grants
-            .iter()
-            .enumerate()
-            .map(|(row, grant)| grant_row(row, grant, folder, self.owned, this.clone()))
-            .collect();
+        let grants = match &access.grants {
+            Ok(grants) => (grants.iter().enumerate())
+                .map(|(row, grant)| grant_row(row, grant, folder, self.owned, this.clone()))
+                .collect(),
+            Err(why) => vec![
+                div()
+                    .h(px(ROW))
+                    .px(px(INSET))
+                    .flex()
+                    .items_center()
+                    .child(native_label("why", why).color(SystemColor::SecondaryLabel))
+                    .into_any_element(),
+            ],
+        };
         let changed = access.mode.is_some() && access.mode != self.first_mode;
         let tools = tools_size();
         let yours = div().px(px(MARGIN + INSET)).child(
@@ -1574,20 +1595,18 @@ impl Info {
         let class = self
             .access
             .as_ref()
-            .and_then(|access| access.grants.get(row)?.class);
+            .and_then(|access| access.grants.as_ref().ok()?.get(row)?.class);
         if let Some(class) = class {
             permissions::set(self.path(), class, privilege).ok();
         }
-        self.access = Some(Access::of(self.path(), self.subject));
-        cx.notify();
+        self.read_access(cx);
     }
 
     fn revert(&mut self, cx: &mut Context<Self>) {
         if let Some(mode) = self.first_mode {
             permissions::set_mode(self.path(), mode).ok();
         }
-        self.access = Some(Access::of(self.path(), self.subject));
-        cx.notify();
+        self.read_access(cx);
     }
 
     fn confirm_apply(&self, window: Option<Retained<NSWindow>>, cx: &mut Context<Self>) {
@@ -1696,7 +1715,7 @@ impl Render for Info {
         self.ensure_opener();
         self.follow_icon(window);
         self.preview = self.shown(scale);
-        self.ensure_access();
+        self.ensure_access(cx);
         cx.defer(|_| crate::thumbs::collect_thumbnails());
         self.title(window);
         let this = cx.weak_entity();
@@ -1817,7 +1836,7 @@ fn name_field(path: SharedString, enabled: bool, this: WeakEntity<Info>) -> impl
 }
 
 struct Access {
-    grants: Vec<Grant>,
+    grants: Result<Vec<Grant>, String>,
     yours: Privilege,
     mode: Option<u32>,
     ownership: Option<bool>,
@@ -1826,7 +1845,7 @@ struct Access {
 impl Access {
     fn of(path: &Path, subject: Subject) -> Self {
         Access {
-            grants: permissions::grants(path).unwrap_or_default(),
+            grants: permissions::grants(path).map_err(|error| error.to_string()),
             yours: permissions::yours(path),
             mode: permissions::mode(path).ok(),
             ownership: (subject == Subject::Volume && path != Path::new("/"))
