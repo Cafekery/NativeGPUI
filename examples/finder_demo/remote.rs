@@ -20,10 +20,11 @@ use finder_sftp::askpass::{self, Prompt};
 use finder_sftp::{Address, Attrs, Entry, Error, Kind, Server, keychain};
 use gpui::{AppContext as _, Context, Window};
 use native_gpui::tokens::FileType;
-use objc2::{MainThreadMarker, MainThreadOnly};
+use objc2::rc::Retained;
+use objc2::{MainThreadMarker, MainThreadOnly, sel};
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSApplication, NSApplicationActivationPolicy, NSButton,
-    NSControlStateValueOn, NSSecureTextField, NSView,
+    NSControlStateValueOn, NSMenu, NSMenuItem, NSSecureTextField, NSView,
 };
 use objc2_foundation::{NSError, NSPoint, NSRect, NSSize, NSString};
 use parking_lot::RwLock;
@@ -609,6 +610,33 @@ fn password(host: &str, user: &str, attempt: &str) -> i32 {
     0
 }
 
+// A helper has no menu bar, and without an Edit menu Cmd-V reaches nothing.
+fn edit_menu(mtm: MainThreadMarker) -> Retained<NSMenu> {
+    let edit = NSMenu::new(mtm);
+    let items = [
+        ("Cut", sel!(cut:), "x"),
+        ("Copy", sel!(copy:), "c"),
+        ("Paste", sel!(paste:), "v"),
+        ("Select All", sel!(selectAll:), "a"),
+    ];
+    for (title, action, key) in items {
+        let item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                &NSString::from_str(title),
+                Some(action),
+                &NSString::from_str(key),
+            )
+        };
+        edit.addItem(&item);
+    }
+    let bar = NSMenu::new(mtm);
+    let item = NSMenuItem::new(mtm);
+    item.setSubmenu(Some(&edit));
+    bar.addItem(&item);
+    bar
+}
+
 fn frame(x: f64, y: f64, width: f64, height: f64) -> NSRect {
     NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
 }
@@ -623,6 +651,7 @@ fn ask(message: &str, detail: &str, accessory: Option<(&NSView, &NSView)>) -> bo
     #[allow(deprecated)]
     // cooperative activate() loses to the parent app; this is what makes a helper's alert key
     app.activateIgnoringOtherApps(true);
+    app.setMainMenu(Some(&edit_menu(mtm)));
     let alert = NSAlert::new(mtm);
     alert.setMessageText(&NSString::from_str(message));
     alert.setInformativeText(&NSString::from_str(detail.trim()));
