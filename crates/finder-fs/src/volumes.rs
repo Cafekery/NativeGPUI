@@ -118,6 +118,11 @@ pub(crate) fn is_local(path: &Path) -> bool {
     statfs(path).is_some_and(|stat| stat.f_flags & libc::MNT_LOCAL as u32 != 0)
 }
 
+/// A server keeps no Trash, so an item replaced on a share is deleted outright.
+pub fn has_trash(path: &Path) -> bool {
+    is_local(path)
+}
+
 pub fn ignores_ownership(path: &Path) -> bool {
     statfs(path).is_some_and(|stat| stat.f_flags & libc::MNT_IGNORE_OWNERSHIP as u32 != 0)
 }

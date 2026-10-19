@@ -62,6 +62,7 @@ pub(crate) struct Sheet {
     remaining: VecDeque<PathBuf>,
     total: usize,
     apply_to_all: bool,
+    trashless: bool,
 }
 
 impl Sheet {
@@ -131,6 +132,7 @@ pub(crate) fn split(op: Op, after: After) -> Split {
     let dest = Sheet::dest_of(&into, &current);
     let sheet = Sheet {
         kind,
+        trashless: !finder_fs::volumes::has_trash(&into),
         into,
         after,
         current,
@@ -214,7 +216,7 @@ impl FinderDemo {
         };
         let both_folders = sheet.both_folders();
         let question = format!(
-            "An item named \u{201c}{}\u{201d} already exists in this location. Do you want to {}?",
+            "An item named \u{201c}{}\u{201d} already exists in this location. Do you want to {}?{}",
             sheet
                 .current
                 .file_name()
@@ -224,6 +226,11 @@ impl FinderDemo {
                 "merge it with the folder you're moving"
             } else {
                 "replace it with the one you're moving"
+            },
+            if sheet.trashless {
+                " Replacing deletes the existing item immediately. You can\u{2019}t undo this action."
+            } else {
+                ""
             }
         );
         div()
