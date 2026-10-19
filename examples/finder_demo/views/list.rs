@@ -10,6 +10,7 @@ use gpui::{
     MouseButton, MouseDownEvent, Pixels, Point, SharedString, Stateful, StyleRefinement,
     WeakEntity, Window, div, prelude::*, px, uniform_list,
 };
+use native_gpui::native_tooltip;
 use native_gpui::tokens::{self, SystemColor};
 
 use crate::app::FinderDemo;
@@ -21,7 +22,7 @@ use crate::listing::Slot;
 use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::prefs;
-use crate::tags::{RowTag, row_tags, tag_dots};
+use crate::tags::{RowTag, row_tags, tag_dots, tag_dots_w};
 use crate::ui::{axis_locked, menu_ring, pick_on_click, pick_on_press, rename_field, text_width};
 use crate::view::LIST_VIEW;
 use crate::views::header::{ColumnSpec, HEADER_H, PANE_INSET};
@@ -171,6 +172,7 @@ struct Drawn {
     art: Art,
     anchor: Option<Anchor>,
     open: bool,
+    clipped: bool,
     this: WeakEntity<FinderDemo>,
 }
 
@@ -186,8 +188,14 @@ impl PartialEq for Drawn {
             && Arc::ptr_eq(&self.line.row, &other.line.row)
             && self.line.depth == other.line.depth
             && self.at == other.at
-            && (self.run, self.selected, self.ring, self.open)
-                == (other.run, other.selected, other.ring, other.open)
+            && (self.run, self.selected, self.ring, self.open, self.clipped)
+                == (
+                    other.run,
+                    other.selected,
+                    other.ring,
+                    other.open,
+                    other.clipped,
+                )
             && self.anchor.is_some() == other.anchor.is_some()
             && self.dropping == other.dropping
             && self.tags == other.tags
@@ -595,11 +603,19 @@ fn name_cell(drawn: &Drawn, rename: Option<AnyElement>) -> Div {
             drawn.anchor.clone(),
         ))
         .child(match rename {
-            Some(field) => label.flex_1().child(field),
-            None => label
-                .overflow_hidden()
-                .text_ellipsis_middle()
-                .child(line.row.display.clone()),
+            Some(field) => label.flex_1().child(field).into_any_element(),
+            None => {
+                let label = label
+                    .overflow_hidden()
+                    .text_ellipsis_middle()
+                    .child(line.row.display.clone());
+                if drawn.clipped {
+                    native_tooltip("ng.finder.name.tip", line.row.display.clone(), label)
+                        .into_any_element()
+                } else {
+                    label.into_any_element()
+                }
+            }
         })
         .children(tag_dots(&drawn.tags).map(|dots| div().ml(px(TAG_DOTS_GAP)).child(dots)))
         .when(line.row.dataless, |name| {
@@ -666,13 +682,13 @@ fn detail_cell(spec: &ColumnSpec, line: &Line, look: &Look, detail: Hsla) -> Div
     }
 }
 
-fn drop_band(line: &Line, look: &Look, window: &Window) -> (f32, f32) {
+fn name_text_w(line: &Line, look: &Look, window: &Window) -> f32 {
     thread_local! {
         static WIDTHS: RefCell<HashMap<(SharedString, u32), f32>> = RefCell::new(HashMap::new());
     }
     let key = (line.row.display.clone(), look.text.to_bits());
     let known = WIDTHS.with_borrow(|widths| widths.get(&key).copied());
-    let text = known.unwrap_or_else(|| {
+    known.unwrap_or_else(|| {
         let width = text_width(window, key.0.clone(), px(look.text));
         WIDTHS.with_borrow_mut(|widths| {
             if widths.len() >= WIDTHS_HELD {
@@ -681,8 +697,11 @@ fn drop_band(line: &Line, look: &Look, window: &Window) -> (f32, f32) {
             widths.insert(key, width);
         });
         width
-    });
-    let name = name_prefix(line, look.icon) + text + LABEL_GAP;
+    })
+}
+
+fn drop_band(line: &Line, look: &Look, window: &Window) -> (f32, f32) {
+    let name = name_prefix(line, look.icon) + name_text_w(line, look, window) + LABEL_GAP;
     (indent(line), name.min(look.name_w))
 }
 
@@ -757,6 +776,13 @@ fn row(
         .as_ref()
         .is_some_and(|row| *row == line.key || (selected && marks.selected.contains(row)));
     let cursor = marks.cursor.as_ref() == Some(&line.key);
+    let tags = row_tags(&line.key);
+    let dots = if tags.is_empty() {
+        0.
+    } else {
+        tag_dots_w(&tags) + TAG_DOTS_GAP
+    };
+    let room = look.name_w - name_prefix(line, look.icon) - dots;
     let drawn = Drawn {
         line: line.clone(),
         at,
@@ -769,10 +795,11 @@ fn row(
         selected,
         ring,
         dropping,
-        tags: row_tags(&line.key),
+        tags,
         art: list_art(&line.row, look.icon, look.scale, look.previews),
         anchor: cursor.then(|| marks.ql_icon.clone()),
         open: marks.expanded.contains(&line.key),
+        clipped: name_text_w(line, look, window) > room,
         this: marks.this.clone(),
     };
     let renaming = marks.renaming.as_ref() == Some(&line.key);

@@ -12,6 +12,7 @@ use gpui::{
     AnyElement, App, Div, ExternalPaths, Hsla, MouseButton, MouseDownEvent, Pixels, Point, Rgba,
     ScrollHandle, SharedString, Size, TextAlign, Window, div, img, point, prelude::*, px, size,
 };
+use native_gpui::native_tooltip;
 use native_gpui::tokens::{SystemColor, system_color};
 use objc2_app_kit::NSFont;
 
@@ -951,27 +952,33 @@ fn tile(
         Some(editor) => {
             let fit =
                 line.row.display.chars().count() as f32 * options.text * CHAR_PER_TEXT + EDITOR_PAD;
-            div().w(px(fit.min(room))).child(editor)
+            div().w(px(fit.min(room))).child(editor).into_any_element()
         }
-        None => div()
-            .px(px(LABEL_PAD))
-            .max_w(px(room))
-            .rounded(px(LABEL_RADIUS))
-            .text_size(px(options.text))
-            .line_height(px(options.line))
-            .line_clamp(((cell.height / options.line) as usize).clamp(1, LABEL_LINES))
-            .text_align(if options.bottom {
-                TextAlign::Center
+        None => {
+            let shown = elide(&line.row.display, room - 2. * LABEL_PAD, options.text);
+            let clipped = shown != line.row.display;
+            let caption = div()
+                .px(px(LABEL_PAD))
+                .max_w(px(room))
+                .rounded(px(LABEL_RADIUS))
+                .text_size(px(options.text))
+                .line_height(px(options.line))
+                .line_clamp(((cell.height / options.line) as usize).clamp(1, LABEL_LINES))
+                .text_align(if options.bottom {
+                    TextAlign::Center
+                } else {
+                    TextAlign::Left
+                })
+                .text_color(if lit { look.selection_text } else { look.label })
+                .when(lit, |label| label.bg(pill))
+                .child(shown);
+            if clipped {
+                native_tooltip("ng.finder.name.tip", line.row.display.clone(), caption)
+                    .into_any_element()
             } else {
-                TextAlign::Left
-            })
-            .text_color(if lit { look.selection_text } else { look.label })
-            .when(lit, |label| label.bg(pill))
-            .child(elide(
-                &line.row.display,
-                room - 2. * LABEL_PAD,
-                options.text,
-            )),
+                caption.into_any_element()
+            }
+        }
     };
     let label = div()
         .flex()
