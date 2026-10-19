@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::fmt::Write;
 use std::net::IpAddr;
@@ -90,7 +91,7 @@ pub fn models(hosts: &[String], wait: Duration, mut found: impl FnMut(&str, Opti
     let _browsing = browse(tx.clone(), browsed);
     let mut left: Vec<(String, &String, [bool; 2])> = hosts
         .iter()
-        .map(|host| (named(host), host, [false; 2]))
+        .map(|host| (named(host).into_owned(), host, [false; 2]))
         .collect();
     // Bonjour answers `_device-info` in milliseconds; sharingd can take a minute after a mount.
     for (name, ..) in &left {
@@ -133,13 +134,19 @@ pub fn models(hosts: &[String], wait: Duration, mut found: impl FnMut(&str, Opti
 
 pub(crate) fn title(host: &str) -> String {
     let name = named(host);
-    instance(&name).map(str::to_owned).unwrap_or(name)
+    match instance(&name) {
+        Some(instance) => instance.to_owned(),
+        None => name.into_owned(),
+    }
 }
 
 /// A mount source percent-encodes a Bonjour name; sharingd's URL host does not.
-fn named(host: &str) -> String {
+fn named(host: &str) -> Cow<'_, str> {
+    if !host.contains('%') {
+        return Cow::Borrowed(host);
+    }
     let decoded = NSString::from_str(host).stringByRemovingPercentEncoding();
-    decoded.map_or_else(|| host.to_owned(), |host| host.to_string())
+    decoded.map_or(Cow::Borrowed(host), |host| Cow::Owned(host.to_string()))
 }
 
 fn instance(name: &str) -> Option<&str> {
@@ -154,11 +161,24 @@ fn advertised(name: &str) -> Option<&str> {
     instance(name).or_else(|| name.split('.').next())
 }
 
+/// The host label macOS derives from a computer name: NG Alex’s Mini is NG-Alexs-Mini.local.
+fn label(name: &str) -> String {
+    let mut label = String::new();
+    for c in name.chars() {
+        if c.is_alphanumeric() {
+            label.extend(c.to_lowercase());
+        } else if !matches!(c, '\'' | '’') && !label.ends_with('-') {
+            label.push('-');
+        }
+    }
+    label.trim_matches('-').to_owned()
+}
+
 /// Two names reach one computer when equal or advertised under the same Bonjour name.
 pub fn same_host(a: &str, b: &str) -> bool {
     let (a, b) = (named(a), named(b));
     a.eq_ignore_ascii_case(&b)
-        || matches!((advertised(&a), advertised(&b)), (Some(a), Some(b)) if a.eq_ignore_ascii_case(b))
+        || matches!((advertised(&a), advertised(&b)), (Some(a), Some(b)) if label(a) == label(b))
 }
 
 fn device_model(instance: &str, deadline: Instant) -> Option<String> {
@@ -523,6 +543,11 @@ mod tests {
         ] {
             assert!(same_host("BAKERY.local", other), "{other}");
         }
+        assert!(same_host(
+            "ng-alexs-mini.local",
+            "NG%20Alex%E2%80%99s%20Mini._smb._tcp.local"
+        ));
+        assert!(!same_host("ng-mini.local", "NG Alex’s Mini"));
         assert!(same_host("192.0.2.62", "192.0.2.62"));
         assert!(!same_host("192.0.2.62", "192.0.2.63"));
         assert!(!same_host("bakery.local", "nas.local"));

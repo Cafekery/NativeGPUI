@@ -96,9 +96,12 @@ pub(crate) fn server_model(host: &str) -> Option<String> {
 fn ask_servers(volumes: &[volumes::Volume]) {
     let mut asked = ASKED.lock().unwrap();
     asked.retain(|host| {
-        volumes
-            .iter()
-            .any(|volume| volume.server.as_ref() == Some(host))
+        volumes.iter().any(|volume| {
+            volume
+                .server
+                .as_deref()
+                .is_some_and(|server| same_host(server, host))
+        })
     });
     let mut hosts: Vec<String> = Vec::new();
     for host in volumes.iter().filter_map(|volume| volume.server.clone()) {
