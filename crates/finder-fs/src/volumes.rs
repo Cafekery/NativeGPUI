@@ -181,10 +181,15 @@ fn volume_from(stats: &libc::statfs) -> Volume {
     let path = mount_path(stats);
     let block = u64::from(stats.f_bsize);
     let local = stats.f_flags & libc::MNT_LOCAL as u32 != 0;
+    let source = statfs_str(&stats.f_mntfromname).to_string_lossy();
     let volume = Volume {
-        name: path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
+        name: (!local)
+            .then(|| share_of(&source))
+            .flatten()
+            .or_else(|| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
             .unwrap_or_default(),
         path,
         ejectable: !local,
@@ -194,11 +199,7 @@ fn volume_from(stats: &libc::statfs) -> Volume {
         format: statfs_str(&stats.f_fstypename)
             .to_string_lossy()
             .into_owned(),
-        server: if local {
-            None
-        } else {
-            host_of(&statfs_str(&stats.f_mntfromname).to_string_lossy())
-        },
+        server: if local { None } else { host_of(&source) },
     };
     if !local {
         return volume;
@@ -206,6 +207,16 @@ fn volume_from(stats: &libc::statfs) -> Volume {
     // Asking is an XPC round trip that waits on any share that stopped answering.
     let url = NSURL::fileURLWithPath(&NSString::from_str(&volume.path.to_string_lossy()));
     volume_at(&url).unwrap_or(volume)
+}
+
+/// The mount point of a share can be "Archive-1"; its source still names it "Archive".
+fn share_of(source: &str) -> Option<String> {
+    let rest = source.split_once("//").map_or(source, |(_, rest)| rest);
+    let (_, path) = rest.split_once('/')?;
+    let name = path.trim_end_matches('/').rsplit('/').next()?;
+    let decoded = NSString::from_str(name).stringByRemovingPercentEncoding();
+    let name = decoded.map_or_else(|| name.to_owned(), |name| name.to_string());
+    (!name.is_empty()).then_some(name)
 }
 
 fn host_of(source: &str) -> Option<String> {
@@ -312,20 +323,20 @@ mod tests {
     }
 
     #[test]
-    fn a_network_share_is_named_by_its_mount_point_listed_by_its_host_and_never_asked() {
+    fn a_network_share_is_named_by_its_source_listed_by_its_host_and_never_asked() {
         // SAFETY: statfs is plain data; all-zero is a valid, if empty, record.
         let mut stats: libc::statfs = unsafe { std::mem::zeroed() };
-        for (at, byte) in b"/Volumes/Archive".iter().enumerate() {
+        for (at, byte) in b"/Volumes/Old Archive-1".iter().enumerate() {
             stats.f_mntonname[at] = *byte as libc::c_char;
         }
-        for (at, byte) in b"//me@192.0.2.62/Archive".iter().enumerate() {
+        for (at, byte) in b"//me@192.0.2.62/Old%20Archive".iter().enumerate() {
             stats.f_mntfromname[at] = *byte as libc::c_char;
         }
         stats.f_bsize = 4096;
         stats.f_blocks = 10;
         stats.f_bavail = 4;
         let volume = volume_from(&stats);
-        assert_eq!(volume.name, "Archive");
+        assert_eq!(volume.name, "Old Archive");
         assert_eq!(volume.server.as_deref(), Some("192.0.2.62"));
         assert!(volume.network && volume.ejectable);
         assert_eq!((volume.capacity, volume.available), (40960, 16384));
@@ -348,5 +359,10 @@ mod tests {
         assert_eq!(host_of("[fe80::1]:/export").as_deref(), Some("fe80::1"));
         assert_eq!(host_of("//fe80::1/Archive").as_deref(), Some("fe80::1"));
         assert_eq!(host_of("//"), None);
+        assert_eq!(
+            share_of("192.0.2.62:/srv/export/").as_deref(),
+            Some("export")
+        );
+        assert_eq!(share_of("//me@192.0.2.62"), None);
     }
 }
