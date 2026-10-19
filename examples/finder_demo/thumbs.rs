@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 use crate::data::{Face, Row};
 use crate::signal::Signal;
 
-type Thumb = (SharedString, u32, bool);
+type Thumb = (SharedString, u32, bool, u64);
 
 type Ask = (PathBuf, Option<SystemTime>, Thumb, f32, f32);
 
@@ -117,7 +117,7 @@ fn sweep_thumbnails() {
     }
     SWEPT.set((Some(now), frames));
     let drawn = DRAWN.take();
-    ASKED.with_borrow_mut(|asked| asked.retain(|(path, _, _)| drawn.contains(path)));
+    ASKED.with_borrow_mut(|asked| asked.retain(|(path, _, _, _)| drawn.contains(path)));
     // Off-screen thumbnails come back from the library's own bounded cache when scrolled to.
     let (count, bytes) = THUMBS.with_borrow(|thumbs| {
         let bytes = thumbs
@@ -127,9 +127,9 @@ fn sweep_thumbnails() {
         (thumbs.len(), bytes)
     });
     if count > KEPT || bytes > KEPT_BYTES {
-        THUMBS.with_borrow_mut(|thumbs| thumbs.retain(|(path, _, _), _| drawn.contains(path)));
+        THUMBS.with_borrow_mut(|thumbs| thumbs.retain(|(path, _, _, _), _| drawn.contains(path)));
         LARGEST.with_borrow_mut(|largest| largest.retain(|(path, _), _| drawn.contains(path)));
-        RETRY.with_borrow_mut(|retry| retry.retain(|(path, _, _), _| drawn.contains(path)));
+        RETRY.with_borrow_mut(|retry| retry.retain(|(path, _, _, _), _| drawn.contains(path)));
     }
     crate::remote::prune_fetches(&drawn);
     let paths: Vec<PathBuf> = drawn.iter().filter_map(|path| local_path(path)).collect();
@@ -157,6 +157,7 @@ fn key_of(row: &Row, size: f32, scale: f32, icon: bool) -> Thumb {
         row.path.clone(),
         (size * scale).round().max(1.) as u32,
         icon,
+        row.modified_at.to_bits(),
     )
 }
 
