@@ -461,7 +461,16 @@ pub(crate) fn tagged_rows(tag: &str, limit: usize) -> Vec<Arc<Row>> {
     let query = if tag.is_empty() {
         "kMDItemUserTags == '*'".to_string()
     } else {
-        format!("kMDItemUserTags == '{tag}'")
+        let escaped: String = tag
+            .chars()
+            .flat_map(|c| {
+                matches!(c, '\\' | '\'' | '*' | '?')
+                    .then_some('\\')
+                    .into_iter()
+                    .chain([c])
+            })
+            .collect();
+        format!("kMDItemUserTags == '{escaped}'")
     };
     let found = mdfind(&["-onlyin".as_ref(), "/".as_ref(), query.as_ref()]);
     let mut rows = rows_at(found.lines().take(limit));
