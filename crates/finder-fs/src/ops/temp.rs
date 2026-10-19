@@ -22,7 +22,6 @@ static STARTED: LazyLock<u64> = LazyLock::new(|| start_of(std::process::id()).un
 #[derive(Debug, Default)]
 pub struct Cleaned {
     pub removed: Vec<PathBuf>,
-    /// Items a Replace had swapped out, now in the Trash.
     pub trashed: Vec<Restore>,
     pub failures: Vec<(PathBuf, io::Error)>,
 }

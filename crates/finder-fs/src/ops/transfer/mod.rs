@@ -35,7 +35,6 @@ const RELEASE_EVERY: Duration = Duration::from_secs(5);
 pub enum Kind {
     Copy,
     Move,
-    /// Also keeps each item's owner and group, as far as this process may set them.
     CopyExactly,
 }
 

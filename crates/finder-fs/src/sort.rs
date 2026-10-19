@@ -126,7 +126,6 @@ pub fn order<'a>(
     order
 }
 
-/// The first `k` positions of `order`.
 pub fn first<'a>(
     n: usize,
     k: usize,

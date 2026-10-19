@@ -45,7 +45,6 @@ fi
 /bin/launchctl bootout "gui/$(/usr/bin/id -u)/$VIEWER_LABEL"
 "#;
 
-/// `NSFileViewer` and the guard the app keeps while it is the viewer.
 pub struct Status {
     pub viewer: Option<String>,
     pub guard: Option<Guard>,

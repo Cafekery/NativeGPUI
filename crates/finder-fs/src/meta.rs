@@ -38,7 +38,6 @@ pub struct Meta {
     pub encoders: Vec<String>,
     pub category: Option<String>,
     pub duration: Option<f64>,
-    /// Every attribute by Spotlight name, as text.
     pub values: Vec<(String, String)>,
 }
 

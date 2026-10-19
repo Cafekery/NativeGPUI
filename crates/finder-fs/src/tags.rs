@@ -53,7 +53,6 @@ fn colored(known: &[Tag], name: String) -> Tag {
     Tag { name, color }
 }
 
-/// Every tag Finder's sidebar lists, in its order.
 pub fn all() -> Vec<Tag> {
     match crate::sidebar::tags().filter(|tags| !tags.is_empty()) {
         Some(listed) => listed.into_iter().map(|(tag, _)| tag).collect(),
@@ -102,7 +101,6 @@ fn user_tags(path: &Path) -> Option<Retained<NSArray>> {
     crate::plist(&bytes)?.downcast::<NSArray>().ok()
 }
 
-/// The tags the item stores, in its order, from one read of its attribute.
 pub fn stored(path: &Path) -> Vec<Tag> {
     let Some(entries) = user_tags(path) else {
         return Vec::new();

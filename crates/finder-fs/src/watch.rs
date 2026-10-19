@@ -77,8 +77,7 @@ fn as_watched(views: &[(PathBuf, PathBuf)], dirs: Vec<PathBuf>) -> Vec<PathBuf> 
 }
 
 impl Watcher {
-    /// Reports each changed folder, then each changed item and the folder an `Icon\r` dresses,
-    /// as FSEvents names them and under every path they were watched by.
+    /// `on_change` gets changed folders, then changed items and the folder an `Icon\r` dresses, as FSEvents names them, under every path watching them.
     pub fn new(on_change: impl Fn(Vec<PathBuf>, Vec<PathBuf>) + Send + 'static) -> Watcher {
         let shared = Arc::new(Shared {
             paths: Mutex::default(),
@@ -230,11 +229,6 @@ fn shares() -> Vec<PathBuf> {
         .collect()
 }
 
-/// FSEvents never hears of a change made on a server, and a dead share would hang this thread.
-fn on_share(path: &Path) -> bool {
-    leads_into(path, &shares())
-}
-
 /// Follows symlinks only while the path so far is on this Mac, so nothing on a share is touched.
 fn leads_into(path: &Path, shares: &[PathBuf]) -> bool {
     if shares.is_empty() {
@@ -321,7 +315,8 @@ fn run(shared: Arc<Shared>, on_change: OnChange) {
         let all: HashSet<PathBuf> = shared.paths.lock().unwrap().clone();
         let views: Vec<(PathBuf, PathBuf)> = all
             .iter()
-            .filter(|path| !on_share(path))
+            // FSEvents never hears of a change made on a server, and a dead share would hang this thread.
+            .filter(|path| !leads_into(path, &shares()))
             .map(|asked| (resolved(asked), asked.clone()))
             .collect();
         if views.is_empty() {

@@ -291,7 +291,6 @@ impl Journal {
         self.redo_stack.len()
     }
 
-    /// An undo that stopped partway stays undoable for what it did not get to.
     pub fn undo_left(&mut self, at: usize, left: Op) {
         if at < self.redo_stack.len() {
             let mut entry = self.redo_stack.remove(at);

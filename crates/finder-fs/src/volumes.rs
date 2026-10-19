@@ -140,7 +140,6 @@ pub(crate) fn mount_point(path: &Path) -> Option<PathBuf> {
     statfs(path).map(|stats| mount_path(&stats))
 }
 
-/// Unmounts even while a process holds files open on the volume.
 pub fn force_unmount(path: &Path) -> std::io::Result<()> {
     let path = crate::c_path(path)?;
     crate::check(unsafe { libc::unmount(path.as_ptr(), libc::MNT_FORCE) })
@@ -172,7 +171,6 @@ pub fn mounted() -> Vec<Volume> {
     volumes
 }
 
-/// The volume `path` is on, one hidden from browsing too, such as a disk image attached that way.
 pub(crate) fn holding(path: &Path) -> Option<Volume> {
     mount_table()
         .iter()

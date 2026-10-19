@@ -30,7 +30,6 @@ const FAMILIES: [(&str, &str); 11] = [
 #[derive(Clone)]
 enum Said {
     Model(String),
-    /// sharingd lists a server without its model until it has fetched one.
     Unknown,
     Unrecorded,
 }
@@ -145,7 +144,6 @@ pub fn title(host: &str) -> String {
     }
 }
 
-/// The name a bare address reverse-resolves to, the only name it can give a server.
 pub fn reverse(address: &str) -> Option<String> {
     let ip: IpAddr = address.split('%').next()?.parse().ok()?;
     let mut name = [0 as c_char; libc::NI_MAXHOST as usize];
@@ -226,12 +224,10 @@ fn label(name: &str) -> String {
     label.trim_matches('-').to_owned()
 }
 
-/// A name that can only mean a computer on this network: one label, `.local`, or a Bonjour instance.
 fn nearby(name: &str) -> bool {
     !name.contains('.') || name.ends_with(".local") || instance(name).is_some()
 }
 
-/// Two names reach one computer when equal or advertised under the same Bonjour name.
 pub fn same_host(a: &str, b: &str) -> bool {
     let (a, b) = (named(a), named(b));
     a.eq_ignore_ascii_case(&b)
