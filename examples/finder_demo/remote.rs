@@ -434,7 +434,12 @@ impl FinderDemo {
             let read = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut rows = rows(&server.ok_or(Error::Disconnected)?, id)?;
+                    let server = server.ok_or(Error::Disconnected)?;
+                    // A link that dropped under the request fails it; the pool spawns a fresh session.
+                    let mut rows = match rows(&server, id) {
+                        Err(Error::Disconnected) => rows(&server, id),
+                        read => read,
+                    }?;
                     sort_rows(&mut rows, order, false, false);
                     let lines =
                         plain.map(|hidden| (hidden, crate::listing::lines_of(&rows, hidden)));

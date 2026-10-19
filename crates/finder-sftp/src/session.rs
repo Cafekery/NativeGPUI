@@ -110,7 +110,7 @@ impl Session {
             waiters.map.insert(id, waiter);
         }
         if self.write(packet, id).is_err() {
-            self.waiters.lock().map.remove(&id);
+            fail(&self.waiters);
         }
         Pending(reply)
     }
