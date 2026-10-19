@@ -168,13 +168,17 @@ pub(crate) fn computer_rows() -> Vec<Arc<Row>> {
     servers()
         .into_iter()
         .map(|server| {
+            let art = match crate::data::server_model(server.host) {
+                Some(model) => FileType::Uti(crate::locations::computer_type(Some(&model)).0),
+                None => FileType::Named("NSNetwork"),
+            };
             crate::locations::location_row(
                 server.path,
                 server.host.into(),
                 finder_fs::words::say("Server").into_owned().into(),
                 "",
                 Some(server.path),
-                FileType::Named("NSNetwork"),
+                art,
             )
         })
         .collect()
