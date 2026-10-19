@@ -1017,7 +1017,9 @@ impl Info {
                 _ => None,
             },
             tags: (real && subject != Subject::Place).then(|| held_tags(path).into()),
-            owned: meta.is_some_and(|meta| meta.uid() == unsafe { getuid() }),
+            owned: meta.is_some_and(|meta| {
+                meta.uid() == unsafe { getuid() } || finder_fs::volumes::ignores_ownership(path)
+            }),
             locked: real && finder_fs::ops::locked(path),
             stationery: subject == Subject::File && finder_fs::flags::of(path) & IS_STATIONERY != 0,
             renamable: real
