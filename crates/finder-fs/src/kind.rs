@@ -1,8 +1,9 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, RwLock};
+use std::time::SystemTime;
 
 use objc2::rc::Retained;
 use objc2_foundation::NSString;
@@ -111,13 +112,30 @@ fn cached(ext: &str, resolve: impl FnOnce(&str) -> (Kind, bool)) -> (Kind, bool)
     resolved
 }
 
+// Installing or removing an app can change which extensions it claims and which make packages.
+fn apps_stamp() -> String {
+    let user = crate::home().map(|home| home.join("Applications"));
+    ([PathBuf::from("/Applications")].into_iter().chain(user))
+        .map(|dir| {
+            let modified = std::fs::metadata(dir).and_then(|meta| meta.modified()).ok();
+            let since = modified.and_then(|at| at.duration_since(SystemTime::UNIX_EPOCH).ok());
+            since.unwrap_or_default().as_nanos().to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn load_kinds(from: &Path) -> usize {
     let Ok(text) = std::fs::read_to_string(from) else {
         return 0;
     };
+    let mut lines = text.lines();
+    if lines.next() != Some(&*apps_stamp()) {
+        return 0;
+    }
     let mut kinds = KINDS.write().unwrap();
     let mut read = 0;
-    for line in text.lines() {
+    for line in lines {
         let mut parts = line.split('\t');
         let (Some(ext), Some(uti), Some(label), Some(package)) =
             (parts.next(), parts.next(), parts.next(), parts.next())
@@ -137,9 +155,10 @@ pub fn load_kinds(from: &Path) -> usize {
 }
 
 pub fn save_kinds(to: &Path) -> usize {
+    let mut text = apps_stamp() + "\n";
     let kinds = KINDS.read().unwrap();
     let held = kinds.len();
-    let mut text = String::with_capacity(held * 48);
+    text.reserve(held * 48);
     for (ext, (kind, package)) in kinds.iter() {
         if !ext.contains('\t') && !kind.label.contains('\t') {
             let package = u8::from(*package);
@@ -414,6 +433,19 @@ mod tests {
         std::fs::create_dir_all(&app).unwrap();
         assert_eq!(&*kind_of_path(&app).label, "Application");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saved_kinds_are_dropped_once_apps_change() {
+        let table = std::env::temp_dir().join(format!("finder-fs-kinds-{}", std::process::id()));
+        kind_for_extension("pdf");
+        let saved = save_kinds(&table);
+        assert!(saved > 0);
+        assert_eq!(load_kinds(&table), saved);
+        let text = std::fs::read_to_string(&table).unwrap();
+        std::fs::write(&table, text.replacen(&apps_stamp(), "0 0", 1)).unwrap();
+        assert_eq!(load_kinds(&table), 0);
+        let _ = std::fs::remove_file(&table);
     }
 
     #[test]
