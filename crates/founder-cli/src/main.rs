@@ -78,13 +78,10 @@ exit: 0 done, 1 partly failed, 2 refused, 3 cancelled, 64 usage
 fn main() -> ExitCode {
     let args = Args::parse(std::env::args_os().skip(1));
     let mut out = Out::new(false, false);
-    let code = match args {
-        Ok(args) => {
-            out = Out::new(args.flag("json"), args.flag("quiet"));
-            dispatch(args, &mut out)
-        }
-        Err(stop) => Err(stop),
-    };
+    let code = args.and_then(|args| {
+        out = Out::new(args.flag("json"), args.flag("quiet"));
+        dispatch(args, &mut out)
+    });
     ExitCode::from(match code {
         Ok(code) => code,
         Err(stop) => stopped(stop, &mut out),

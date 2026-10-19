@@ -88,7 +88,6 @@ pub fn comment(mut args: Args, out: &mut Out) -> Result<u8, Stop> {
     Ok(OK)
 }
 
-/// What Get Info's Locked checkbox sets.
 pub fn lock(mut args: Args, on: bool, out: &mut Out) -> Result<u8, Stop> {
     let command = if on { "lock" } else { "unlock" };
     args.done(command)?;

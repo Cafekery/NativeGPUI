@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::Stop;
 
-/// An `Op` as the journal file and `--json` write it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum Step {
@@ -374,7 +373,6 @@ impl From<Step> for Op {
     }
 }
 
-/// The app's undo and redo stacks, kept in a file between invocations.
 #[derive(Default, Serialize, Deserialize)]
 pub struct Journal {
     undo: Vec<Entry>,

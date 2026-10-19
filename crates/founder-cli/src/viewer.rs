@@ -10,7 +10,6 @@ use crate::{OK, Stop};
 const APP_ID: &str = "dev.cafekery.founder";
 const APP: &str = "/Applications/Found'er.app";
 
-/// Whether Found'er stands in for Finder as the app that reveals and opens folders.
 pub fn viewer(mut args: Args, out: &mut Out) -> Result<u8, Stop> {
     let action = args.shift().unwrap_or_default();
     let id = args.text("id").unwrap_or_else(|| APP_ID.into());
