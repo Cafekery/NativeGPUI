@@ -586,6 +586,9 @@ impl FinderDemo {
     }
 
     fn finish(&mut self, row: &JobRow, done: Done, cx: &mut Context<Self>) -> Option<u64> {
+        if let (Op::Trash(_), Some(undo)) = (&row.op, &done.undo) {
+            super::put_back::remember(undo);
+        }
         let entry = self.note(row, &done);
         self.settled(super::touched(&row.op), done.results, row.after, cx);
         entry

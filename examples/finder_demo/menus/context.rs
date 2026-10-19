@@ -1,6 +1,6 @@
 use std::cell::Cell;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use finder_fs::kind::is_package_name;
 use finder_fs::volumes;
@@ -153,7 +153,23 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         .parent()
         .is_some_and(|dir| is_trash(&dir.to_string_lossy()));
     if trashed {
-        menu.item(MenuEntry::item("Put Back"), Act::Trash);
+        let items: Vec<PathBuf> = if many {
+            selected
+                .iter()
+                .map(|key| PathBuf::from(key.as_ref()))
+                .collect()
+        } else {
+            vec![PathBuf::from(line.key.as_ref())]
+        };
+        let put_back = MenuEntry::item("Put Back");
+        if crate::ops::put_back::origins(&items)
+            .iter()
+            .any(Option::is_some)
+        {
+            menu.item(put_back, Act::Trash);
+        } else {
+            menu.item(put_back.disabled(), Act::Nothing);
+        }
         menu.item(MenuEntry::item("Delete Immediately…"), Act::DeleteNow);
         menu.item(MenuEntry::item("Empty Trash"), Act::EmptyTrash);
     } else {

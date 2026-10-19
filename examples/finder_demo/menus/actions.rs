@@ -382,7 +382,7 @@ impl FinderDemo {
             return;
         }
         if is_trash(self.here()) {
-            let back: Vec<Restore> = finder_fs::put_back::origins(&items)
+            let back: Vec<Restore> = crate::ops::put_back::origins(&items)
                 .into_iter()
                 .zip(items)
                 .filter_map(|(to, item)| Some(Restore { item, to: to? }))

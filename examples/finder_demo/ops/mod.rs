@@ -1,6 +1,7 @@
 pub(crate) mod clipboard;
 pub(crate) mod conflicts;
 pub(crate) mod jobs;
+pub(crate) mod put_back;
 pub(crate) mod undo;
 
 use std::path::{Path, PathBuf};
