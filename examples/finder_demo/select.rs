@@ -10,7 +10,7 @@ use crate::app::FinderDemo;
 use crate::data::Line;
 use crate::listing::{Edit, folds_to};
 use crate::menus::SelectAll;
-use crate::view::LIST_VIEW;
+use crate::view::{COLUMN_VIEW, LIST_VIEW};
 
 const TYPING: Duration = Duration::from_secs(1);
 
@@ -19,6 +19,12 @@ const DEEP_FOLDERS: usize = 5_000;
 
 impl FinderDemo {
     pub(crate) fn reveal(&mut self, key: &SharedString) {
+        if self.view == COLUMN_VIEW {
+            if self.column_reveal_row(key) {
+                self.reveal_next.take_if(|next| *next == *key);
+            }
+            return;
+        }
         let lines = self.lines(self.view == LIST_VIEW);
         if let Some(index) = self.line_at(&lines, key) {
             self.reveal_next.take_if(|next| *next == *key);

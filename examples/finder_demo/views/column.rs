@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, ClickEvent, DispatchPhase, ExternalPaths, FontWeight, Hsla, Modifiers, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollStrategy, SharedString,
     UniformListScrollHandle, Window, WindowTextSystem, canvas, div, prelude::*, px,
     transparent_black, uniform_list,
 };
@@ -644,10 +644,7 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (chain, leaf) = self.column_chain();
-        while self.column_scrolls.len() < chain.len() {
-            self.column_scrolls.push(UniformListScrollHandle::new());
-            self.bands.columns.push(Default::default());
-        }
+        self.hold_columns(chain.len());
         for rung in &chain {
             if !self.column_widths.contains_key(rung.folder) {
                 if self.column_widths.len() >= WIDTHS_HELD && self.column_grab.is_none() {
@@ -746,6 +743,27 @@ impl FinderDemo {
             .into_any_element()
     }
 
+    fn hold_columns(&mut self, count: usize) {
+        while self.column_scrolls.len() < count {
+            self.column_scrolls.push(UniformListScrollHandle::new());
+            self.bands.columns.push(Default::default());
+        }
+    }
+
+    pub(crate) fn column_reveal_row(&mut self, key: &SharedString) -> bool {
+        let (chain, _) = self.column_chain();
+        let found = chain.iter().enumerate().rev().find_map(|(index, rung)| {
+            let lines = self.column_listing(rung.folder);
+            Some((index, self.line_at(&lines, key)?))
+        });
+        let Some((index, row)) = found else {
+            return false;
+        };
+        self.hold_columns(index + 1);
+        self.column_scrolls[index].scroll_to_item(row, ScrollStrategy::Nearest);
+        true
+    }
+
     pub(crate) fn column_key(
         &mut self,
         key: &str,
@@ -791,6 +809,9 @@ impl FinderDemo {
             }
             ("left", _) => self.column_up(),
             _ => {}
+        }
+        if let Some(key) = self.cursor.clone() {
+            self.column_reveal_row(&key);
         }
         self.column_arrived(window, cx);
         true
