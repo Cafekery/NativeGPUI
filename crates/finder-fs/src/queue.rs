@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -64,7 +65,13 @@ impl Queue {
         self.shared.running.lock().insert(id, transfer.clone());
         let shared = self.shared.clone();
         thread::spawn(move || {
-            let event = run(id, op, conflict, &transfer);
+            let event = panic::catch_unwind(AssertUnwindSafe(|| run(id, op, conflict, &transfer)))
+                .unwrap_or_else(|_| {
+                    Event::Finished(
+                        id,
+                        Err(io::Error::other("The operation stopped unexpectedly.")),
+                    )
+                });
             shared.running.lock().remove(&id);
             (shared.on_event.lock())(event);
         });
