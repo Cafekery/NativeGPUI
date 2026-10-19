@@ -142,7 +142,6 @@ fn ask_servers(volumes: &[volumes::Volume]) {
                 mounts_changed();
             }
         });
-        // A host that stayed silent is asked again on the next refresh.
         let mut asked = ASKED.lock().unwrap();
         for host in hosts {
             if !answered.contains(&host) {
@@ -152,7 +151,6 @@ fn ask_servers(volumes: &[volumes::Volume]) {
     });
 }
 
-// A host that answered without a model keeps the one it gave last time.
 fn remember(host: &str, model: Option<&str>) -> bool {
     let Some(model) = model else {
         return false;
@@ -188,7 +186,6 @@ fn read_servers() -> Vec<(String, String, &'static str)> {
         .collect()
 }
 
-// Asks once the first window has drawn, so the lookups never delay first paint.
 pub(crate) fn ask_servers_once_drawn(window: &mut Window) {
     if ASKING.load(Ordering::Relaxed) {
         return;

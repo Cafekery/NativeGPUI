@@ -679,7 +679,6 @@ pub(crate) fn pinned(id: &str) -> bool {
         .any(|group| prefs::pinned(group).iter().any(|kept| kept == id))
 }
 
-/// The demo's kept order, each row it has not placed yet after the row it follows in Finder's.
 fn arranged(kept: &[String], group: &Group) -> Vec<&'static str> {
     let mut rows: Vec<&'static str> = Vec::new();
     for kept in kept {

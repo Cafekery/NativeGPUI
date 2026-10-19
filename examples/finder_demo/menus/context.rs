@@ -645,7 +645,6 @@ fn icon_rows(menu: &mut Menu, demo: &FinderDemo) {
     );
 }
 
-/// Stands in for the row above it while exactly `modifiers` are held.
 fn alternate(title: &str, modifiers: Modifiers) -> MenuEntry {
     MenuEntry::item(title).key("", modifiers).option_alternate()
 }

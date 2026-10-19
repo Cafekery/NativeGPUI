@@ -179,13 +179,11 @@ pub(crate) fn extensions(limit: usize) -> Vec<PathBuf> {
     engine().map_or_else(Vec::new, |engine| engine.extensions(limit))
 }
 
-/// The index never walks into other volumes.
 pub(crate) fn indexes(dir: &Path) -> bool {
     !dir.starts_with("/Volumes")
         && !(crate::data::network_roots().iter()).any(|root| dir.starts_with(root))
 }
 
-/// `None` while fsearch can't answer: still loading, or a query it doesn't parse.
 pub(crate) fn search(query: &str, under: &[PathBuf], limit: usize) -> Option<Vec<PathBuf>> {
     let engine = engine()?;
     let mut found = Vec::new();

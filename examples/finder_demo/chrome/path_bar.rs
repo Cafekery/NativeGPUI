@@ -127,7 +127,6 @@ fn takes_drop<D: Grabbed + 'static>(
         }))
 }
 
-/// The frame an `NSTextField` label needs to show `text` whole, kerned as AppKit sets it.
 fn label_width(text: &str) -> f32 {
     LABEL_W.with(|kept| {
         if let Some(width) = kept.borrow().get(text) {

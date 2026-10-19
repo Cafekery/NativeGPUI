@@ -128,7 +128,6 @@ pub(crate) fn computer_symbol() -> String {
     finder_fs::servers::symbol(Some(&sysctl_text(c"hw.model")))
 }
 
-/// A location's title, and the location Enclosing Folder goes up to.
 pub(crate) fn place(id: &str) -> Option<(&'static str, Option<&'static str>)> {
     let say = |english: &str| intern(&finder_fs::words::say(english));
     Some(match id {
@@ -144,7 +143,6 @@ static NETWORKED: RwLock<Vec<Computer>> = RwLock::new(Vec::new());
 static FOLLOWING: AtomicBool = AtomicBool::new(false);
 static NETWORK_CHANGED: Signal = Signal::new();
 
-/// What sharingd calls a computer reached by `host`: Finder's title for it.
 pub(crate) fn networked_name(host: &str) -> Option<String> {
     let listed = NETWORKED.read();
     let computer = listed

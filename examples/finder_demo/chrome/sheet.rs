@@ -440,7 +440,6 @@ impl GoPanel {
         };
         let at = paths[step];
         self.selected = Some(at);
-        // The first path brings its heading into view with it.
         match step {
             0 => self.scroll.scroll_to_item(0, ScrollStrategy::Top),
             _ => self.scroll.scroll_to_item(at, ScrollStrategy::Nearest),

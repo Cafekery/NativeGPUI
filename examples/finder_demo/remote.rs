@@ -53,7 +53,6 @@ pub(crate) struct Connected {
 }
 
 impl Connected {
-    /// Finder's title: the name the user gave it, else sharingd's name, else the host.
     pub(crate) fn title(&self) -> String {
         self.name.map_or_else(
             || {

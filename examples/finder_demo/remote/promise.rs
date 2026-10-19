@@ -39,7 +39,6 @@ struct Promised {
     app: AsyncApp,
 }
 
-/// A remote file on its way into the cache from the moment it is copied or dragged.
 pub(crate) struct Cache {
     id: String,
     row: Arc<Row>,

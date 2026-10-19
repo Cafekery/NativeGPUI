@@ -506,7 +506,6 @@ fn in_background<V: 'static, R: Send + 'static>(
     .detach();
 }
 
-/// Shows a running total, and stops walking once the window that asked has closed.
 fn weigh_in_background<V: 'static>(
     cx: &mut Context<V>,
     work: impl FnOnce(Report) -> Weight + Send + 'static,

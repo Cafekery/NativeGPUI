@@ -364,7 +364,6 @@ impl FinderDemo {
         );
     }
 
-    /// `fetch` pairs remote files with the cache paths they download to.
     pub(crate) fn submit_remote(
         &mut self,
         op: Op,

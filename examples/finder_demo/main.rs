@@ -193,7 +193,6 @@ pub(crate) fn open_finder_window(start: &'static str, cx: &mut App) -> WindowHan
     finder_window(start, bounds, true, true, cx)
 }
 
-/// Hidden until it joins its tab group, at the frame that group already has.
 fn open_finder_tab(
     start: &'static str,
     bounds: WindowBounds,

@@ -1409,10 +1409,6 @@ impl FinderDemo {
         cx.notify();
     }
 
-    pub(crate) fn icon_sort(&mut self, column: Column, cx: &mut Context<Self>) {
-        self.arrange(Arrangement::By(column), cx);
-    }
-
     pub(crate) fn clean_up(&mut self, selection: bool, cx: &mut Context<Self>) {
         if !self.cleans_up() {
             return;

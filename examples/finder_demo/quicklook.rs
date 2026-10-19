@@ -16,13 +16,11 @@ use crate::view::LIST_VIEW;
 
 type Shown = (SharedString, Option<Bounds<Pixels>>);
 
-/// Quick Look of cached copies of server files, once they download.
 pub(crate) struct Look {
     pub(crate) window: AnyWindowHandle,
     items: Vec<PathBuf>,
     current: usize,
     shown: Shown,
-    /// The panel is up and follows the selection.
     update: bool,
 }
 

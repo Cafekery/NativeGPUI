@@ -33,7 +33,7 @@ use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
 use crate::views::column::{ColumnFit, ColumnLook};
 use crate::views::gallery::GalleryLook;
 use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, columns_for};
-use crate::views::icon::Grid;
+use crate::views::icon::{Arrangement, Grid};
 use crate::views::list::{Faces, ICON_SIZE, ICON_SMALL, ListLook};
 use crate::{prefs, read};
 
@@ -139,7 +139,6 @@ pub(crate) struct FinderDemo {
     pub(crate) column_scroll: ScrollHandle,
     pub(crate) column_depth: usize,
     pub(crate) column_reveal: Option<(f32, Instant)>,
-    /// The selection the browser last laid its columns out for.
     pub(crate) column_cursor: Option<SharedString>,
     pub(crate) columns_from_computer: bool,
     pub(crate) column_widths: HashMap<&'static str, Option<f32>>,
@@ -418,7 +417,7 @@ impl FinderDemo {
 
     pub(crate) fn sort_by(&mut self, column: Column, cx: &mut Context<Self>) {
         if self.view == ICON_VIEW && self.arrangement().is_some() {
-            return self.icon_sort(column, cx);
+            return self.arrange(Arrangement::By(column), cx);
         }
         let turn = self.sort == column && !matches!(self.view, COLUMN_VIEW | GALLERY_VIEW);
         let ascending = if turn {
