@@ -22,6 +22,6 @@ pub(crate) use self::row::{
     weigh_packages, weighed_folders,
 };
 pub(crate) use self::volumes::{
-    ask_servers_once_drawn, available_bytes, follow_volumes, is_volume_root, network_roots,
-    refresh_volumes, server_model, server_symbol, volume_at, volume_roots,
+    ask_servers_once_drawn, available_bytes, follow_volumes, is_volume_root, mounts_changed,
+    network_roots, refresh_volumes, server_model, server_symbol, volume_at, volume_roots,
 };

@@ -508,15 +508,19 @@ pub(crate) fn rows_at<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<Arc<Row>>
 
 fn volume_row(id: &'static str) -> Option<Row> {
     let volume = volume_at(id)?;
-    let meta = std::fs::metadata(id).ok()?;
+    // A share that stopped answering would hold the whole Computer listing.
+    let meta = (!volume.network)
+        .then(|| std::fs::metadata(id).ok())
+        .flatten();
+    let date = |at: Option<std::time::SystemTime>| at.map_or(0., reference_seconds);
     Some(Row {
         name: volume.name.into(),
         display: volume.name.into(),
         path: id.into(),
         size: byte_string(volume.capacity).into(),
         bytes: volume.capacity,
-        modified_at: meta.modified().ok().map_or(0., reference_seconds),
-        created_at: meta.created().ok().map_or(0., reference_seconds),
+        modified_at: date(meta.as_ref().and_then(|meta| meta.modified().ok())),
+        created_at: date(meta.as_ref().and_then(|meta| meta.created().ok())),
         added_at: None,
         kind: "Volume".into(),
         uti: "public.volume".into(),

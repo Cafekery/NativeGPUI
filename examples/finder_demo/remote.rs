@@ -376,7 +376,7 @@ impl FinderDemo {
                 Ok(path) => {
                     remember(&typed);
                     close(cx);
-                    cx.update(crate::chrome::sidebar::reload_sidebars);
+                    crate::data::mounts_changed();
                     cx.update_window(handle, |_, window, cx| {
                         this.update(cx, |this, cx| this.go(path, window, cx))
                     })
@@ -457,7 +457,7 @@ impl FinderDemo {
                     this.read_location(COMPUTER, cx);
                 }
             });
-            crate::chrome::sidebar::reload_sidebars(cx);
+            crate::data::mounts_changed();
         });
         true
     }

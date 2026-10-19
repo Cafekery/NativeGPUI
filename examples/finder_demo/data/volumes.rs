@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashSet};
+use std::net::IpAddr;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock, RwLockReadGuard};
@@ -25,7 +26,9 @@ pub(crate) struct Mounted {
     pub(crate) available: u64,
     pub(crate) capacity: u64,
     pub(crate) format: &'static str,
-    network: bool,
+    pub(crate) network: bool,
+    pub(crate) ejectable: bool,
+    pub(crate) server: Option<&'static str>,
 }
 
 const FRESH: Duration = Duration::from_millis(4800);
@@ -69,6 +72,8 @@ pub(crate) fn refresh_volumes() -> bool {
             capacity: volume.capacity,
             format: intern(&volume.format),
             network: volume.network,
+            ejectable: volume.ejectable,
+            server: volume.server.as_deref().map(intern),
         })
         .collect();
     *REFRESHED.lock().unwrap() = Some(Instant::now());
@@ -94,17 +99,27 @@ pub(crate) fn server_model(host: &str) -> Option<String> {
 }
 
 fn ask_servers(volumes: &[volumes::Volume]) {
-    let mut asked = ASKED.lock().unwrap();
-    asked.retain(|host| {
-        volumes.iter().any(|volume| {
-            volume
-                .server
-                .as_deref()
-                .is_some_and(|server| same_host(server, host))
+    // Neither Bonjour nor sharingd ever answers for a bare address.
+    let reached: Vec<String> = volumes
+        .iter()
+        .filter_map(|volume| volume.server.clone())
+        .chain(
+            crate::remote::servers()
+                .iter()
+                .map(|server| server.host.to_owned()),
+        )
+        .filter(|host| {
+            host.split('%')
+                .next()
+                .unwrap_or(host)
+                .parse::<IpAddr>()
+                .is_err()
         })
-    });
+        .collect();
+    let mut asked = ASKED.lock().unwrap();
+    asked.retain(|host| reached.iter().any(|server| same_host(server, host)));
     let mut hosts: Vec<String> = Vec::new();
-    for host in volumes.iter().filter_map(|volume| volume.server.clone()) {
+    for host in reached {
         if !asked
             .iter()
             .chain(&hosts)
@@ -123,8 +138,7 @@ fn ask_servers(volumes: &[volumes::Volume]) {
         finder_fs::servers::models(&hosts, SERVER_WAIT, |host, model| {
             answered.push(host.to_owned());
             if remember(host, model) {
-                MOUNTS.store(true, Ordering::Relaxed);
-                VOLUMES.ring();
+                mounts_changed();
             }
         });
         // A host that stayed silent is asked again on the next refresh.
@@ -137,24 +151,28 @@ fn ask_servers(volumes: &[volumes::Volume]) {
     });
 }
 
+// A host that answered without a model keeps the one it gave last time.
 fn remember(host: &str, model: Option<&str>) -> bool {
-    let symbol = model.map(|model| intern(&finder_fs::servers::symbol(Some(model))));
+    let Some(model) = model else {
+        return false;
+    };
+    let model = model.replace(['\t', '\n'], " ");
+    let symbol = intern(&finder_fs::servers::symbol(Some(&model)));
     let mut known = KNOWN.lock().unwrap();
     let known = known.get_or_insert_with(read_servers);
     let was = known
         .iter()
         .position(|(known, ..)| same_host(known, host))
-        .map(|at| known.remove(at).2);
-    if let (Some(model), Some(symbol)) = (model, symbol) {
-        known.insert(0, (host.to_owned(), model.to_owned(), symbol));
-        known.truncate(KEPT);
-    }
+        .map(|at| known.remove(at));
+    let changed = was.is_none_or(|(_, old, drawn)| old != model || drawn != symbol);
+    known.insert(0, (host.to_owned(), model, symbol));
+    known.truncate(KEPT);
     let text: String = known
         .iter()
         .map(|(host, model, symbol)| format!("{host}\t{model}\t{symbol}\n"))
         .collect();
     std::fs::write(crate::store().join("servers.tsv"), text).ok();
-    was.unwrap_or("display") != symbol.unwrap_or("display")
+    changed
 }
 
 fn read_servers() -> Vec<(String, String, &'static str)> {
@@ -183,12 +201,13 @@ pub(crate) fn ask_servers_once_drawn(window: &mut Window) {
     });
 }
 
+pub(crate) fn mounts_changed() {
+    MOUNTS.store(true, Ordering::Relaxed);
+    VOLUMES.ring();
+}
+
 pub(crate) fn follow_volumes(cx: &mut App) {
-    let block = StackBlock::new(|_: NonNull<NSNotification>| {
-        MOUNTS.store(true, Ordering::Relaxed);
-        VOLUMES.ring();
-    })
-    .copy();
+    let block = StackBlock::new(|_: NonNull<NSNotification>| mounts_changed()).copy();
     let center = NSWorkspace::sharedWorkspace().notificationCenter();
     for name in unsafe {
         [
@@ -220,7 +239,12 @@ pub(crate) fn follow_volumes(cx: &mut App) {
                         .spawn(async { crate::chrome::sidebar::groups() })
                         .await;
                     window
-                        .update(cx, |this, _, _| this.sidebar_took(groups))
+                        .update(cx, |this, _, cx| {
+                            this.sidebar_took(groups);
+                            if this.folders.has(crate::locations::COMPUTER) {
+                                this.read_location(crate::locations::COMPUTER, cx);
+                            }
+                        })
                         .ok();
                 }
             }
