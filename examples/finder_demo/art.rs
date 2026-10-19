@@ -252,12 +252,21 @@ pub(crate) fn art_at(art: AnyElement, size: f32, anchor: Option<Anchor>) -> AnyE
 }
 
 pub(crate) fn marked(row: &Row, size: f32, art: AnyElement) -> AnyElement {
-    if !row.hidden {
+    if !row.hidden && !row.locked {
         return art;
     }
     square(size)
-        .opacity(HIDDEN_ALPHA)
+        .relative()
+        .when(row.hidden, |art| art.opacity(HIDDEN_ALPHA))
         .child(art)
+        .when(row.locked, |art| {
+            art.child(div().absolute().left_0().bottom_0().children(small_glyph(
+                "lock.fill",
+                (size / 3.).max(8.),
+                FontWeight::NORMAL,
+                SystemColor::Label,
+            )))
+        })
         .into_any_element()
 }
 

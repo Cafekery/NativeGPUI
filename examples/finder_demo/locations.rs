@@ -186,6 +186,7 @@ pub(crate) fn location_row(
         uti: uti.into(),
         face: Face::Volume,
         hidden: false,
+        locked: false,
         opens,
         discloses: false,
         dataless: false,

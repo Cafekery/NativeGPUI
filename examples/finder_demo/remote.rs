@@ -332,6 +332,7 @@ fn row(dir: &'static str, entry: Entry, followed: Option<Option<Attrs>>) -> Arc<
         ext_hidden: false,
         alias: false,
         custom_icon: false,
+        locked: false,
         dataless: false,
         readable: true,
         executable: attrs.kind() == Kind::File
@@ -361,6 +362,7 @@ fn row(dir: &'static str, entry: Entry, followed: Option<Option<Attrs>>) -> Arc<
         uti: (&kind.uti).into(),
         face: face_of(&kind.uti),
         hidden: local.hidden,
+        locked: false,
         opens: folder.then(|| intern(&path)),
         discloses: folder,
         dataless: false,

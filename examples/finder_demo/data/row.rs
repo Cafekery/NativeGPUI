@@ -149,6 +149,7 @@ pub(crate) struct Row {
     pub(crate) uti: SharedString,
     pub(crate) face: Face,
     pub(crate) hidden: bool,
+    pub(crate) locked: bool,
     pub(crate) opens: Option<&'static str>,
     // Finder gives an alias no triangle, however its target opens.
     pub(crate) discloses: bool,
@@ -381,6 +382,7 @@ fn row_of(dir: &'static str, entry: &Entry, (size, seen): Facts) -> Row {
             face_of(&kind.uti)
         },
         hidden: entry.hidden,
+        locked: entry.locked,
         opens,
         discloses: entry.is_dir(),
         dataless: entry.dataless,
@@ -539,6 +541,7 @@ fn volume_row(id: &'static str) -> Option<Row> {
         uti: "public.volume".into(),
         face: Face::Volume,
         hidden: false,
+        locked: false,
         opens: Some(id),
         discloses: true,
         dataless: false,

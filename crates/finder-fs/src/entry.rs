@@ -23,6 +23,7 @@ pub struct Entry {
     /// FinderInfo's alias flag.
     pub alias: bool,
     pub custom_icon: bool,
+    pub locked: bool,
     pub dataless: bool,
     pub readable: bool,
     pub executable: bool,

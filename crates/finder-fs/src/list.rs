@@ -353,6 +353,7 @@ fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
         ext_hidden: finder_flags & EXT_HIDDEN != 0,
         alias: kind == EntryKind::File && finder_flags & IS_ALIAS != 0,
         custom_icon: finder_flags & HAS_CUSTOM_ICON != 0,
+        locked: flags & libc::UF_IMMUTABLE != 0,
         dataless,
         readable,
         executable: kind == EntryKind::File && mode & 0o111 != 0,

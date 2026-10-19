@@ -156,6 +156,7 @@ fn entry_of(found: Found) -> Entry {
         ext_hidden: false,
         alias: false,
         custom_icon: false,
+        locked: false,
         dataless: false,
         readable: true,
         executable: false,
