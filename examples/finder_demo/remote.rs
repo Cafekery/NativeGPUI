@@ -64,10 +64,24 @@ impl Connected {
         )
     }
 
-    /// Whichever of the given name and the host names a computer whose model is known.
+    /// The computer the given name points at, else the host: "Bakery SFTP" is Bakery's.
     pub(crate) fn known(&self) -> &'static str {
-        self.name
-            .filter(|name| crate::data::server_model(name).is_some())
+        let Some(name) = self.name else {
+            return self.host;
+        };
+        let mut ends: Vec<usize> = name.match_indices(' ').map(|(at, _)| at).collect();
+        ends.push(name.len());
+        (ends.into_iter().rev())
+            .map(|end| &name[..end])
+            .find_map(|lead| {
+                crate::locations::networked_name(lead)
+                    .map(|found| intern(&found))
+                    .or_else(|| {
+                        crate::data::server_model(lead)
+                            .is_some()
+                            .then(|| intern(lead))
+                    })
+            })
             .unwrap_or(self.host)
     }
 }
