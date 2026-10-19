@@ -221,6 +221,7 @@ fn finder_window(
                 save_frame(window, FRAME);
             }
             native_gpui::window_tabs(window, menus::NewTab, cx);
+            data::ask_servers_once_drawn(window);
             cx.new(|cx| {
                 cx.observe_global::<SystemTheme>(|_, cx| cx.notify())
                     .detach();

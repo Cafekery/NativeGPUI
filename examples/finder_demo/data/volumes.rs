@@ -5,6 +5,7 @@ use std::sync::{Mutex, OnceLock, RwLock, RwLockReadGuard};
 use std::time::{Duration, Instant};
 
 use block2::StackBlock;
+use finder_fs::servers::same_host;
 use finder_fs::volumes;
 use gpui::{App, Window};
 use objc2_app_kit::{
@@ -77,11 +78,19 @@ pub(crate) fn refresh_volumes() -> bool {
     changed
 }
 
-pub(crate) fn server_symbol(host: &str) -> &'static str {
+fn known_server(host: &str) -> Option<(String, &'static str)> {
     let mut known = KNOWN.lock().unwrap();
     let known = known.get_or_insert_with(read_servers);
-    let found = known.iter().find(|(known, ..)| known == host);
-    found.map_or("display", |&(.., symbol)| symbol)
+    let found = known.iter().find(|(known, ..)| same_host(known, host))?;
+    Some((found.1.clone(), found.2))
+}
+
+pub(crate) fn server_symbol(host: &str) -> &'static str {
+    known_server(host).map_or("display", |(_, symbol)| symbol)
+}
+
+pub(crate) fn server_model(host: &str) -> Option<String> {
+    known_server(host).map(|(model, _)| model)
 }
 
 fn ask_servers(volumes: &[volumes::Volume]) {
@@ -91,22 +100,37 @@ fn ask_servers(volumes: &[volumes::Volume]) {
             .iter()
             .any(|volume| volume.server.as_ref() == Some(host))
     });
-    let hosts: Vec<String> = volumes
-        .iter()
-        .filter_map(|volume| volume.server.clone())
-        .filter(|host| asked.insert(host.clone()))
-        .collect();
+    let mut hosts: Vec<String> = Vec::new();
+    for host in volumes.iter().filter_map(|volume| volume.server.clone()) {
+        if !asked
+            .iter()
+            .chain(&hosts)
+            .any(|known| same_host(known, &host))
+        {
+            hosts.push(host);
+        }
+    }
+    asked.extend(hosts.iter().cloned());
     drop(asked);
     if hosts.is_empty() {
         return;
     }
     std::thread::spawn(move || {
+        let mut answered = Vec::new();
         finder_fs::servers::models(&hosts, SERVER_WAIT, |host, model| {
+            answered.push(host.to_owned());
             if remember(host, model) {
                 MOUNTS.store(true, Ordering::Relaxed);
                 VOLUMES.ring();
             }
-        })
+        });
+        // A host that stayed silent is asked again on the next refresh.
+        let mut asked = ASKED.lock().unwrap();
+        for host in hosts {
+            if !answered.contains(&host) {
+                asked.remove(&host);
+            }
+        }
     });
 }
 
@@ -116,7 +140,7 @@ fn remember(host: &str, model: Option<&str>) -> bool {
     let known = known.get_or_insert_with(read_servers);
     let was = known
         .iter()
-        .position(|(known, ..)| known == host)
+        .position(|(known, ..)| same_host(known, host))
         .map(|at| known.remove(at).2);
     if let (Some(model), Some(symbol)) = (model, symbol) {
         known.insert(0, (host.to_owned(), model.to_owned(), symbol));
@@ -142,6 +166,20 @@ fn read_servers() -> Vec<(String, String, &'static str)> {
         .collect()
 }
 
+// Asks once the first window has drawn, so the lookups never delay first paint.
+pub(crate) fn ask_servers_once_drawn(window: &mut Window) {
+    if ASKING.load(Ordering::Relaxed) {
+        return;
+    }
+    // A callback queued before a frame runs before that frame draws.
+    window.on_next_frame(|window, _| {
+        window.on_next_frame(|_, _| {
+            ASKING.store(true, Ordering::Relaxed);
+            VOLUMES.ring();
+        })
+    });
+}
+
 pub(crate) fn follow_volumes(cx: &mut App) {
     let block = StackBlock::new(|_: NonNull<NSNotification>| {
         MOUNTS.store(true, Ordering::Relaxed);
@@ -159,18 +197,6 @@ pub(crate) fn follow_volumes(cx: &mut App) {
         unsafe {
             center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block)
         };
-    }
-    if let Some(window) = cx.windows().first() {
-        // A callback queued before a frame runs before that frame draws.
-        let drawn = |window: &mut Window, _: &mut App| {
-            window.on_next_frame(|_, _| {
-                ASKING.store(true, Ordering::Relaxed);
-                VOLUMES.ring();
-            })
-        };
-        window
-            .update(cx, |_, window, _| window.on_next_frame(drawn))
-            .ok();
     }
     cx.spawn(async move |cx| {
         let mut seen = 0;
