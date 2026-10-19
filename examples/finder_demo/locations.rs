@@ -1,8 +1,7 @@
-use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_void};
 use std::path::PathBuf;
 use std::ptr;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 
 use finder_fs::servers::Computer;
@@ -10,6 +9,7 @@ use gpui::{App, Context, SharedString, Window};
 use native_gpui::tokens::FileType;
 use objc2::rc::Retained;
 use objc2_foundation::{NSString, NSURL};
+use parking_lot::RwLock;
 
 use crate::app::FinderDemo;
 use crate::data::{self, Face, Line, Row, intern};
@@ -140,21 +140,17 @@ pub(crate) fn place(id: &str) -> Option<(&'static str, Option<&'static str>)> {
     })
 }
 
-thread_local! {
-    static NETWORKED: RefCell<(Option<Receiver<Vec<Computer>>>, Vec<Computer>)> =
-        const { RefCell::new((None, Vec::new())) };
-}
-
+static NETWORKED: RwLock<Vec<Computer>> = RwLock::new(Vec::new());
+static FOLLOWING: AtomicBool = AtomicBool::new(false);
 static NETWORK_CHANGED: Signal = Signal::new();
 
 /// What sharingd calls a computer reached by `host`: Finder's title for it.
 pub(crate) fn networked_name(host: &str) -> Option<String> {
-    NETWORKED.with_borrow(|(_, listed)| {
-        let computer = listed
-            .iter()
-            .find(|computer| finder_fs::servers::same_host(&computer.name, host))?;
-        Some(computer.name.clone())
-    })
+    let listed = NETWORKED.read();
+    let computer = listed
+        .iter()
+        .find(|computer| finder_fs::servers::same_host(&computer.name, host))?;
+    Some(computer.name.clone())
 }
 
 fn server_key(name: &str) -> String {
@@ -162,12 +158,11 @@ fn server_key(name: &str) -> String {
 }
 
 pub(crate) fn server(key: &str) -> Option<Computer> {
-    NETWORKED.with_borrow(|(_, listed)| {
-        listed
-            .iter()
-            .find(|computer| server_key(&computer.name) == key)
-            .cloned()
-    })
+    NETWORKED
+        .read()
+        .iter()
+        .find(|computer| server_key(&computer.name) == key)
+        .cloned()
 }
 
 pub(crate) fn location_row(
@@ -226,22 +221,21 @@ fn computer_rows() -> Vec<Arc<Row>> {
 }
 
 fn network_rows() -> Vec<Arc<Row>> {
-    NETWORKED.with_borrow(|(_, listed)| {
-        listed
-            .iter()
-            .map(|computer| {
-                let (uti, kind) = computer_type(computer.model.as_deref());
-                location_row(
-                    intern(&server_key(&computer.name)),
-                    computer.name.clone().into(),
-                    kind.into(),
-                    uti,
-                    None,
-                    FileType::Uti(uti),
-                )
-            })
-            .collect()
-    })
+    NETWORKED
+        .read()
+        .iter()
+        .map(|computer| {
+            let (uti, kind) = computer_type(computer.model.as_deref());
+            location_row(
+                intern(&server_key(&computer.name)),
+                computer.name.clone().into(),
+                kind.into(),
+                uti,
+                None,
+                FileType::Uti(uti),
+            )
+        })
+        .collect()
 }
 
 fn shared_rows() -> Vec<Arc<Row>> {
@@ -265,30 +259,24 @@ fn rows_of(id: &'static str) -> Vec<Arc<Row>> {
     }
 }
 
-fn follow_network(cx: &mut App) {
-    if NETWORKED.with_borrow(|(following, _)| following.is_some()) {
+/// Server rows are titled with sharingd's names, so the list is followed from launch.
+pub(crate) fn follow_network(cx: &mut App) {
+    if FOLLOWING.swap(true, Ordering::Relaxed) {
         return;
     }
-    let (sent, lists) = channel();
-    NETWORKED.with_borrow_mut(|(following, _)| *following = Some(lists));
-    std::thread::spawn(move || {
+    std::thread::spawn(|| {
         finder_fs::servers::network(|list| {
-            let open = sent.send(list).is_ok();
+            *NETWORKED.write() = list;
             NETWORK_CHANGED.ring();
-            open
+            true
         })
     });
     cx.spawn(async move |cx| {
         let mut seen = 0;
         loop {
             seen = NETWORK_CHANGED.after(seen).await;
-            NETWORKED.with_borrow_mut(|(following, listed)| {
-                if let Some(latest) = following.iter().flat_map(|lists| lists.try_iter()).last() {
-                    *listed = latest;
-                }
-            });
             let windows = cx.update(|cx| {
-                cx.refresh_windows();
+                crate::chrome::sidebar::reload_sidebars(cx);
                 cx.windows()
                     .into_iter()
                     .filter_map(|window| window.downcast::<FinderDemo>())
@@ -321,10 +309,7 @@ impl FinderDemo {
             self.folders.deliver(id, Vec::new(), true);
         }
         let order = self.order();
-        let servers = (id == NETWORK).then(|| {
-            follow_network(cx);
-            network_rows()
-        });
+        let servers = (id == NETWORK).then(network_rows);
         cx.spawn(async move |this, cx| {
             let rows = cx
                 .background_executor()

@@ -157,6 +157,7 @@ fn main() {
         preview::keep_a_key_window();
         search::follow_search_fields(cx);
         data::follow_volumes(cx);
+        locations::follow_network(cx);
         cx.activate(true);
     });
 }
