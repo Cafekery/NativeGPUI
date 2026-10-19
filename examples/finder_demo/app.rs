@@ -202,7 +202,7 @@ impl FinderDemo {
                 sidebar::last_groups()
             }
         };
-        let changes: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
+        let changes: Arc<Mutex<(Vec<PathBuf>, Vec<PathBuf>)>> = Arc::default();
         let sink = changes.clone();
         read::follow_events(changes, cx);
         let queue_events: Arc<Mutex<Vec<queue::Event>>> = Arc::default();
@@ -312,8 +312,11 @@ impl FinderDemo {
             scale: 2.,
             viewport: Size::default(),
             window_min_w: f32::NAN,
-            watcher: Watcher::new(move |dirs| {
-                sink.lock().extend(dirs);
+            watcher: Watcher::new(move |dirs, items| {
+                let mut changes = sink.lock();
+                changes.0.extend(dirs);
+                changes.1.extend(items);
+                drop(changes);
                 read::EVENTS.ring();
             }),
             watching: HashSet::new(),

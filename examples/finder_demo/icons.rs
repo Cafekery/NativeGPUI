@@ -128,13 +128,13 @@ pub(crate) fn draw_stand_ins(size: f32) {
     });
 }
 
-pub(crate) fn redraw(path: &str) -> Vec<Arc<RenderImage>> {
+pub(crate) fn redraw(changed: impl Fn(&str) -> bool) -> Vec<Arc<RenderImage>> {
     STATE.with_borrow_mut(|state| {
         state
             .held
             .iter_mut()
             .filter(|((kind, _), _)| {
-                matches!(kind, FileType::Path(at) | FileType::FullPath(at) if *at == path)
+                matches!(kind, FileType::Path(at) | FileType::FullPath(at) if changed(at))
             })
             .filter_map(|(&key, held)| {
                 let old = std::mem::replace(&mut held.icon, draw(key));

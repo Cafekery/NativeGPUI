@@ -381,7 +381,7 @@ fn refresh(paths: &[PathBuf], cx: &mut App) {
     for path in paths {
         let key = SharedString::from(path.to_string_lossy().into_owned());
         crate::custom::set_custom_icon(&key, custom(path));
-        for image in crate::icons::redraw(&key) {
+        for image in crate::icons::redraw(|path| path == key.as_ref()) {
             cx.drop_image(image, None);
         }
     }

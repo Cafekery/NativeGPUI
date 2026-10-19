@@ -556,16 +556,20 @@ fn list(
 
 pub(crate) static EVENTS: Signal = Signal::new();
 
-pub(crate) fn follow_events(changes: Arc<Mutex<Vec<PathBuf>>>, cx: &mut Context<FinderDemo>) {
+pub(crate) fn follow_events(
+    changes: Arc<Mutex<(Vec<PathBuf>, Vec<PathBuf>)>>,
+    cx: &mut Context<FinderDemo>,
+) {
     cx.spawn(async move |this, cx| {
         let (mut seen, mut seen_tags) = (0, 0);
         loop {
             seen = EVENTS.after(seen).await;
-            let changed = std::mem::take(&mut *changes.lock());
+            let (changed, items) = std::mem::take(&mut *changes.lock());
             let tags = crate::tags::tags_landed();
             let tagged = std::mem::replace(&mut seen_tags, tags) != tags;
             if this
                 .update(cx, |this, cx| {
+                    this.retouched(&items, cx);
                     this.changed(changed, cx);
                     let events = std::mem::take(&mut *this.queue_events.lock());
                     this.handle_queue_events(events, cx);
@@ -1013,6 +1017,21 @@ impl FinderDemo {
             }
             keep
         });
+    }
+
+    fn retouched(&mut self, items: &[PathBuf], cx: &mut Context<Self>) {
+        let items: HashSet<&str> = items.iter().filter_map(|item| item.to_str()).collect();
+        if items.is_empty() {
+            return;
+        }
+        let flipped = crate::custom::recheck(|path| items.contains(path));
+        let stale = icons::redraw(|path| items.contains(path));
+        if flipped || !stale.is_empty() {
+            for image in stale {
+                cx.drop_image(image, None);
+            }
+            cx.notify();
+        }
     }
 
     fn changed(&mut self, dirs: Vec<PathBuf>, cx: &mut Context<Self>) {

@@ -41,6 +41,15 @@ pub(crate) fn custom_icon_now(path: &SharedString) -> bool {
     found
 }
 
+pub(crate) fn recheck(changed: impl Fn(&str) -> bool) -> bool {
+    let mut flipped = false;
+    for (path, custom) in SEEN.lock().iter_mut().filter(|(path, _)| changed(path)) {
+        let now = has_custom_icon(path);
+        flipped |= std::mem::replace(custom, now) != now;
+    }
+    flipped
+}
+
 pub(crate) fn set_custom_icon(path: &SharedString, custom: bool) {
     SEEN.lock().insert(path.clone(), custom);
 }

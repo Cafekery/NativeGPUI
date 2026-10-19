@@ -19,15 +19,17 @@ use objc2_core_services::{
     ConstFSEventStreamRef, FSEventStreamCallback, FSEventStreamContext, FSEventStreamCreate,
     FSEventStreamCreateFlags, FSEventStreamEventFlags, FSEventStreamEventId,
     FSEventStreamGetLatestEventId, FSEventStreamInvalidate, FSEventStreamRef, FSEventStreamRelease,
-    FSEventStreamStart, FSEventStreamStop, kFSEventStreamCreateFlagUseCFTypes,
-    kFSEventStreamCreateFlagWatchRoot, kFSEventStreamEventFlagEventIdsWrapped,
-    kFSEventStreamEventFlagHistoryDone, kFSEventStreamEventIdSinceNow,
+    FSEventStreamStart, FSEventStreamStop, kFSEventStreamCreateFlagFileEvents,
+    kFSEventStreamCreateFlagUseCFTypes, kFSEventStreamCreateFlagWatchRoot,
+    kFSEventStreamEventFlagEventIdsWrapped, kFSEventStreamEventFlagHistoryDone,
+    kFSEventStreamEventFlagItemIsDir, kFSEventStreamEventFlagItemIsFile,
+    kFSEventStreamEventFlagItemIsSymlink, kFSEventStreamEventIdSinceNow,
 };
 
 const LATENCY: f64 = 0.1;
 const IDLE: f64 = 1.0e10;
 
-type OnChange = Box<dyn Fn(Vec<PathBuf>) + Send>;
+type OnChange = Box<dyn Fn(Vec<PathBuf>, Vec<PathBuf>) + Send>;
 
 struct Shared {
     paths: Mutex<HashSet<PathBuf>>,
@@ -75,8 +77,9 @@ fn as_watched(views: &[(PathBuf, PathBuf)], dirs: Vec<PathBuf>) -> Vec<PathBuf> 
 }
 
 impl Watcher {
-    /// Reports each changed folder as FSEvents names it and under every path it was watched by.
-    pub fn new(on_change: impl Fn(Vec<PathBuf>) + Send + 'static) -> Watcher {
+    /// Reports each changed folder, then each changed item and the folder an `Icon\r` dresses,
+    /// as FSEvents names them and under every path they were watched by.
+    pub fn new(on_change: impl Fn(Vec<PathBuf>, Vec<PathBuf>) + Send + 'static) -> Watcher {
         let shared = Arc::new(Shared {
             paths: Mutex::default(),
             changed: Condvar::new(),
@@ -343,7 +346,9 @@ fn run(shared: Arc<Shared>, on_change: OnChange) {
             since,
             LATENCY,
             // Without WatchRoot a stream says nothing when the folder it watches is renamed or deleted.
-            kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagWatchRoot,
+            kFSEventStreamCreateFlagUseCFTypes
+                | kFSEventStreamCreateFlagWatchRoot
+                | kFSEventStreamCreateFlagFileEvents,
         )
         .expect("FSEventStreamCreate failed");
         stream.start(&run_loop, mode.expect("default run loop mode"));
@@ -371,15 +376,29 @@ unsafe extern "C-unwind" fn callback(
     let context = unsafe { &*(info as *const Context) };
     let paths = unsafe { &*(event_paths.as_ptr() as *const CFArray<CFString>) };
     let flags = unsafe { std::slice::from_raw_parts(event_flags.as_ptr(), num_events) };
-    let dirs: Vec<PathBuf> = flags
-        .iter()
-        .enumerate()
-        .filter(|(_, flag)| **flag & kFSEventStreamEventFlagHistoryDone == 0)
-        .filter_map(|(i, _)| paths.get(i))
-        .map(|path| strip_trailing_slash(&path.to_string()))
-        .collect();
+    let item = kFSEventStreamEventFlagItemIsFile
+        | kFSEventStreamEventFlagItemIsDir
+        | kFSEventStreamEventFlagItemIsSymlink;
+    let (mut dirs, mut items) = (Vec::new(), Vec::new());
+    for (i, flag) in flags.iter().enumerate() {
+        if flag & kFSEventStreamEventFlagHistoryDone != 0 {
+            continue;
+        }
+        let Some(path) = paths.get(i) else { continue };
+        let path = strip_trailing_slash(&path.to_string());
+        let Some(dir) = path.parent().filter(|_| flag & item != 0) else {
+            dirs.push(path);
+            continue;
+        };
+        if path.file_name() == Some("Icon\r".as_ref()) {
+            items.push(dir.to_path_buf());
+        }
+        dirs.push(dir.to_path_buf());
+        items.push(path);
+    }
     if !dirs.is_empty() {
-        (context.on_change)(as_watched(&context.views.borrow(), dirs));
+        let views = context.views.borrow();
+        (context.on_change)(as_watched(&views, dirs), as_watched(&views, items));
     }
 }
 
@@ -434,7 +453,7 @@ mod tests {
 
     fn watching(dirs: &[&Path]) -> (Watcher, mpsc::Receiver<Vec<PathBuf>>) {
         let (tx, rx) = mpsc::channel();
-        let watcher = Watcher::new(move |dirs| {
+        let watcher = Watcher::new(move |dirs, _| {
             let _ = tx.send(dirs);
         });
         for dir in dirs {
@@ -460,6 +479,28 @@ mod tests {
                 Err(_) => return false,
             }
         }
+    }
+
+    #[test]
+    fn a_changed_item_is_reported_with_the_folder_its_icon_dresses() {
+        let _serial = serial();
+        let dir = temp_dir("items");
+        let folder = dir.join("folder");
+        fs::create_dir_all(&folder).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let watcher = Watcher::new(move |_, items| {
+            let _ = tx.send(items);
+        });
+        watcher.watch(&dir);
+        thread::sleep(Duration::from_millis(500));
+        let wait = Duration::from_secs(10);
+
+        fs::write(dir.join("file"), b"").unwrap();
+        assert!(recv_containing(&rx, &dir.join("file"), wait));
+        fs::write(folder.join("Icon\r"), b"").unwrap();
+        assert!(recv_containing(&rx, &folder, wait));
+        drop(watcher);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

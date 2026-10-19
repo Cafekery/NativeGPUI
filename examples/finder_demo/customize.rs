@@ -261,7 +261,7 @@ impl FinderDemo {
                 }
                 customizer.decoration = decoration.clone();
                 crate::custom::set_custom_icon(&customizer.key, decoration.is_some());
-                for image in crate::icons::redraw(&customizer.key) {
+                for image in crate::icons::redraw(|path| path == customizer.key.as_ref()) {
                     cx.drop_image(image, None);
                 }
             }
