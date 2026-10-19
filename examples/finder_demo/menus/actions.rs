@@ -231,6 +231,7 @@ impl FinderDemo {
             into,
             name: stem.to_owned(),
         };
+        self.typed_ahead = Some(String::new());
         if with.is_empty() {
             self.run_op(op, After::Rename, cx);
             return;
@@ -246,6 +247,7 @@ impl FinderDemo {
                 .spawn(async move { finder_fs::ops::perform(op, Conflict::KeepBoth) })
                 .await;
             let Some(folder) = made.ok().and_then(|done| done.results.first().cloned()) else {
+                this.update(cx, |this, _| this.typed_ahead = None).ok();
                 return;
             };
             this.update(cx, |this: &mut FinderDemo, cx| {

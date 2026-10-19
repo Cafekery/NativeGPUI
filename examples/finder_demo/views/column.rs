@@ -226,6 +226,7 @@ impl FinderDemo {
             demo.column_listing(folder).get(row as usize).cloned()
         };
         let renaming = self.renaming.clone();
+        let typed_ahead = self.typed_ahead.clone();
         let resting = self.drop_row().cloned();
         let springing = self.spring_flash().cloned();
         let cursor = self.cursor.clone();
@@ -323,7 +324,12 @@ impl FinderDemo {
                                 ))
                             })
                             .child(if renaming.as_ref() == Some(&line.key) {
-                                name.child(rename_field(line, row, this.clone()))
+                                name.child(rename_field(
+                                    line,
+                                    row,
+                                    typed_ahead.as_deref(),
+                                    this.clone(),
+                                ))
                             } else {
                                 name.text_ellipsis_middle()
                                     .whitespace_nowrap()

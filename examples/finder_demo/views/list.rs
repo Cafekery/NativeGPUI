@@ -142,6 +142,7 @@ struct Marks {
     selected: Arc<HashSet<SharedString>>,
     expanded: Arc<HashSet<SharedString>>,
     renaming: Option<SharedString>,
+    typed_ahead: Option<String>,
     menu_row: Option<SharedString>,
     cursor: Option<SharedString>,
     ql_icon: Anchor,
@@ -385,6 +386,7 @@ impl FinderDemo {
             selected: self.selected.snapshot(),
             expanded: self.expanded.snapshot(),
             renaming: self.renaming.clone(),
+            typed_ahead: self.typed_ahead.clone(),
             menu_row: self.menu_row.clone(),
             cursor: self.cursor.clone(),
             ql_icon: self.ql_icon.clone(),
@@ -776,8 +778,10 @@ fn row(
     let renaming = marks.renaming.as_ref() == Some(&line.key);
     // A popover's anchor and a rename field are AppKit views, placed only by a row that paints.
     if renaming || (cursor && marks.anchor_held) {
-        let rename =
-            renaming.then(|| rename_field(line, at, marks.this.clone()).into_any_element());
+        let rename = renaming.then(|| {
+            rename_field(line, at, marks.typed_ahead.as_deref(), marks.this.clone())
+                .into_any_element()
+        });
         return shell(&drawn, painted(&drawn, rename), window);
     }
     marks.faces.borrow_mut().view(drawn, cx)

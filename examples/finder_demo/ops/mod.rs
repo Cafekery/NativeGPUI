@@ -126,6 +126,9 @@ impl FinderDemo {
         };
         let visible = results.iter().any(|path| parent(path).is_some_and(shown));
         if after == After::Nothing || !visible {
+            if after == After::Rename {
+                self.typed_ahead = None;
+            }
             return;
         }
         self.choose(

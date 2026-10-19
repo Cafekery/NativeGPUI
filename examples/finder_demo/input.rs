@@ -13,6 +13,22 @@ impl FinderDemo {
     ) {
         let modifiers = event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
+        let plain = !modifiers.platform && !modifiers.control && !modifiers.alt;
+        let typed = (event.keystroke.key_char.as_deref())
+            .filter(|typed| plain && !typed.chars().any(char::is_control));
+        if let Some(ahead) = self
+            .typed_ahead
+            .as_mut()
+            .filter(|_| self.renaming.is_none())
+        {
+            if let Some(typed) = typed {
+                ahead.push_str(typed);
+                return;
+            }
+            if key == "enter" {
+                return;
+            }
+        }
         match key {
             "escape" if self.cancel_drag(window, cx) => return,
             "escape" if quick_look_visible() => return quick_look_close(),

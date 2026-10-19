@@ -460,6 +460,9 @@ impl FinderDemo {
                             self.finish(&row, done, cx);
                         }
                         Err(err) => {
+                            if row.after == After::Rename {
+                                self.typed_ahead = None;
+                            }
                             self.undo_left(&row, row.op.clone());
                             self.complain(&err.to_string());
                         }

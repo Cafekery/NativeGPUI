@@ -100,16 +100,23 @@ pub(crate) fn pick_on_press(
 pub(crate) fn rename_field(
     line: &Line,
     at: usize,
+    typed: Option<&str>,
     this: WeakEntity<FinderDemo>,
 ) -> impl IntoElement {
     let name = line.row.name.clone();
     let dot = name.rfind('.').filter(|&dot| dot > 0).unwrap_or(name.len());
-    let stem = name[..dot].chars().count();
+    let (text, editing) = match typed.filter(|typed| !typed.is_empty()) {
+        Some(typed) => {
+            let end = typed.chars().count();
+            (format!("{typed}{}", &name[dot..]), end..end)
+        }
+        None => (name.to_string(), 0..name[..dot].chars().count()),
+    };
     let key = line.key.clone();
     let leave = this.clone();
-    native_text_field(("ng.finder.rename", at), &name)
+    native_text_field(("ng.finder.rename", at), &text)
         .stretch()
-        .editing(0..stem)
+        .editing(editing)
         .on_submit(move |text, window, cx| {
             end_rename(&this, window, cx, |this, cx| this.rename(&key, text, cx))
         })
@@ -125,6 +132,7 @@ fn end_rename(
     this.update(cx, |this, cx| {
         then(this, cx);
         this.renaming = None;
+        this.typed_ahead = None;
         focus_gpui(window);
         key_to_parent(window);
         cx.notify();

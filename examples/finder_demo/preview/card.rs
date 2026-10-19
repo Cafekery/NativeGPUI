@@ -108,6 +108,7 @@ pub(crate) struct Shown {
     key: bool,
     expanded: bool,
     renaming: Option<Line>,
+    typed_ahead: Option<String>,
     pub(super) list_focused: bool,
     option: bool,
 }
@@ -533,6 +534,7 @@ impl FinderDemo {
             key: self.host.as_ref().is_none_or(|host| host.isKeyWindow()),
             expanded: self.preview_expanded,
             renaming,
+            typed_ahead: self.typed_ahead.clone(),
             list_focused: self.list_focused,
             option: option_held(),
         })
@@ -769,7 +771,8 @@ impl Shown {
         };
         let rows = card.rows.len();
         let title: AnyElement = match &self.renaming {
-            Some(line) => rename_field(line, 0, finder.downgrade()).into_any_element(),
+            Some(line) => rename_field(line, 0, self.typed_ahead.as_deref(), finder.downgrade())
+                .into_any_element(),
             None => card.title.clone().into_any_element(),
         };
 
