@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::io;
 use std::os::macos::fs::MetadataExt as _;
 use std::os::unix::fs::MetadataExt as _;
@@ -318,16 +319,23 @@ fn io_error(err: Retained<NSError>) -> io::Error {
 }
 
 pub fn walk_size(path: &Path) -> u64 {
+    walk_size_once(path, &mut HashSet::new())
+}
+
+fn walk_size_once(path: &Path, seen: &mut HashSet<(u64, u64)>) -> u64 {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return 0;
     };
     if !meta.is_dir() {
+        if meta.nlink() > 1 && !seen.insert((meta.dev(), meta.ino())) {
+            return 0;
+        }
         return meta.len();
     }
     std::fs::read_dir(path).map_or(0, |entries| {
         entries
             .flatten()
-            .map(|entry| walk_size(&entry.path()))
+            .map(|entry| walk_size_once(&entry.path(), seen))
             .sum()
     })
 }
