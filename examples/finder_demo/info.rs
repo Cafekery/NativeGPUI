@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use block2::{RcBlock, StackBlock};
 use finder_fs::flags::IS_STATIONERY;
@@ -43,6 +44,7 @@ use objc2_foundation::{
     NSDictionary, NSNotification, NSNotificationCenter, NSNumber, NSObject, NSPoint, NSRect,
     NSSize, NSString, NSURLHasHiddenExtensionKey, NSURLIsUserImmutableKey, ns_string,
 };
+use parking_lot::Mutex;
 
 use crate::app::FinderDemo;
 use crate::art::{row_art, small_glyph};
@@ -90,6 +92,7 @@ const EXPANDED_KEY: &str = "FXInfoPanesExpanded";
 const WHERE: &str = "Where";
 const FOLLOW_EVERY: Duration = Duration::from_millis(100);
 const FOLLOW_TRIES: usize = 600;
+const WEIGH_EVERY: Duration = Duration::from_millis(250);
 
 fn info_width() -> f32 {
     prefs::setting_number(WIDTH_KEY)
@@ -196,14 +199,16 @@ impl Weight {
     }
 }
 
-fn weigh_folder(path: &Path, counted: bool) -> Weight {
+type Report<'a> = &'a mut dyn FnMut(&Weight) -> bool;
+
+fn weigh_folder(path: &Path, counted: bool, report: Report) -> Weight {
     let mut linked = HashSet::new();
     let Some(totals) = crate::fsearch::totals(path) else {
         let mut weight = Weight {
             items: counted.then_some(0),
             ..Weight::default()
         };
-        weigh_tree(path, &mut weight, &mut linked);
+        weigh_tree(path, &mut weight, &mut linked, report);
         return weight;
     };
     let mut weight = Weight {
@@ -224,7 +229,7 @@ fn weigh_folder(path: &Path, counted: bool) -> Weight {
         }
     }
     for dir in &totals.unindexed {
-        weigh_tree(dir, &mut weight, &mut linked);
+        weigh_tree(dir, &mut weight, &mut linked, report);
     }
     weight
 }
@@ -248,13 +253,16 @@ fn linked_files(paths: &[PathBuf]) -> Vec<(u64, u64, u64)> {
     })
 }
 
-fn weigh_tree(path: &Path, weight: &mut Weight, linked: &mut HashSet<u64>) {
+fn weigh_tree(path: &Path, weight: &mut Weight, linked: &mut HashSet<u64>, report: Report) {
     let mut pending = vec![path.to_path_buf()];
     while let Some(dir) = pending.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
+            if !report(weight) {
+                return;
+            }
             let Ok(meta) = entry.metadata() else {
                 continue;
             };
@@ -274,7 +282,7 @@ fn weigh_tree(path: &Path, weight: &mut Weight, linked: &mut HashSet<u64>) {
     }
 }
 
-fn weigh_all(paths: &[PathBuf]) -> Weight {
+fn weigh_all(paths: &[PathBuf], report: Report) -> Weight {
     let mut total = Weight::default();
     let mut items = paths.len() as u64;
     for path in paths {
@@ -282,7 +290,13 @@ fn weigh_all(paths: &[PathBuf]) -> Weight {
             continue;
         };
         let inner = if meta.is_dir() {
-            weigh_folder(path, true)
+            weigh_folder(path, true, &mut |inner| {
+                report(&Weight {
+                    bytes: total.bytes + inner.bytes,
+                    on_disk: total.on_disk + inner.on_disk,
+                    items: Some(items + inner.items.unwrap_or(0)),
+                })
+            })
         } else {
             Weight::file(&meta)
         };
@@ -303,16 +317,23 @@ fn items_text(items: u64) -> String {
     }
 }
 
-fn weight_rows(weight: Option<Weight>) -> Vec<(&'static str, SharedString)> {
-    let Some(weight) = weight else {
+fn weight_rows(
+    weight: Option<Weight>,
+    so_far: Option<Weight>,
+) -> Vec<(&'static str, SharedString)> {
+    let Some(shown) = weight.or(so_far) else {
         return vec![("Size", "Calculating\u{2026}".into())];
     };
+    let size = match weight {
+        Some(_) => size_text(shown.bytes),
+        None => format!("Calculating\u{2026} {}", byte_string(shown.bytes)),
+    };
     let mut rows = vec![
-        ("Size", size_text(weight.bytes).into()),
-        ("On disk", byte_string(weight.on_disk).into()),
+        ("Size", size.into()),
+        ("On disk", byte_string(shown.on_disk).into()),
     ];
     rows.extend(
-        weight
+        shown
             .items
             .map(|items| ("Contains", items_text(items).into())),
     );
@@ -479,6 +500,54 @@ fn in_background<V: 'static, R: Send + 'static>(
         let result = cx.background_executor().spawn(async move { work() }).await;
         this.update(cx, |view, cx| {
             done(view, result);
+            cx.notify();
+        })
+    })
+    .detach();
+}
+
+/// Shows a running total, and stops walking once the window that asked has closed.
+fn weigh_in_background<V: 'static>(
+    cx: &mut Context<V>,
+    work: impl FnOnce(Report) -> Weight + Send + 'static,
+    show: impl Fn(&mut V, Weight, bool) + 'static,
+) {
+    let so_far = Arc::new(Mutex::new(None));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (tally, stopped) = (so_far.clone(), stop.clone());
+    let work = cx.background_executor().spawn(async move {
+        let mut shown = Instant::now();
+        work(&mut |weight| {
+            if shown.elapsed() >= WEIGH_EVERY {
+                shown = Instant::now();
+                *tally.lock() = Some(*weight);
+            }
+            !stopped.load(Ordering::Relaxed)
+        })
+    });
+    let show = Rc::new(show);
+    let (tick, done) = (show.clone(), stop.clone());
+    cx.spawn(async move |this, cx| {
+        while !done.load(Ordering::Relaxed) {
+            cx.background_executor().timer(WEIGH_EVERY).await;
+            let weight = so_far.lock().take();
+            let open = this.update(cx, |view, cx| {
+                if let Some(weight) = weight {
+                    tick(view, weight, false);
+                    cx.notify();
+                }
+            });
+            if open.is_err() {
+                done.store(true, Ordering::Relaxed);
+            }
+        }
+    })
+    .detach();
+    cx.spawn(async move |this, cx| {
+        let weight = work.await;
+        stop.store(true, Ordering::Relaxed);
+        this.update(cx, |view, cx| {
+            show(view, weight, true);
             cx.notify();
         })
     })
@@ -984,6 +1053,7 @@ pub(crate) struct Info {
     demo: WeakEntity<FinderDemo>,
     tags: Option<Rc<[Tag]>>,
     weight: Option<Weight>,
+    so_far: Option<Weight>,
     weighing: bool,
     metadata: Option<Meta>,
     fetching: bool,
@@ -1034,6 +1104,7 @@ impl Info {
             where_,
             subject,
             demo,
+            so_far: None,
             weighing: false,
             metadata: None,
             fetching: false,
@@ -1068,10 +1139,16 @@ impl Info {
         self.weighing = true;
         let path = self.path().to_path_buf();
         let counted = self.subject == Subject::Folder;
-        in_background(
+        weigh_in_background(
             cx,
-            move || weigh_folder(&path, counted),
-            |info, weight| info.weight = Some(weight),
+            move |report| weigh_folder(&path, counted, report),
+            |info, weight, done| {
+                if done {
+                    info.weight = Some(weight);
+                } else {
+                    info.so_far = Some(weight);
+                }
+            },
         );
     }
 
@@ -1266,7 +1343,7 @@ impl Info {
                     _ => row.kind.clone(),
                 };
                 let mut rows = vec![("Kind", kind)];
-                rows.extend(weight_rows(self.weight));
+                rows.extend(weight_rows(self.weight, self.so_far));
                 if !self.where_.is_empty() {
                     rows.push((WHERE, self.where_.clone()));
                 }
@@ -2279,6 +2356,7 @@ pub(crate) struct Combined {
     lines: Vec<Line>,
     where_: SharedString,
     weight: Option<Weight>,
+    so_far: Option<Weight>,
     weighing: bool,
     general: Fold,
     same: Option<bool>,
@@ -2291,6 +2369,7 @@ impl Combined {
             lines,
             where_,
             weight: None,
+            so_far: None,
             weighing: false,
             general: Fold::new(panes_open()[Pane::General as usize]),
             same: None,
@@ -2310,10 +2389,16 @@ impl Combined {
         }
         self.weighing = true;
         let paths = self.paths();
-        in_background(
+        weigh_in_background(
             cx,
-            move || weigh_all(&paths),
-            |combined, weight| combined.weight = Some(weight),
+            move |report| weigh_all(&paths, report),
+            |combined, weight, done| {
+                if done {
+                    combined.weight = Some(weight);
+                } else {
+                    combined.so_far = Some(weight);
+                }
+            },
         );
     }
 
@@ -2351,7 +2436,7 @@ impl Combined {
         kinds.sort_unstable();
         kinds.dedup();
         let mut rows = vec![("Kind", kinds.join(", ").into())];
-        rows.extend(weight_rows(self.weight));
+        rows.extend(weight_rows(self.weight, self.so_far));
         if !self.where_.is_empty() {
             rows.push((WHERE, self.where_.clone()));
         }
