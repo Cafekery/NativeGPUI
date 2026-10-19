@@ -1,7 +1,10 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::channel;
 
+use block2::RcBlock;
 use finder_fs::ops::Op;
+use finder_fs::servers::same_host;
 use finder_fs::sidebar::{Listed, Special, VolumeSettings};
 use finder_fs::volumes::Standard;
 use gpui::{App, SharedString, Window, prelude::*, px};
@@ -10,12 +13,12 @@ use native_gpui::sidebar::{
     SidebarOptions, sidebar_group, sidebar_item, system_symbol,
 };
 use native_gpui::{CheckState, Material};
-use objc2_app_kit::NSWorkspace;
-use objc2_foundation::{NSString, NSURL};
+use objc2_foundation::{NSError, NSFileManager, NSFileManagerUnmountOptions, NSString, NSURL};
 
 use super::strs;
 use crate::app::FinderDemo;
-use crate::data::{intern, intern_path, is_volume_root, server_symbol};
+use crate::data::{intern, intern_path, is_trash, is_volume_root, server_symbol};
+use crate::locations::{COMPUTER, networked_name};
 use crate::ops::After;
 use crate::prefs;
 use crate::tags::tag_system_color;
@@ -76,6 +79,7 @@ struct Row {
     eject: bool,
     drops: bool,
     muted: bool,
+    server: bool,
 }
 
 #[derive(Clone)]
@@ -93,6 +97,7 @@ fn row(id: &'static str, title: impl Into<SharedString>, glyph: Glyph) -> Row {
         eject: false,
         drops: false,
         muted: false,
+        server: false,
     }
 }
 
@@ -112,6 +117,17 @@ fn glyph_of(path: &Path) -> Glyph {
         if finder_fs::volumes::standard(which).is_some_and(|it| it == path) {
             return glyph;
         }
+    }
+    let id = intern_path(path);
+    if is_trash(id) {
+        return Glyph::Symbol("trash");
+    }
+    if let Some(volume) = crate::data::volume_at(id) {
+        return match (volume.network, volume.ejectable) {
+            (true, _) => server_glyph(volume.server.unwrap_or(volume.name)),
+            (_, true) => Glyph::Symbol("externaldrive"),
+            _ => Glyph::Symbol("internaldrive"),
+        };
     }
     let home = finder_fs::volumes::standard(Home).unwrap_or_default();
     let in_home = |leaf: &str| path == home.join(leaf);
@@ -159,12 +175,19 @@ fn provider_glyph(root: Option<&Path>) -> Glyph {
     Glyph::Symbol(named.map_or("externaldrive.badge.icloud", |name| intern(&name)))
 }
 
+// A symbol cached by another macOS release may not exist on this one.
+fn server_glyph(host: &str) -> Glyph {
+    let symbol = server_symbol(host);
+    Glyph::Symbol(system_symbol(symbol).map_or("display", |_| symbol))
+}
+
 fn listed_row(listed: Listed, location: bool) -> Option<Row> {
     use Special::*;
     let id = match (&listed.path, listed.special) {
         (Some(path), _) => intern_path(path),
         (None, Some(AirDrop)) => crate::locations::AIRDROP,
         (None, Some(Network)) => crate::locations::NETWORK,
+        (None, Some(Computer)) => COMPUTER,
         _ => return None,
     };
     let glyph = match listed.special {
@@ -173,9 +196,8 @@ fn listed_row(listed: Listed, location: bool) -> Option<Row> {
         Some(AirDrop) => Glyph::SymbolOr("airdrop", "SidebarAirDrop"),
         Some(Network) => Glyph::Symbol("network"),
         Some(Trash) => Glyph::Symbol("trash"),
-        _ if listed.network => Glyph::Symbol(server_symbol(
-            listed.server.as_deref().unwrap_or(&listed.title),
-        )),
+        Some(Computer) => Glyph::Symbol(intern(&crate::locations::computer_symbol())),
+        _ if listed.network => server_glyph(listed.server.as_deref().unwrap_or(&listed.title)),
         _ if listed.ejectable => Glyph::Symbol("externaldrive"),
         None if location => Glyph::Symbol("internaldrive"),
         _ => glyph_of(Path::new(id)),
@@ -184,11 +206,7 @@ fn listed_row(listed: Listed, location: bool) -> Option<Row> {
         Some(ICloudDrive | AirDrop | Network | Trash) => {
             finder_fs::words::say(&listed.title).into_owned()
         }
-        None if listed.network => listed
-            .server
-            .as_deref()
-            .and_then(crate::locations::networked_name)
-            .unwrap_or(listed.title),
+        Some(Computer) => crate::locations::computer_name().to_owned(),
         _ => listed.title,
     };
     Some(Row {
@@ -196,8 +214,22 @@ fn listed_row(listed: Listed, location: bool) -> Option<Row> {
         // Never stat: a row can name a share that stopped answering.
         drops: listed.path.is_some(),
         muted: location,
+        server: listed.network && listed.special.is_none(),
         ..row(id, title, glyph)
     })
+}
+
+/// Finder titles a server with sharingd's name for it and sorts the servers by that title.
+fn title_servers(locations: &mut [Listed]) {
+    for listed in locations.iter_mut().filter(|listed| listed.network) {
+        if let Some(name) = listed.server.as_deref().and_then(networked_name) {
+            listed.title = name;
+        }
+    }
+}
+
+fn server_title(host: &str) -> String {
+    networked_name(host).unwrap_or_else(|| finder_fs::servers::title(host))
 }
 
 fn listed_rows(listed: Vec<Listed>, location: bool) -> Vec<Row> {
@@ -441,17 +473,16 @@ pub(crate) fn groups() -> Vec<Group> {
         on(Shown::ExternalDisks).0,
         on(Shown::Servers).0,
     );
-    let hidden_volumes: Vec<Listed> = finder_fs::volumes::mounted()
-        .into_iter()
+    let mounted = finder_fs::volumes::mounted();
+    let hidden_volumes: Vec<Listed> = mounted
+        .iter()
         .filter(|volume| match (volume.network, volume.ejectable) {
-            (true, _) => !finder_servers && shows(Shown::Servers),
+            (true, _) => false,
             (_, true) => !finder_external && shows(Shown::ExternalDisks),
             _ => !finder_disks && shows(Shown::HardDisks),
         })
         .map(|volume| Listed {
-            network: volume.network,
             ejectable: volume.ejectable,
-            server: volume.server.clone(),
             ..listed(volume.name.clone(), Some(volume.path.clone()), None)
         })
         .collect();
@@ -460,9 +491,31 @@ pub(crate) fn groups() -> Vec<Group> {
         .position(|listed| matches!(listed.special, Some(Special::AirDrop | Special::Network)))
         .unwrap_or(locations.len());
     locations.splice(before_places..before_places, hidden_volumes);
+    let before_network = |locations: &[Listed]| {
+        locations
+            .iter()
+            .position(|listed| listed.special == Some(Special::Network))
+            .unwrap_or(locations.len())
+    };
+    if !finder_servers && shows(Shown::Servers) {
+        let servers =
+            finder_fs::sidebar::server_rows(mounted.iter().filter(|volume| volume.network));
+        let at = before_network(&locations);
+        locations.splice(at..at, servers);
+    }
+    title_servers(&mut locations);
+    let end = before_network(&locations);
+    let start = locations[..end]
+        .iter()
+        .rposition(|listed| !listed.network)
+        .map_or(0, |at| at + 1);
+    locations[start..end].sort_by(|a, b| finder_fs::sort::name_cmp(&a.title, &b.title));
     let missing =
         |locations: &[Listed], which| !locations.iter().any(|listed| listed.special == Some(which));
     let home = finder_fs::volumes::standard(Standard::Home);
+    if shows(Shown::Computer) && missing(&locations, Special::Computer) {
+        locations.insert(0, listed("Computer".into(), None, Some(Special::Computer)));
+    }
     if shows(Shown::ICloudDrive) && missing(&locations, Special::ICloudDrive) {
         let drive = finder_fs::icloud::drive();
         locations.insert(
@@ -510,21 +563,30 @@ pub(crate) fn groups() -> Vec<Group> {
     }
     let mut locations = listed_rows(locations, true);
     if shows(Shown::Servers) {
-        let places = [crate::locations::AIRDROP, crate::locations::NETWORK];
-        let at = locations
+        let end = locations
             .iter()
-            .position(|row| places.contains(&row.id) || crate::data::is_trash(row.id))
+            .position(|row| row.id == crate::locations::NETWORK || is_trash(row.id))
             .unwrap_or(locations.len());
         let servers = crate::remote::servers().into_iter().map(|server| Row {
             eject: true,
             muted: true,
+            server: true,
             ..row(
                 server.path,
-                server.host,
-                Glyph::Symbol(server_symbol(server.host)),
+                server_title(server.host),
+                server_glyph(server.host),
             )
         });
-        locations.splice(at..at, servers);
+        locations.splice(end..end, servers);
+        let end = locations
+            .iter()
+            .position(|row| row.id == crate::locations::NETWORK || is_trash(row.id))
+            .unwrap_or(locations.len());
+        let start = locations[..end]
+            .iter()
+            .rposition(|row| !row.server)
+            .map_or(0, |at| at + 1);
+        locations[start..end].sort_by(|a, b| finder_fs::sort::name_cmp(&a.title, &b.title));
     }
 
     let recent = if shows(Shown::RecentTags) {
@@ -972,20 +1034,59 @@ impl FinderDemo {
             self.eject_remote(id, cx);
             return;
         }
-        let url = NSURL::fileURLWithPath(&NSString::from_str(id));
-        if let Err(error) = NSWorkspace::sharedWorkspace().unmountAndEjectDeviceAtURL_error(&url) {
-            self.complain(&error.localizedDescription().to_string());
-            return;
+        // A server's row stands for every share mounted from it, as in Finder.
+        let mounted = finder_fs::volumes::mounted();
+        let server = mounted
+            .iter()
+            .find(|volume| volume.path == Path::new(id))
+            .and_then(|volume| volume.server.clone());
+        let shares: Vec<String> = match server {
+            Some(server) => mounted
+                .iter()
+                .filter(|volume| {
+                    volume
+                        .server
+                        .as_deref()
+                        .is_some_and(|known| same_host(known, &server))
+                })
+                .map(|volume| volume.path.to_string_lossy().into_owned())
+                .collect(),
+            None => vec![id.to_owned()],
+        };
+        let (sent, refusals) = channel();
+        for share in &shares {
+            let sent = sent.clone();
+            let refused = RcBlock::new(move |error: *mut NSError| {
+                let error = unsafe { error.as_ref() };
+                sent.send(error.map(|error| error.localizedDescription().to_string()))
+                    .ok();
+            });
+            let url = NSURL::fileURLWithPath(&NSString::from_str(share));
+            unsafe {
+                NSFileManager::defaultManager().unmountVolumeAtURL_options_completionHandler(
+                    &url,
+                    NSFileManagerUnmountOptions::empty(),
+                    &refused,
+                )
+            };
         }
         let left = is_volume_root(id);
         let id = id.to_string();
-        // Reading every volume's capacity waits on any network volume that stopped answering.
+        // Unmounting, then reading every volume's capacity, waits on any share that stopped answering.
         cx.spawn_in(window, async move |this, cx| {
-            cx.background_executor()
-                .spawn(async { crate::data::refresh_volumes() })
+            let (refused, groups) = cx
+                .background_executor()
+                .spawn(async move {
+                    let refused = refusals.iter().take(shares.len()).flatten().next();
+                    crate::data::refresh_volumes();
+                    (refused, groups())
+                })
                 .await;
             this.update_in(cx, |this, window, cx| {
-                this.refresh_sidebar();
+                this.sidebar_took(groups);
+                if let Some(refused) = refused {
+                    this.complain(&refused);
+                }
                 if left && this.here().starts_with(id.as_str()) {
                     if let Some(home) = finder_fs::volumes::standard(Standard::Home) {
                         this.go(intern_path(&home), window, cx);
