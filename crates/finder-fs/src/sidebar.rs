@@ -265,7 +265,11 @@ fn arrange(
     let mut servers: Vec<Listed> = Vec::new();
     for volume in mounted.iter().filter(|volume| volume.network).filter(shown) {
         let title = crate::servers::title(volume.server.as_deref().unwrap_or(&volume.name));
-        if !servers.iter().any(|row| row.title == title) {
+        let same = |row: &Listed| match (&row.server, &volume.server) {
+            (Some(known), Some(server)) => crate::servers::same_host(known, server),
+            _ => row.title == title,
+        };
+        if !servers.iter().any(same) {
             servers.push(Listed::volume(title, volume));
         }
     }

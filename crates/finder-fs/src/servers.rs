@@ -1,5 +1,6 @@
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::fmt::Write;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
@@ -25,6 +26,7 @@ const FAMILIES: [(&str, &str); 11] = [
     ("public.generic-pc", "pc"),
 ];
 
+#[derive(Clone)]
 enum Said {
     Model(String),
     /// sharingd lists a server without its model until it has fetched one.
@@ -92,7 +94,7 @@ pub fn models(hosts: &[String], wait: Duration, mut found: impl FnMut(&str, Opti
         .collect();
     // Bonjour answers `_device-info` in milliseconds; sharingd can take a minute after a mount.
     for (name, ..) in &left {
-        let Some(instance) = instance(name).map(str::to_owned) else {
+        let Some(instance) = advertised(name).map(str::to_owned) else {
             continue;
         };
         let (tx, name) = (tx.clone(), name.clone());
@@ -108,10 +110,7 @@ pub fn models(hosts: &[String], wait: Duration, mut found: impl FnMut(&str, Opti
         let Ok((host, said)) = answers.recv_timeout(wait) else {
             break;
         };
-        let Some(at) = left
-            .iter()
-            .position(|(name, ..)| name.eq_ignore_ascii_case(&host))
-        else {
+        let Some(at) = left.iter().position(|(name, ..)| same_host(name, &host)) else {
             continue;
         };
         let [unknown, unrecorded] = &mut left[at].2;
@@ -145,6 +144,21 @@ fn named(host: &str) -> String {
 
 fn instance(name: &str) -> Option<&str> {
     Some(name.strip_suffix("._tcp.local")?.rsplit_once("._")?.0)
+}
+
+/// A plain host name starts with the computer name Bonjour advertises under.
+fn advertised(name: &str) -> Option<&str> {
+    if name.parse::<IpAddr>().is_ok() {
+        return None;
+    }
+    instance(name).or_else(|| name.split('.').next())
+}
+
+/// Two names reach one computer when equal or advertised under the same Bonjour name.
+pub fn same_host(a: &str, b: &str) -> bool {
+    let (a, b) = (named(a), named(b));
+    a.eq_ignore_ascii_case(&b)
+        || matches!((advertised(&a), advertised(&b)), (Some(a), Some(b)) if a.eq_ignore_ascii_case(b))
 }
 
 fn device_model(instance: &str, deadline: Instant) -> Option<String> {
@@ -394,10 +408,11 @@ unsafe extern "C" fn browsed(
     let children = unsafe { Retained::from_raw((sharing.children)(browser, node)) };
     for child in children.iter().flat_map(|children| children.iter()) {
         let url = unsafe { Retained::from_raw((sharing.url)(&*child)) };
+        let name = unsafe { Retained::from_raw((sharing.name)(&*child)) };
         let model = unsafe { Retained::from_raw((sharing.model)(&*child)) };
-        if let Some(host) = url.and_then(|url| url.host()) {
-            let said = model.map_or(Said::Unknown, |model| Said::Model(model.to_string()));
-            tx.send((host.to_string(), said)).ok();
+        let said = model.map_or(Said::Unknown, |model| Said::Model(model.to_string()));
+        for known in [url.and_then(|url| url.host()), name].into_iter().flatten() {
+            tx.send((known.to_string(), said.clone())).ok();
         }
     }
 }
@@ -492,7 +507,25 @@ mod tests {
         assert_eq!(name, "NG Alex’s Mini._smb._tcp.local");
         assert_eq!(instance(&name), Some("NG Alex’s Mini"));
         assert_eq!(instance(&named("ng-mini.local")), None);
+        assert_eq!(advertised("ng-mini.local"), Some("ng-mini"));
+        assert_eq!(advertised(&name), Some("NG Alex’s Mini"));
+        assert_eq!(advertised("192.0.2.62"), None);
         assert_eq!(named("100%"), "100%");
+    }
+
+    #[test]
+    fn a_server_is_one_host_under_every_name_it_answers_to() {
+        for other in [
+            "Bakery",
+            "bakery.local",
+            "Bakery._smb._tcp.local",
+            "bakery.ts.net",
+        ] {
+            assert!(same_host("BAKERY.local", other), "{other}");
+        }
+        assert!(same_host("192.0.2.62", "192.0.2.62"));
+        assert!(!same_host("192.0.2.62", "192.0.2.63"));
+        assert!(!same_host("bakery.local", "nas.local"));
     }
 
     #[test]
