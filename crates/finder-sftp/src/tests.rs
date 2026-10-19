@@ -87,6 +87,9 @@ fn lists_entries_with_attributes_and_without_dots() {
     assert_eq!(server.stat(&link).unwrap().kind(), Kind::Symlink);
     assert_eq!(server.stat_follow(&link).unwrap().kind(), Kind::File);
     assert_eq!(server.readlink(&link).unwrap(), "five");
+    let made = format!("{}/made", path(&dir));
+    server.symlink("folder", &made).unwrap();
+    assert_eq!(fs::read_link(&made).unwrap(), Path::new("folder"));
     fs::remove_dir_all(&dir).unwrap();
 }
 

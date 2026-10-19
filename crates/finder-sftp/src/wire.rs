@@ -17,6 +17,7 @@ pub(crate) const REALPATH: u8 = 16;
 pub(crate) const STAT: u8 = 17;
 pub(crate) const RENAME: u8 = 18;
 pub(crate) const READLINK: u8 = 19;
+pub(crate) const SYMLINK: u8 = 20;
 pub(crate) const EXTENDED: u8 = 200;
 
 const STATUS: u8 = 101;

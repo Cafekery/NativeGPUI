@@ -323,6 +323,11 @@ impl Server {
         self.call(Packet::new(READLINK).str(path))?.name()
     }
 
+    /// OpenSSH takes the target first, the reverse of the draft it implements.
+    pub fn symlink(&self, target: &str, link: &str) -> Result<(), Error> {
+        self.call(Packet::new(SYMLINK).str(target).str(link))?.ok()
+    }
+
     pub fn realpath(&self, path: &str) -> Result<String, Error> {
         self.call(Packet::new(REALPATH).str(path))?.name()
     }

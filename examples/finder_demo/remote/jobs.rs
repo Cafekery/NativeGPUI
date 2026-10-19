@@ -141,6 +141,7 @@ enum Place {
 enum Node {
     File { size: u64, mtime: Option<u32> },
     Dir,
+    Link,
     Other,
 }
 
@@ -234,6 +235,7 @@ impl Place {
                         mtime: meta.mtime().try_into().ok(),
                     },
                     Ok(meta) if meta.is_dir() && !link => Node::Dir,
+                    _ if link => Node::Link,
                     _ => Node::Other,
                 }))
             }
@@ -242,9 +244,9 @@ impl Place {
                     return Ok(None);
                 };
                 if attrs.kind() == Kind::Symlink {
-                    attrs = server.stat_follow(path)?;
-                    if attrs.kind() == Kind::Dir {
-                        return Ok(Some(Node::Other));
+                    match server.stat_follow(path) {
+                        Ok(target) if target.kind() != Kind::Dir => attrs = target,
+                        _ => return Ok(Some(Node::Link)),
                     }
                 }
                 Ok(Some(match attrs.kind() {
@@ -269,6 +271,20 @@ impl Place {
                 .into_iter()
                 .map(|entry| entry.name)
                 .collect()),
+        }
+    }
+
+    fn read_link(&self) -> Result<PathBuf, Error> {
+        match self {
+            Place::Here(path) => Ok(fs::read_link(path)?),
+            Place::There { server, path, .. } => Ok(server.readlink(path)?.into()),
+        }
+    }
+
+    fn symlink(&self, target: &Path) -> Result<(), Error> {
+        match self {
+            Place::Here(path) => Ok(std::os::unix::fs::symlink(target, path)?),
+            Place::There { server, path, .. } => server.symlink(&target.to_string_lossy(), path),
         }
     }
 
@@ -364,6 +380,7 @@ struct Step {
     from: Place,
     to: Place,
     size: Option<u64>,
+    link: bool,
 }
 
 struct Run {
@@ -568,9 +585,17 @@ impl Run {
             .node()?
             .ok_or_else(|| io::Error::from(ErrorKind::NotFound))?;
         let size = match node {
-            Node::Dir => None,
+            Node::Dir | Node::Link => None,
             Node::File { size, .. } => Some(size),
-            Node::Other => return Ok(()),
+            Node::Other => {
+                let why = format!(
+                    "The item \u{201c}{}\u{201d} can't be copied because it isn't a file or a folder.",
+                    from.name()
+                );
+                let error = io::Error::new(ErrorKind::Unsupported, why);
+                self.failed(from, to, error.into());
+                return Ok(());
+            }
         };
         {
             let mut progress = self.state.progress.lock();
@@ -582,6 +607,7 @@ impl Run {
             from: from.clone(),
             to: to.clone(),
             size,
+            link: node == Node::Link,
         });
         if node == Node::Dir {
             for name in from.children()? {
@@ -592,6 +618,9 @@ impl Run {
     }
 
     fn step(&mut self, step: &Step) -> Result<(), Error> {
+        if step.link {
+            return step.to.symlink(&step.from.read_link()?);
+        }
         let Some(size) = step.size else {
             return step.to.mkdir();
         };
