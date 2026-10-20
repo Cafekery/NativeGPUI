@@ -131,7 +131,6 @@ fn sweep_thumbnails() {
         LARGEST.with_borrow_mut(|largest| largest.retain(|(path, _), _| drawn.contains(path)));
         RETRY.with_borrow_mut(|retry| retry.retain(|(path, _, _, _), _| drawn.contains(path)));
     }
-    crate::remote::prune_fetches(&drawn);
     let paths: Vec<PathBuf> = drawn.iter().filter_map(|path| local_path(path)).collect();
     thumbnails::cancel_thumbnails_outside(&paths);
 }

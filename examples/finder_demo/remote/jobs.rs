@@ -123,7 +123,7 @@ pub(crate) fn cached(id: &str) -> Option<PathBuf> {
     Some(cache_root().join(host).join(path))
 }
 
-fn cache_root() -> PathBuf {
+pub(super) fn cache_root() -> PathBuf {
     crate::home().join("Library/Caches/dev.cafekery.founder/sftp")
 }
 

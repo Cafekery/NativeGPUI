@@ -1,9 +1,11 @@
+mod ahead;
 mod jobs;
 mod preview;
 mod promise;
 
+pub(crate) use self::ahead::leave;
 pub(crate) use self::jobs::{Ended, Jobs, cached};
-pub(crate) use self::preview::{cached_copy, prune_fetches};
+pub(crate) use self::preview::cached_copy;
 pub(crate) use self::promise::{cache, file_provider, prefetch};
 
 use std::collections::{HashSet, VecDeque};

@@ -566,6 +566,7 @@ impl FinderDemo {
     }
 
     fn enter(&mut self, cx: &mut Context<Self>) {
+        crate::remote::leave(cx.entity_id());
         self.deselect();
         self.query = Search::default();
         self.raw_query = None;

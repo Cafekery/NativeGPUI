@@ -557,7 +557,12 @@ impl FinderDemo {
             (_, Some(row)) if self.view == GALLERY_VIEW => {
                 vec![thumb(row, HEADER_ICON, self.scale, true, true)]
             }
-            (_, Some(row)) => vec![thumb(row, self.hero_side(content), self.scale, true, false)],
+            (_, Some(row)) => {
+                let side = self.hero_side(content);
+                self.hero_pixels
+                    .set(Some((side * self.scale).round() as u32));
+                vec![thumb(row, side, self.scale, true, false)]
+            }
             _ => Vec::new(),
         };
         CardKey {
@@ -596,7 +601,7 @@ impl FinderDemo {
         }
     }
 
-    fn hero_side(&self, content: f32) -> f32 {
+    pub(crate) fn hero_side(&self, content: f32) -> f32 {
         content.max(hero_h(self.pane_h, content))
     }
 

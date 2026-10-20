@@ -238,6 +238,9 @@ fn finder_window(
                 })
                 .detach();
                 preview::close_with_finder(cx);
+                let owner = cx.entity_id();
+                cx.on_release(move |_, _| crate::remote::leave(owner))
+                    .detach();
                 let mut demo = FinderDemo::new(start, cx);
                 demo.icons.sized = remember;
                 demo

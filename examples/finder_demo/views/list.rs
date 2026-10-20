@@ -1,6 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::mem;
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
@@ -8,7 +9,7 @@ use std::time::Instant;
 use gpui::{
     AnyElement, AnyView, App, ClickEvent, Context, Div, Entity, Font, FontWeight, Hsla,
     MouseButton, MouseDownEvent, Pixels, Point, SharedString, Stateful, StyleRefinement,
-    WeakEntity, Window, div, prelude::*, px, uniform_list,
+    UniformListScrollHandle, WeakEntity, Window, div, prelude::*, px, uniform_list,
 };
 use native_gpui::native_tooltip;
 use native_gpui::tokens::{self, SystemColor};
@@ -415,6 +416,14 @@ impl FinderDemo {
         // The count and the rows it indexes come from one read: a second read can be shorter.
         let (tails, trim) = pad_rows(LIST_END_GAP, look.row_h);
         let items = pads + count + tails;
+        let owner = cx.entity_id();
+        if let Some(lookout) = self.lookout(owner, self.here(), &lines, icon, self.previews.list) {
+            let mut shown = (self.seen_items(&self.scroll, look.row_h, items))
+                .filter_map(|index| index.checked_sub(pads).filter(|at| *at < count))
+                .filter_map(|at| slot_line(&slots, at));
+            let first = shown.next();
+            lookout.saw(first.map_or(0..0, |first| first..shown.next_back().unwrap_or(first) + 1));
+        }
         let list = uniform_list("ng.finder.list", items, move |range, window, cx| {
             let selected = |index: usize| {
                 index
@@ -490,6 +499,26 @@ impl FinderDemo {
                 }),
             )
             .into_any_element()
+    }
+
+    /// From the scroll offset, not the list's own range: it also asks for row 0 to measure it.
+    pub(crate) fn seen_items(
+        &self,
+        handle: &UniformListScrollHandle,
+        row_h: f32,
+        items: usize,
+    ) -> Range<usize> {
+        let state = handle.0.borrow();
+        let top = -f32::from(state.base_handle.offset().y);
+        let tall = f32::from(state.base_handle.bounds().size.height);
+        let tall = if tall > 0. {
+            tall
+        } else {
+            f32::from(self.viewport.height)
+        };
+        let first = (top / row_h).floor().max(0.) as usize;
+        let end = ((top + tall) / row_h).ceil().max(0.) as usize;
+        first.min(items)..end.min(items)
     }
 
     fn row_at(

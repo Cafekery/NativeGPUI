@@ -1,8 +1,8 @@
-use std::collections::HashSet;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use finder_sftp::{Error, Server};
@@ -19,10 +19,12 @@ fn limit(face: Face) -> u64 {
     }
 }
 const WORKERS: usize = 4;
+const WHOLE_LANES: usize = 2;
+const LANE_RANK: f32 = 3.;
 const SMALL: u32 = 160;
 /// An EXIF segment is at most 64 KB, so the thumbnail ends inside this.
 const HEAD: u64 = 72 << 10;
-const SHOWN: [Face; 9] = [
+pub(super) const SHOWN: [Face; 9] = [
     Face::Image,
     Face::Movie,
     Face::Pdf,
@@ -34,8 +36,8 @@ const SHOWN: [Face; 9] = [
     Face::Web,
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum Want {
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(super) enum Want {
     Whole,
     Small,
     Large,
@@ -49,86 +51,192 @@ enum Embedded {
 
 type Key = (SharedString, u64, Want);
 
-static ASKED: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(Default::default);
-static QUEUE: Mutex<Vec<(Key, PathBuf, bool)>> = Mutex::new(Vec::new());
-static BUSY: AtomicUsize = AtomicUsize::new(0);
+pub(super) struct Tier {
+    pub(super) want: Want,
+    local: PathBuf,
+    pub(super) ready: bool,
+}
 
-pub(crate) fn cached_copy(row: &Row, pixels: u32) -> Option<PathBuf> {
+pub(super) struct Job {
+    key: Key,
+    local: PathBuf,
+    bytes: u64,
+    rank: f32,
+    folder: Option<&'static str>,
+    order: u64,
+}
+
+impl Job {
+    fn lane(&self) -> bool {
+        self.key.2 == Want::Whole && self.rank >= LANE_RANK
+    }
+}
+
+struct Running {
+    key: Key,
+    local: PathBuf,
+    lane: bool,
+}
+
+#[derive(Default)]
+struct Queue {
+    waiting: HashMap<Key, Job>,
+    running: Vec<Running>,
+    failed: HashSet<Key>,
+    workers: usize,
+    order: u64,
+}
+
+impl Queue {
+    fn asked(&self, key: &Key) -> bool {
+        self.failed.contains(key) || self.running.iter().any(|running| &running.key == key)
+    }
+
+    fn staff(&mut self) {
+        while self.workers < WORKERS && self.workers < self.running.len() + self.waiting.len() {
+            self.workers += 1;
+            thread::spawn(work);
+        }
+    }
+
+    fn take(&mut self) -> Option<(Key, PathBuf, u64)> {
+        let full = self.running.iter().filter(|running| running.lane).count() >= WHOLE_LANES;
+        let key = (self.waiting.values())
+            .filter(|job| !(full && job.lane()))
+            .min_by(|a, b| a.rank.total_cmp(&b.rank).then(b.order.cmp(&a.order)))?
+            .key
+            .clone();
+        let job = self.waiting.remove(&key)?;
+        self.running.push(Running {
+            key: job.key.clone(),
+            local: job.local.clone(),
+            lane: job.lane(),
+        });
+        Some((job.key, job.local, job.bytes))
+    }
+}
+
+static QUEUE: LazyLock<Mutex<Queue>> = LazyLock::new(Default::default);
+
+pub(super) fn tier(row: &Row, pixels: u32) -> Option<Tier> {
     if !SHOWN.contains(&row.face) {
         return None;
     }
     let whole = cached(&row.path)?;
     if fresh(&whole, row, true) {
-        return Some(whole);
+        return Some(Tier {
+            want: Want::Whole,
+            local: whole,
+            ready: true,
+        });
     }
     let want = match (embedded(&row.path), pixels <= SMALL) {
         (Some(_), true) => Want::Small,
         (Some(Embedded::Raf), false) => Want::Large,
         _ => Want::Whole,
     };
-    if want == Want::Small && embedded(&row.path) == Some(Embedded::Raf) {
-        let large = sidecar(whole.clone(), "large");
-        if !fresh(&large, row, false) {
-            fetch(row, Want::Large, large, true);
-        }
-    }
     let local = match want {
         Want::Whole if row.bytes > limit(row.face) => return None,
         Want::Whole => whole,
         Want::Small => sidecar(whole, "small"),
         Want::Large => sidecar(whole, "large"),
     };
-    if want != Want::Whole && fresh(&local, row, false) {
-        return Some(local);
+    let ready = want != Want::Whole && fresh(&local, row, false);
+    Some(Tier { want, local, ready })
+}
+
+pub(crate) fn cached_copy(row: &Row, pixels: u32) -> Option<PathBuf> {
+    let tier = tier(row, pixels)?;
+    if tier.want == Want::Small && embedded(&row.path) == Some(Embedded::Raf) {
+        let large = sidecar(cached(&row.path)?, "large");
+        if !fresh(&large, row, false) {
+            ask(job(row, Want::Large, large, LANE_RANK, None));
+        }
     }
-    fetch(row, want, local, false);
+    if tier.ready {
+        return Some(tier.local);
+    }
+    ask(job(row, tier.want, tier.local, 0., None));
     None
 }
 
-/// `ahead` fetches wait behind everything a view is drawing right now.
-fn fetch(row: &Row, want: Want, local: PathBuf, ahead: bool) {
-    let key = (row.path.clone(), row.modified_at.to_bits(), want);
+pub(super) fn planned(row: &Row, tier: Tier, rank: f32, folder: &'static str) -> Job {
+    job(row, tier.want, tier.local, rank, Some(folder))
+}
+
+fn job(row: &Row, want: Want, local: PathBuf, rank: f32, folder: Option<&'static str>) -> Job {
+    Job {
+        key: (row.path.clone(), row.modified_at.to_bits(), want),
+        local,
+        bytes: row.bytes,
+        rank,
+        folder,
+        order: 0,
+    }
+}
+
+fn ask(mut job: Job) {
     let mut queue = QUEUE.lock();
-    if !ASKED.lock().insert(key.clone()) {
-        if let Some(item) = queue.iter_mut().find(|item| item.0 == key) {
-            item.2 &= ahead;
-        }
+    if let Some(held) = queue.waiting.get_mut(&job.key) {
+        held.rank = held.rank.min(job.rank);
         return;
     }
-    queue.push((key, local, ahead));
-    if BUSY.fetch_add(1, Ordering::Relaxed) < WORKERS {
-        thread::spawn(work);
-    } else {
-        BUSY.fetch_sub(1, Ordering::Relaxed);
+    if queue.asked(&job.key) {
+        return;
     }
+    queue.order += 1;
+    job.order = queue.order;
+    queue.waiting.insert(job.key.clone(), job);
+    queue.staff();
 }
 
-fn next() -> Option<(Key, PathBuf)> {
+pub(super) fn replan(folder: &'static str, jobs: Vec<Job>) {
     let mut queue = QUEUE.lock();
-    let at = queue
-        .iter()
-        .rposition(|item| !item.2)
-        .or(queue.len().checked_sub(1))?;
-    let (key, local, _) = queue.remove(at);
-    Some((key, local))
-}
-
-pub(crate) fn prune_fetches(drawn: &HashSet<SharedString>) {
-    let mut queue = QUEUE.lock();
-    let mut asked = ASKED.lock();
-    queue.retain(|(key, ..)| {
-        let kept = drawn.contains(&key.0);
-        if !kept {
-            asked.remove(key);
+    queue.waiting.retain(|_, job| job.folder != Some(folder));
+    for mut job in jobs {
+        if queue.asked(&job.key) {
+            continue;
         }
-        kept
-    });
+        queue.order += 1;
+        let order = queue.order;
+        match queue.waiting.entry(job.key.clone()) {
+            Entry::Occupied(mut held) => {
+                let held = held.get_mut();
+                held.rank = held.rank.min(job.rank);
+                held.folder = held.folder.or(Some(folder));
+            }
+            Entry::Vacant(vacant) => {
+                job.order = order;
+                vacant.insert(job);
+            }
+        }
+    }
+    queue.staff();
+}
+
+pub(super) fn idle() -> bool {
+    let queue = QUEUE.lock();
+    queue.waiting.is_empty() && queue.running.is_empty()
+}
+
+pub(super) fn fetching() -> Vec<PathBuf> {
+    let running: Vec<(SharedString, PathBuf)> = (QUEUE.lock().running.iter())
+        .map(|running| (running.key.0.clone(), running.local.clone()))
+        .collect();
+    (running.into_iter())
+        .flat_map(|(path, local)| [Some(local), cached(&path)])
+        .flatten()
+        .collect()
 }
 
 pub(super) fn fresh(local: &Path, row: &Row, whole: bool) -> bool {
+    current(local, whole.then_some(row.bytes), row.modified_at)
+}
+
+fn current(local: &Path, bytes: Option<u64>, modified: f64) -> bool {
     fs::metadata(local).ok().is_some_and(|meta| {
-        (!whole || meta.len() == row.bytes)
-            && meta.modified().ok().map(reference_seconds) == Some(row.modified_at)
+        bytes.is_none_or(|bytes| meta.len() == bytes)
+            && meta.modified().ok().map(reference_seconds) == Some(modified)
     })
 }
 
@@ -152,38 +260,57 @@ fn embedded(path: &str) -> Option<Embedded> {
 }
 
 fn work() {
-    while let Some((key, local)) = next() {
-        let fetched = connected(&key.0)
-            .ok_or(Error::Disconnected)
-            .and_then(|server| {
-                if let Some(parent) = local.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                let remote = split(&key.0).1;
-                let embedded = match key.2 {
-                    Want::Whole => None,
-                    want => preview(&server.server, remote, want).ok(),
-                };
-                let Some(bytes) = embedded else {
-                    let whole = cached(&key.0).ok_or(Error::Disconnected)?;
-                    return server.server.download(remote, &whole, &mut |_, _| true);
-                };
-                fs::write(&local, bytes)?;
-                File::open(&local)?.set_modified(reference_time(f64::from_bits(key.1)))?;
-                Ok(())
-            });
+    loop {
+        let mut queue = QUEUE.lock();
+        let Some((key, local, bytes)) = queue.take() else {
+            queue.workers -= 1;
+            let idle = queue.workers == 0 && queue.waiting.is_empty();
+            drop(queue);
+            if idle {
+                super::ahead::idle();
+            }
+            return;
+        };
+        drop(queue);
+        let modified = f64::from_bits(key.1);
+        let whole = key.2 == Want::Whole;
+        let fetched = if current(&local, whole.then_some(bytes), modified) {
+            Ok(false)
+        } else {
+            fetch(&key, &local).map(|()| true)
+        };
+        let mut queue = QUEUE.lock();
+        queue.running.retain(|running| running.key != key);
         match fetched {
-            Ok(()) => {
-                ASKED.lock().remove(&key);
-                crate::thumbs::wake();
+            Ok(_) | Err(Error::Disconnected) => {}
+            Err(_) => {
+                queue.failed.insert(key);
             }
-            Err(Error::Disconnected) => {
-                ASKED.lock().remove(&key);
-            }
-            Err(_) => {}
+        }
+        drop(queue);
+        if let Ok(true) = fetched {
+            crate::thumbs::wake();
         }
     }
-    BUSY.fetch_sub(1, Ordering::Relaxed);
+}
+
+fn fetch(key: &Key, local: &Path) -> Result<(), Error> {
+    let server = connected(&key.0).ok_or(Error::Disconnected)?;
+    if let Some(parent) = local.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let remote = split(&key.0).1;
+    let embedded = match key.2 {
+        Want::Whole => None,
+        want => preview(&server.server, remote, want).ok(),
+    };
+    let Some(bytes) = embedded else {
+        let whole = cached(&key.0).ok_or(Error::Disconnected)?;
+        return server.server.download(remote, &whole, &mut |_, _| true);
+    };
+    fs::write(local, bytes)?;
+    File::open(local)?.set_modified(reference_time(f64::from_bits(key.1)))?;
+    Ok(())
 }
 
 fn preview(server: &Server, remote: &str, want: Want) -> Result<Vec<u8>, Error> {
