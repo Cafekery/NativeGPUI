@@ -319,7 +319,9 @@ fn walk(dir: &Path, files: &mut Vec<(PathBuf, SystemTime, u64)>) {
         return;
     };
     for entry in entries.flatten() {
-        if entry.file_name().to_string_lossy().starts_with(".relay") {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(".relay") || name.contains(".part.") {
             continue;
         }
         let (Ok(meta), path) = (entry.metadata(), entry.path()) else {

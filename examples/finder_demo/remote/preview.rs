@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
 use finder_sftp::{Error, Server};
@@ -206,7 +207,7 @@ pub(super) fn idle() -> bool {
 
 pub(super) fn fetching() -> Vec<PathBuf> {
     (QUEUE.lock().running.iter())
-        .flat_map(|running| [running.local.clone(), part(&running.local)])
+        .map(|running| running.local.clone())
         .collect()
 }
 
@@ -231,10 +232,23 @@ fn sidecar(whole: PathBuf, tier: &str) -> PathBuf {
     path.into()
 }
 
-pub(super) fn part(local: &Path) -> PathBuf {
+fn part(local: &Path) -> PathBuf {
+    static STAGED: AtomicU64 = AtomicU64::new(0);
     let mut path = local.as_os_str().to_owned();
-    path.push(".part");
+    path.push(format!(".part.{}", STAGED.fetch_add(1, Ordering::Relaxed)));
     path.into()
+}
+
+pub(super) fn stage(
+    local: &Path,
+    download: impl FnOnce(&Path) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let part = part(local);
+    let staged = download(&part).and_then(|()| Ok(fs::rename(&part, local)?));
+    if staged.is_err() {
+        let _ = fs::remove_file(&part);
+    }
+    staged
 }
 
 fn embedded(path: &str) -> Option<Embedded> {
@@ -291,9 +305,9 @@ fn fetch(key: &Key, local: &Path) -> Result<(), Error> {
     }
     let remote = split(&key.0).1;
     if key.2 == Want::Whole {
-        let part = part(local);
-        server.server.download(remote, &part, &mut |_, _| true)?;
-        return Ok(fs::rename(part, local)?);
+        return stage(local, |part| {
+            server.server.download(remote, part, &mut |_, _| true)
+        });
     }
     let Some(bytes) = preview(&server.server, remote, key.2)? else {
         QUEUE.lock().bare.insert(key.clone());

@@ -22,7 +22,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSArray, NSError, NSObject, NSPoint, NSRect, NSSize, NSString, NSURL};
 
-use super::preview::{fresh, part};
+use super::preview::{fresh, stage};
 use super::{Then, connected, jobs::cached, split};
 use crate::app::FinderDemo;
 use crate::data::{Row, split_key};
@@ -60,9 +60,9 @@ impl Cache {
         }
         let remote = split(&self.id).1;
         let mut going = |_, _| !self.stop.load(Ordering::Relaxed);
-        let part = part(&self.local);
-        server.server.download(remote, &part, &mut going)?;
-        Ok(fs::rename(part, &self.local)?)
+        stage(&self.local, |part| {
+            server.server.download(remote, part, &mut going)
+        })
     }
 }
 
