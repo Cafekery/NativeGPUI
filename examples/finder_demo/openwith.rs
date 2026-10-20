@@ -148,7 +148,6 @@ pub(crate) fn launch(app: &Path) -> Result<(), String> {
     };
     let (tx, rx) = std::sync::mpsc::channel();
     let done = RcBlock::new(move |_: *mut NSRunningApplication, error: *mut NSError| {
-        // SAFETY: AppKit passes a live NSError or null.
         let error = unsafe { error.as_ref() }.map(|error| error.localizedDescription().to_string());
         tx.send(error).ok();
     });

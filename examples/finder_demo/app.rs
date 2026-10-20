@@ -172,7 +172,7 @@ pub(crate) struct FinderDemo {
     pub(crate) jobs: Vec<jobs::JobRow>,
     pub(crate) remote_jobs: crate::remote::Jobs,
     pub(crate) weighing: HashMap<&'static str, gpui::Task<()>>,
-    pub(crate) hero_pixels: Rc<Cell<Option<u32>>>,
+    pub(crate) shown_hero: Cell<Option<f32>>,
 }
 
 impl FinderDemo {
@@ -340,7 +340,7 @@ impl FinderDemo {
             jobs: Vec::new(),
             remote_jobs: crate::remote::Jobs::default(),
             weighing: HashMap::new(),
-            hero_pixels: Rc::default(),
+            shown_hero: Cell::new(None),
         };
         this.set_order(this.view_sort(this.view));
         this.load_columns();

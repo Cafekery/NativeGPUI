@@ -36,7 +36,7 @@ pub(super) const SHOWN: [Face; 9] = [
     Face::Web,
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Want {
     Whole,
     Small,
@@ -53,10 +53,11 @@ type Key = (SharedString, u64, Want);
 
 pub(super) struct Tier {
     pub(super) want: Want,
-    local: PathBuf,
+    pub(super) local: PathBuf,
     pub(super) ready: bool,
 }
 
+#[derive(Clone)]
 pub(super) struct Job {
     key: Key,
     local: PathBuf,
@@ -72,16 +73,10 @@ impl Job {
     }
 }
 
-struct Running {
-    key: Key,
-    local: PathBuf,
-    lane: bool,
-}
-
 #[derive(Default)]
 struct Queue {
     waiting: HashMap<Key, Job>,
-    running: Vec<Running>,
+    running: Vec<Job>,
     failed: HashSet<Key>,
     bare: HashSet<Key>,
     workers: usize,
@@ -89,31 +84,38 @@ struct Queue {
 }
 
 impl Queue {
-    fn asked(&self, key: &Key) -> bool {
-        self.failed.contains(key) || self.running.iter().any(|running| &running.key == key)
-    }
-
-    fn staff(&mut self) {
+    fn add(&mut self, mut job: Job) {
+        if self.failed.contains(&job.key) || self.running.iter().any(|run| run.key == job.key) {
+            return;
+        }
+        match self.waiting.entry(job.key.clone()) {
+            Entry::Occupied(mut held) => {
+                let held = held.get_mut();
+                held.rank = held.rank.min(job.rank);
+                held.folder = held.folder.or(job.folder);
+            }
+            Entry::Vacant(vacant) => {
+                self.order += 1;
+                job.order = self.order;
+                vacant.insert(job);
+            }
+        }
         while self.workers < WORKERS && self.workers < self.running.len() + self.waiting.len() {
             self.workers += 1;
             thread::spawn(work);
         }
     }
 
-    fn take(&mut self) -> Option<(Key, PathBuf, u64)> {
-        let full = self.running.iter().filter(|running| running.lane).count() >= WHOLE_LANES;
+    fn take(&mut self) -> Option<Job> {
+        let full = self.running.iter().filter(|run| run.lane()).count() >= WHOLE_LANES;
         let key = (self.waiting.values())
             .filter(|job| !(full && job.lane()))
             .min_by(|a, b| a.rank.total_cmp(&b.rank).then(b.order.cmp(&a.order)))?
             .key
             .clone();
         let job = self.waiting.remove(&key)?;
-        self.running.push(Running {
-            key: job.key.clone(),
-            local: job.local.clone(),
-            lane: job.lane(),
-        });
-        Some((job.key, job.local, job.bytes))
+        self.running.push(job.clone());
+        Some(job)
     }
 }
 
@@ -136,8 +138,7 @@ pub(super) fn tier(row: &Row, pixels: u32) -> Option<Tier> {
         (Some(Embedded::Raf), false) => Want::Large,
         _ => Want::Whole,
     };
-    let key = (row.path.clone(), row.modified_at.to_bits(), want);
-    let want = if QUEUE.lock().bare.contains(&key) {
+    let want = if QUEUE.lock().bare.contains(&key(row, want)) {
         Want::Whole
     } else {
         want
@@ -157,23 +158,31 @@ pub(crate) fn cached_copy(row: &Row, pixels: u32) -> Option<PathBuf> {
     if tier.want == Want::Small && embedded(&row.path) == Some(Embedded::Raf) {
         let large = sidecar(cached(&row.path)?, "large");
         if !fresh(&large, row, false) {
-            ask(job(row, Want::Large, large, LANE_RANK, None));
+            QUEUE
+                .lock()
+                .add(job(row, Want::Large, large, LANE_RANK, None));
         }
     }
     if tier.ready {
         return Some(tier.local);
     }
-    ask(job(row, tier.want, tier.local, 0., None));
+    QUEUE.lock().add(job(row, tier.want, tier.local, 0., None));
     None
 }
 
-pub(super) fn planned(row: &Row, tier: Tier, rank: f32, folder: &'static str) -> Job {
-    job(row, tier.want, tier.local, rank, Some(folder))
+fn key(row: &Row, want: Want) -> Key {
+    (row.path.clone(), row.modified_at.to_bits(), want)
 }
 
-fn job(row: &Row, want: Want, local: PathBuf, rank: f32, folder: Option<&'static str>) -> Job {
+pub(super) fn job(
+    row: &Row,
+    want: Want,
+    local: PathBuf,
+    rank: f32,
+    folder: Option<&'static str>,
+) -> Job {
     Job {
-        key: (row.path.clone(), row.modified_at.to_bits(), want),
+        key: key(row, want),
         local,
         bytes: row.bytes,
         rank,
@@ -182,43 +191,12 @@ fn job(row: &Row, want: Want, local: PathBuf, rank: f32, folder: Option<&'static
     }
 }
 
-fn ask(mut job: Job) {
-    let mut queue = QUEUE.lock();
-    if let Some(held) = queue.waiting.get_mut(&job.key) {
-        held.rank = held.rank.min(job.rank);
-        return;
-    }
-    if queue.asked(&job.key) {
-        return;
-    }
-    queue.order += 1;
-    job.order = queue.order;
-    queue.waiting.insert(job.key.clone(), job);
-    queue.staff();
-}
-
 pub(super) fn replan(folder: &'static str, jobs: Vec<Job>) {
     let mut queue = QUEUE.lock();
     queue.waiting.retain(|_, job| job.folder != Some(folder));
-    for mut job in jobs {
-        if queue.asked(&job.key) {
-            continue;
-        }
-        queue.order += 1;
-        let order = queue.order;
-        match queue.waiting.entry(job.key.clone()) {
-            Entry::Occupied(mut held) => {
-                let held = held.get_mut();
-                held.rank = held.rank.min(job.rank);
-                held.folder = held.folder.or(Some(folder));
-            }
-            Entry::Vacant(vacant) => {
-                job.order = order;
-                vacant.insert(job);
-            }
-        }
+    for job in jobs {
+        queue.add(job);
     }
-    queue.staff();
 }
 
 pub(super) fn idle() -> bool {
@@ -275,9 +253,9 @@ fn embedded(path: &str) -> Option<Embedded> {
 fn work() {
     loop {
         let mut queue = QUEUE.lock();
-        let Some((key, local, bytes)) = queue.take() else {
+        let Some(job) = queue.take() else {
             queue.workers -= 1;
-            let idle = queue.workers == 0 && queue.waiting.is_empty();
+            let idle = queue.workers == 0;
             drop(queue);
             if idle {
                 super::ahead::idle();
@@ -285,19 +263,18 @@ fn work() {
             return;
         };
         drop(queue);
-        let modified = f64::from_bits(key.1);
-        let whole = key.2 == Want::Whole;
-        let fetched = if current(&local, whole.then_some(bytes), modified) {
+        let whole = job.key.2 == Want::Whole;
+        let modified = f64::from_bits(job.key.1);
+        let fetched = if current(&job.local, whole.then_some(job.bytes), modified) {
             Ok(false)
         } else {
-            fetch(&key, &local).map(|()| true)
+            fetch(&job.key, &job.local).map(|()| true)
         };
         let mut queue = QUEUE.lock();
-        queue.running.retain(|running| running.key != key);
-        match fetched {
-            Ok(_) | Err(Error::Disconnected) => {}
-            Err(_) => {
-                queue.failed.insert(key);
+        queue.running.retain(|run| run.key != job.key);
+        if let Err(error) = &fetched {
+            if !matches!(error, Error::Disconnected) {
+                queue.failed.insert(job.key);
             }
         }
         drop(queue);
@@ -320,7 +297,7 @@ fn fetch(key: &Key, local: &Path) -> Result<(), Error> {
     }
     let Some(bytes) = preview(&server.server, remote, key.2)? else {
         QUEUE.lock().bare.insert(key.clone());
-        super::ahead::replan();
+        super::ahead::replan_all();
         crate::thumbs::wake();
         return Err(Error::Protocol(format!("{remote} has no embedded preview")));
     };

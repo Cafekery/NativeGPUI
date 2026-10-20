@@ -202,7 +202,7 @@ impl FinderDemo {
         &self,
         index: usize,
         rung: &Rung,
-        (emphasized, watched): (bool, bool),
+        emphasized: bool,
         palette: &Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -213,12 +213,6 @@ impl FinderDemo {
         let look = self.column_look;
         let row_h = look.row_h();
         let handle = self.column_scrolls[index].clone();
-        let lookout = watched
-            .then(|| self.lookout(cx.entity_id(), folder, &rows, ICON, previews && look.icons))
-            .flatten();
-        if let Some(lookout) = lookout {
-            lookout.saw(self.seen_items(&handle, row_h, rows.len()));
-        }
         let this = cx.entity().downgrade();
         let hit_scroll = handle.clone();
         let stretch = self.bands.columns[index].shown().y;
@@ -631,9 +625,8 @@ impl FinderDemo {
     }
 
     fn preview_column(&self, line: &Line, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let side = self.hero_side(PREVIEW_W - 2. * PREVIEW_INSET);
-        self.hero_pixels
-            .set(Some((side * self.scale).round() as u32));
+        self.shown_hero
+            .set(Some(self.hero_side(PREVIEW_W - 2. * PREVIEW_INSET)));
         div()
             .id("ng.finder.column.preview")
             .min_w(px(PREVIEW_W))
@@ -678,24 +671,24 @@ impl FinderDemo {
             }
         }
         let focused = chain.iter().rposition(|rung| rung.selected.is_some());
-        let watched = focused.unwrap_or(chain.len().saturating_sub(1));
-        if chain
-            .get(watched)
-            .is_none_or(|rung| !crate::remote::is_remote(rung.folder))
-        {
-            crate::remote::leave(cx.entity_id());
-        }
         let mut columns: Vec<AnyElement> = chain
             .iter()
             .enumerate()
             .map(|(index, rung)| {
-                let marks = (Some(index) == focused, index == watched);
-                let column = self.browser_column(index, rung, marks, palette, cx);
+                let column = self.browser_column(index, rung, Some(index) == focused, palette, cx);
                 self.ruled(column, false, Some((index, rung.folder)), cx)
             })
             .collect();
         if let Some(leaf) = leaf.as_ref().filter(|_| self.preview) {
             columns.push(self.ruled(self.preview_column(leaf, palette, cx), true, None, cx));
+        }
+        let watched = focused.unwrap_or(chain.len().saturating_sub(1));
+        if let Some(rung) = chain.get(watched) {
+            let rows = self.column_listing(rung.folder);
+            let look = self.column_look;
+            let seen = self.seen_items(&self.column_scrolls[watched], look.row_h(), rows.len());
+            let previews = self.previews.column && look.icons;
+            self.report_scene(cx, rung.folder, &rows, seen, ICON, previews);
         }
 
         let depth = columns.len();

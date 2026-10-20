@@ -124,13 +124,9 @@ impl FinderDemo {
         };
         let seen = strip.seen(f32::from(self.strip.offset().x), room_w, lines.len());
         if hero.is_some() {
-            self.hero_pixels
-                .set(Some((size * self.scale).round() as u32));
+            self.shown_hero.set(Some(size));
         }
-        let owner = cx.entity_id();
-        if let Some(lookout) = self.lookout(owner, self.here(), &lines, strip.icon, previews) {
-            lookout.saw(seen.clone());
-        }
+        self.report_scene(cx, self.here(), &lines, seen.clone(), strip.icon, previews);
         let strip_row = div()
             .id("ng.finder.filmstrip")
             .h(px(strip.height()))

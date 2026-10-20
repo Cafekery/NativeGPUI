@@ -416,14 +416,10 @@ impl FinderDemo {
         // The count and the rows it indexes come from one read: a second read can be shorter.
         let (tails, trim) = pad_rows(LIST_END_GAP, look.row_h);
         let items = pads + count + tails;
-        let owner = cx.entity_id();
-        if let Some(lookout) = self.lookout(owner, self.here(), &lines, icon, self.previews.list) {
-            let mut shown = (self.seen_items(&self.scroll, look.row_h, items))
-                .filter_map(|index| index.checked_sub(pads).filter(|at| *at < count))
-                .filter_map(|at| slot_line(&slots, at));
-            let first = shown.next();
-            lookout.saw(first.map_or(0..0, |first| first..shown.next_back().unwrap_or(first) + 1));
-        }
+        let seen = (self.seen_items(&self.scroll, look.row_h, items))
+            .filter_map(|index| index.checked_sub(pads).filter(|at| *at < count))
+            .filter_map(|at| slot_line(&slots, at));
+        self.report_scene(cx, self.here(), &lines, seen, icon, self.previews.list);
         let list = uniform_list("ng.finder.list", items, move |range, window, cx| {
             let selected = |index: usize| {
                 index

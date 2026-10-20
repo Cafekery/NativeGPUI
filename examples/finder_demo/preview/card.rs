@@ -559,8 +559,7 @@ impl FinderDemo {
             }
             (_, Some(row)) => {
                 let side = self.hero_side(content);
-                self.hero_pixels
-                    .set(Some((side * self.scale).round() as u32));
+                self.shown_hero.set(Some(side));
                 vec![thumb(row, side, self.scale, true, false)]
             }
             _ => Vec::new(),

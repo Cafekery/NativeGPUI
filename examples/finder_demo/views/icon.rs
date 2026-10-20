@@ -1117,13 +1117,8 @@ impl FinderDemo {
         let top = -f32::from(self.icons.scroll.offset().y + inset);
         let tall = f32::from(window.viewport_size().height);
         let visible = layout.visible(top, tall);
-        let owner = cx.entity_id();
-        if let Some(lookout) =
-            self.lookout(owner, self.here(), &lines, options.size, paint.previews)
-        {
-            let seen = visible.first().zip(visible.last());
-            lookout.saw(seen.map_or(0..0, |(first, last)| *first..last + 1));
-        }
+        let seen = visible.iter().copied();
+        self.report_scene(cx, self.here(), &lines, seen, options.size, paint.previews);
         for index in visible {
             let line = &lines[index];
             let at = layout.tiles[index].1;
