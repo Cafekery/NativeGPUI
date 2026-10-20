@@ -631,9 +631,12 @@ impl FinderDemo {
                         }
                     }
                     crate::openwith::open_default(&documents);
-                    let refused = apps
-                        .iter()
-                        .find_map(|app| crate::openwith::launch(app).err());
+                    let refused = (apps.iter())
+                        .map(|app| crate::openwith::launch(app))
+                        .filter_map(Result::err)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .next();
                     let lost = lost
                         .into_iter()
                         .find(|link| std::fs::symlink_metadata(link).is_ok());

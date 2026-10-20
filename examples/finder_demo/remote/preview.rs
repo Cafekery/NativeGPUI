@@ -92,7 +92,7 @@ impl Queue {
             Entry::Occupied(mut held) => {
                 let held = held.get_mut();
                 held.rank = held.rank.min(job.rank);
-                held.folder = held.folder.or(job.folder);
+                held.folder = held.folder.and(job.folder);
             }
             Entry::Vacant(vacant) => {
                 self.order += 1;
@@ -231,7 +231,7 @@ fn sidecar(whole: PathBuf, tier: &str) -> PathBuf {
     path.into()
 }
 
-fn part(local: &Path) -> PathBuf {
+pub(super) fn part(local: &Path) -> PathBuf {
     let mut path = local.as_os_str().to_owned();
     path.push(".part");
     path.into()
