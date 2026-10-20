@@ -272,7 +272,7 @@ fn work() {
             let idle = queue.workers == 0;
             drop(queue);
             if idle {
-                super::ahead::idle();
+                super::ahead::replan_all();
             }
             return;
         };

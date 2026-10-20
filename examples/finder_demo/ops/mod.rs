@@ -114,7 +114,9 @@ impl FinderDemo {
     ) {
         let landed = results.iter().filter_map(|path| parent(path));
         for dir in touched.iter().map(PathBuf::as_path).chain(landed) {
-            self.read_folder(intern_path(dir), cx);
+            let dir = intern_path(dir);
+            crate::remote::forget_listings(dir);
+            self.read_folder(dir, cx);
         }
         if after == After::Reveal {
             cx.defer(move |cx| crate::navigate::reveal(&results, cx));

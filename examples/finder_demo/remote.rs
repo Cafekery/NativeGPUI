@@ -1,10 +1,12 @@
 mod ahead;
 mod jobs;
+mod listings;
 mod preview;
 mod promise;
 
 pub(crate) use self::ahead::leave;
 pub(crate) use self::jobs::{Ended, Jobs, cached};
+pub(crate) use self::listings::forget_listings;
 pub(crate) use self::preview::{cached_copy, whole_copy};
 pub(crate) use self::promise::{cache, file_provider, prefetch};
 
@@ -281,15 +283,15 @@ fn connect(address: Address, askpass: Option<&Path>) -> Result<&'static str, Err
 
 fn rows(server: &Server, dir: &'static str) -> Result<Vec<Arc<Row>>, Error> {
     let path = split(dir).1;
-    Ok(server
-        .list(path)?
-        .into_iter()
+    let rows: Vec<Arc<Row>> = (server.list(path)?.into_iter())
         .map(|entry| {
             let followed = (entry.attrs.kind() == Kind::Symlink)
                 .then(|| server.stat_follow(&join(path, &entry.name)).ok());
             row(dir, entry, followed)
         })
-        .collect())
+        .collect();
+    listings::store(dir, rows.clone());
+    Ok(rows)
 }
 
 pub(crate) fn find(
@@ -306,17 +308,18 @@ pub(crate) fn find(
         if stale() {
             return None;
         }
-        let Ok(rows) = rows(&server, dir) else {
+        let listed = listings::rows(dir).or_else(|| rows(&server, dir).ok().map(Arc::new));
+        let Some(listed) = listed else {
             continue;
         };
-        for row in rows {
+        for row in listed.iter() {
             if let Some(child) = row.opens.filter(|_| !row.hidden) {
                 if seen.insert(child) {
                     pending.push_back(child);
                 }
             }
-            if admits(&row) {
-                found.push(row);
+            if admits(row) {
+                found.push(row.clone());
                 if found.len() >= limit {
                     return Some(found);
                 }
@@ -444,25 +447,43 @@ impl FinderDemo {
         if fresh {
             self.folders.deliver(id, Vec::new(), true);
         }
+        let cached = listings::cached(id);
+        let (show, list) = listings::decide(cached.as_ref().map(|(_, age)| *age), !fresh);
+        let early = cached.filter(|_| show).map(|(rows, _)| rows);
         let order = self.order();
         let plain = self.plain();
+        let sorted = move |mut rows: Vec<Arc<Row>>| {
+            sort_rows(&mut rows, order, false, false);
+            let lines = plain.map(|hidden| (hidden, crate::listing::lines_of(&rows, hidden)));
+            (rows, lines)
+        };
         let server = connected(id).map(|connected| connected.server);
         cx.spawn(async move |this, cx| {
-            let read = cx
-                .background_executor()
-                .spawn(async move {
+            let read = list.then(|| {
+                cx.background_executor().spawn(async move {
                     let server = server.ok_or(Error::Disconnected)?;
                     // A link that dropped under the request fails it; the pool spawns a fresh session.
-                    let mut rows = match rows(&server, id) {
+                    let rows = match rows(&server, id) {
                         Err(Error::Disconnected) => rows(&server, id),
                         read => read,
                     }?;
-                    sort_rows(&mut rows, order, false, false);
-                    let lines =
-                        plain.map(|hidden| (hidden, crate::listing::lines_of(&rows, hidden)));
-                    Ok((rows, lines))
+                    Ok(sorted(rows))
                 })
-                .await;
+            });
+            if let Some(rows) = early {
+                let background = cx.background_executor();
+                let (rows, lines) = background.spawn(async move { sorted(rows.to_vec()) }).await;
+                let shown = this.update(cx, |this, cx| {
+                    this.deliver(id, Some(rows), lines, !list, order, cx)
+                });
+                if shown.is_err() {
+                    return;
+                }
+            }
+            let Some(read) = read else {
+                return;
+            };
+            let read = read.await;
             this.update(cx, |this, cx| match read {
                 Ok((rows, lines)) => this.deliver(id, Some(rows), lines, true, order, cx),
                 Err(error) => {
@@ -493,6 +514,7 @@ impl FinderDemo {
         };
         gone.server.disconnect();
         let root = root_of(prefix);
+        forget_listings(root);
         cx.defer(move |cx| {
             crate::settings::each_window(cx, |this, cx| {
                 for (id, _) in this.folders.held() {
