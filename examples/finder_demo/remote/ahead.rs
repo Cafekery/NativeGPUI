@@ -7,6 +7,7 @@ use std::sync::{Arc, LazyLock, Once};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use finder_fs::sort::name_cmp;
 use gpui::{Context, EntityId};
 use parking_lot::{Condvar, Mutex};
 
@@ -22,6 +23,8 @@ const CACHE_CAP: u64 = 4 << 30;
 const TRIM_EVERY: Duration = Duration::from_secs(600);
 const SETTLE: Duration = Duration::from_millis(50);
 const LIST_AHEAD: usize = 64;
+const PEEK: usize = 48;
+const PEEK_HEROES: usize = 3;
 
 #[derive(Clone)]
 struct Scene {
@@ -66,7 +69,7 @@ impl FinderDemo {
         cx: &Context<Self>,
         folder: &'static str,
         lines: &Arc<Vec<Line>>,
-        mut seen: impl DoubleEndedIterator<Item = usize>,
+        seen: impl Iterator<Item = usize>,
         side: f32,
         previews: bool,
     ) {
@@ -74,8 +77,10 @@ impl FinderDemo {
         if !super::is_remote(folder) {
             return leave(owner);
         }
-        let first = seen.next();
-        let seen = first.map_or(0..0, |first| first..seen.next_back().unwrap_or(first) + 1);
+        let seen = (seen.fold(None, |span: Option<Range<usize>>, at| {
+            Some(span.map_or(at..at + 1, |span| span.start.min(at)..span.end.max(at + 1)))
+        }))
+        .unwrap_or(0..0);
         let cursor = (self.cursor.as_ref()).and_then(|key| self.line_at(lines, key));
         let mut chosen: Vec<usize> = (self.selected.iter())
             .filter_map(|key| self.line_at(lines, key))
@@ -149,14 +154,17 @@ fn plan() {
             (scenes, changed)
         };
         for folder in changed {
-            let (mut jobs, mut lists) = (Vec::new(), Vec::new());
+            let (mut jobs, mut peeks, mut lists) = (Vec::new(), Vec::new(), Vec::new());
             for scene in scenes.iter().filter(|scene| scene.folder == folder) {
                 let planned = plan_scene(scene, heading(&mut headings, scene));
                 jobs.extend(planned.0);
-                lists.extend(planned.1);
+                peeks.extend(planned.1);
+                lists.extend(planned.2);
             }
             listings::want(folder, lists);
-            preview::replan(folder, jobs);
+            if !preview::replan(folder, jobs) {
+                preview::replan(folder, peeks);
+            }
         }
         if preview::idle() && trimmed.is_none_or(|at| at.elapsed() >= TRIM_EVERY) {
             trimmed = Some(Instant::now());
@@ -181,8 +189,8 @@ fn heading(headings: &mut HashMap<EntityId, (&'static str, usize, i8)>, scene: &
 
 type Wants = Vec<(&'static str, f32)>;
 
-/// The folder's own previews and the folders it leads to.
-fn plan_scene(scene: &Scene, direction: i8) -> (Vec<Job>, Wants) {
+/// The folder's own previews, previews inside the folders it leads to, and those folders to list.
+fn plan_scene(scene: &Scene, direction: i8) -> (Vec<Job>, Vec<Job>, Wants) {
     let lines = &scene.lines;
     let focus = Focus::new(scene.seen.clone(), &scene.chosen, direction);
     let mut picks = score(
@@ -218,7 +226,26 @@ fn plan_scene(scene: &Scene, direction: i8) -> (Vec<Job>, Wants) {
     }
     let parent = Some(super::parent(scene.folder)).filter(|id| super::is_remote(id));
     let lists = list_ahead(opens, &scene.history, parent);
-    (jobs, lists)
+    let mut peeks = Vec::new();
+    for &(id, first) in lists.iter().filter(|(_, rank)| *rank < 10.) {
+        let Some(rows) = listings::rows(id) else {
+            continue;
+        };
+        let mut images: Vec<&Arc<Row>> = (rows.iter())
+            .filter(|row| row.face == Face::Image && !row.hidden)
+            .collect();
+        images.sort_by(|a, b| name_cmp(&a.name, &b.name));
+        for (order, row) in images.into_iter().take(PEEK).enumerate() {
+            let rank = 30. + first + order as f32;
+            if scene.thumb > 0 {
+                peeks.extend(job(row, scene.thumb, rank, true, scene.folder, &mut spent));
+            }
+            if let Some(hero) = scene.hero.filter(|_| first == 0. && order < PEEK_HEROES) {
+                peeks.extend(job(row, hero, rank, true, scene.folder, &mut spent));
+            }
+        }
+    }
+    (jobs, peeks, lists)
 }
 
 fn job(

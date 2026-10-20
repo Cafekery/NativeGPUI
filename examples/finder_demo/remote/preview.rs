@@ -85,9 +85,12 @@ struct Queue {
 }
 
 impl Queue {
-    fn add(&mut self, mut job: Job) {
-        if self.failed.contains(&job.key) || self.running.iter().any(|run| run.key == job.key) {
-            return;
+    fn add(&mut self, mut job: Job) -> bool {
+        if self.failed.contains(&job.key) {
+            return false;
+        }
+        if self.running.iter().any(|run| run.key == job.key) {
+            return true;
         }
         match self.waiting.entry(job.key.clone()) {
             Entry::Occupied(mut held) => {
@@ -105,6 +108,7 @@ impl Queue {
             self.workers += 1;
             thread::spawn(work);
         }
+        true
     }
 
     fn take(&mut self) -> Option<Job> {
@@ -192,12 +196,12 @@ pub(super) fn job(
     }
 }
 
-pub(super) fn replan(folder: &'static str, jobs: Vec<Job>) {
+/// Whether any of `jobs` is still to come.
+pub(super) fn replan(folder: &'static str, jobs: Vec<Job>) -> bool {
     let mut queue = QUEUE.lock();
     queue.waiting.retain(|_, job| job.folder != Some(folder));
-    for job in jobs {
-        queue.add(job);
-    }
+    jobs.into_iter()
+        .fold(false, |pending, job| queue.add(job) | pending)
 }
 
 pub(super) fn idle() -> bool {
@@ -279,10 +283,17 @@ fn work() {
         drop(queue);
         let whole = job.key.2 == Want::Whole;
         let modified = f64::from_bits(job.key.1);
-        let fetched = if current(&job.local, whole.then_some(job.bytes), modified) {
+        let current = || current(&job.local, whole.then_some(job.bytes), modified);
+        let fetched = if current() {
             Ok(false)
         } else {
-            fetch(&job).map(|()| true)
+            fetch(&job).and_then(|()| {
+                if current() {
+                    Ok(true)
+                } else {
+                    Err(Error::Protocol("changed since it was listed".into()))
+                }
+            })
         };
         let mut queue = QUEUE.lock();
         queue.running.retain(|run| run.key != job.key);

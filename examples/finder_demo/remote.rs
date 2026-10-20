@@ -558,6 +558,17 @@ impl FinderDemo {
         then: impl FnOnce(Vec<PathBuf>) -> Then,
         cx: &mut Context<Self>,
     ) -> Option<u64> {
+        let local: Option<Vec<PathBuf>> = (ids.iter())
+            .map(|id| {
+                let id = id.to_str()?;
+                let row = self.remote_row(crate::data::split_key(id)?.0, id)?;
+                whole_copy(&row)
+            })
+            .collect();
+        if let Some(local) = local.filter(|local| !local.is_empty()) {
+            self.then(then(local), true, cx);
+            return None;
+        }
         let pairs: Vec<(PathBuf, PathBuf)> = (ids.into_iter())
             .filter_map(|id| Some((id.clone(), jobs::cached(id.to_str()?)?)))
             .collect();
