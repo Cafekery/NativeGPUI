@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::Arc;
 
@@ -134,7 +135,12 @@ pub(crate) fn decodes(row: &Row) -> bool {
 
 pub(crate) fn want(rows: &[&Row], pixels: u32) {
     let pixels = pixels.div_ceil(RESIZE_STEP) * RESIZE_STEP;
-    let wanted: Vec<(Key, u32)> = rows.iter().map(|row| (key(row), pixels)).collect();
+    let wanted: Vec<(Key, u32)> = (rows.iter())
+        .filter(|row| {
+            !crate::remote::is_remote(&row.path) || crate::remote::whole_copy(row).is_some()
+        })
+        .map(|row| (key(row), pixels))
+        .collect();
     let mut pictures = PICTURES.lock();
     if pictures.wanted == wanted {
         return;
@@ -198,7 +204,12 @@ fn make() {
             pictures.making.push(job.0.clone());
             job
         };
-        let image = autoreleasepool(|_| decode(&key.path, pixels));
+        let file = if crate::remote::is_remote(&key.path) {
+            crate::remote::cached(&key.path)
+        } else {
+            Some(PathBuf::from(key.path.as_ref()))
+        };
+        let image = file.and_then(|file| autoreleasepool(|_| decode(&file, pixels)));
         let pixels = match &image {
             Some(image) if pixels_of(image) >= pixels => pixels,
             _ => u32::MAX,
@@ -211,8 +222,8 @@ fn make() {
     }
 }
 
-fn decode(path: &str, pixels: u32) -> Option<Arc<RenderImage>> {
-    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+fn decode(path: &Path, pixels: u32) -> Option<Arc<RenderImage>> {
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
     let source = unsafe { Retained::from_raw(CGImageSourceCreateWithURL(&url, ptr::null())) }?;
     let thumbnail = |from: &NSString| {
         let (yes, most) = (NSNumber::new_bool(true), NSNumber::new_u32(pixels));
@@ -321,7 +332,7 @@ mod tests {
             .unwrap();
         let path = std::env::temp_dir().join(format!("ng-pictures-{}.jpg", std::process::id()));
         std::fs::write(&path, bytes).unwrap();
-        let picture = decode(path.to_str().unwrap(), 100);
+        let picture = decode(&path, 100);
         std::fs::remove_file(&path).ok();
         let picture = picture.expect("ImageIO decodes a JPEG");
         let size = picture.size(0);

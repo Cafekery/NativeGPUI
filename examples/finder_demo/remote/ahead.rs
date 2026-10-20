@@ -88,6 +88,14 @@ pub(super) fn idle() {
     RUNG.ring();
 }
 
+pub(super) fn replan() {
+    let mut board = BOARD.lock();
+    let folders: Vec<&'static str> = board.scenes.values().map(|scene| scene.folder).collect();
+    board.changed.extend(folders);
+    drop(board);
+    RUNG.ring();
+}
+
 #[derive(Clone)]
 pub(crate) struct Lookout {
     owner: EntityId,

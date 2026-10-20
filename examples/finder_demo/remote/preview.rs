@@ -83,6 +83,7 @@ struct Queue {
     waiting: HashMap<Key, Job>,
     running: Vec<Running>,
     failed: HashSet<Key>,
+    bare: HashSet<Key>,
     workers: usize,
     order: u64,
 }
@@ -134,6 +135,12 @@ pub(super) fn tier(row: &Row, pixels: u32) -> Option<Tier> {
         (Some(_), true) => Want::Small,
         (Some(Embedded::Raf), false) => Want::Large,
         _ => Want::Whole,
+    };
+    let key = (row.path.clone(), row.modified_at.to_bits(), want);
+    let want = if QUEUE.lock().bare.contains(&key) {
+        Want::Whole
+    } else {
+        want
     };
     let local = match want {
         Want::Whole if row.bytes > limit(row.face) => return None,
@@ -220,13 +227,13 @@ pub(super) fn idle() -> bool {
 }
 
 pub(super) fn fetching() -> Vec<PathBuf> {
-    let running: Vec<(SharedString, PathBuf)> = (QUEUE.lock().running.iter())
-        .map(|running| (running.key.0.clone(), running.local.clone()))
-        .collect();
-    (running.into_iter())
-        .flat_map(|(path, local)| [Some(local), cached(&path)])
-        .flatten()
+    (QUEUE.lock().running.iter())
+        .flat_map(|running| [running.local.clone(), part(&running.local)])
         .collect()
+}
+
+pub(crate) fn whole_copy(row: &Row) -> Option<PathBuf> {
+    cached(&row.path).filter(|whole| fresh(whole, row, true))
 }
 
 pub(super) fn fresh(local: &Path, row: &Row, whole: bool) -> bool {
@@ -243,6 +250,12 @@ fn current(local: &Path, bytes: Option<u64>, modified: f64) -> bool {
 fn sidecar(whole: PathBuf, tier: &str) -> PathBuf {
     let mut path = whole.into_os_string();
     path.push(format!(".{tier}.jpg"));
+    path.into()
+}
+
+fn part(local: &Path) -> PathBuf {
+    let mut path = local.as_os_str().to_owned();
+    path.push(".part");
     path.into()
 }
 
@@ -300,35 +313,43 @@ fn fetch(key: &Key, local: &Path) -> Result<(), Error> {
         fs::create_dir_all(parent)?;
     }
     let remote = split(&key.0).1;
-    let embedded = match key.2 {
-        Want::Whole => None,
-        want => preview(&server.server, remote, want).ok(),
-    };
-    let Some(bytes) = embedded else {
-        let whole = cached(&key.0).ok_or(Error::Disconnected)?;
-        return server.server.download(remote, &whole, &mut |_, _| true);
+    if key.2 == Want::Whole {
+        let part = part(local);
+        server.server.download(remote, &part, &mut |_, _| true)?;
+        return Ok(fs::rename(part, local)?);
+    }
+    let Some(bytes) = preview(&server.server, remote, key.2)? else {
+        QUEUE.lock().bare.insert(key.clone());
+        super::ahead::replan();
+        crate::thumbs::wake();
+        return Err(Error::Protocol(format!("{remote} has no embedded preview")));
     };
     fs::write(local, bytes)?;
     File::open(local)?.set_modified(reference_time(f64::from_bits(key.1)))?;
     Ok(())
 }
 
-fn preview(server: &Server, remote: &str, want: Want) -> Result<Vec<u8>, Error> {
-    let bad = || Error::Protocol(format!("{remote} has no embedded preview"));
+fn preview(server: &Server, remote: &str, want: Want) -> Result<Option<Vec<u8>>, Error> {
     let (start, head) = match embedded(remote) {
         Some(Embedded::Raf) => {
-            let (offset, len) = raf_jpeg(&server.read_range(remote, 0, 92)?).ok_or_else(bad)?;
+            let Some((offset, len)) = raf_jpeg(&server.read_range(remote, 0, 92)?) else {
+                return Ok(None);
+            };
             if want == Want::Large {
-                return server.read_range(remote, offset, len);
+                return server.read_range(remote, offset, len).map(Some);
             }
             (offset, server.read_range(remote, offset, HEAD.min(len))?)
         }
         _ => (0, server.read_range(remote, 0, HEAD)?),
     };
-    let (offset, len) = exif_thumbnail(&head).ok_or_else(bad)?;
+    let Some((offset, len)) = exif_thumbnail(&head) else {
+        return Ok(None);
+    };
     match head.get(offset..offset + len) {
-        Some(thumb) => Ok(thumb.to_vec()),
-        None => server.read_range(remote, start + offset as u64, len as u64),
+        Some(thumb) => Ok(Some(thumb.to_vec())),
+        None => server
+            .read_range(remote, start + offset as u64, len as u64)
+            .map(Some),
     }
 }
 

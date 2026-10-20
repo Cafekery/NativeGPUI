@@ -5,7 +5,7 @@ mod promise;
 
 pub(crate) use self::ahead::leave;
 pub(crate) use self::jobs::{Ended, Jobs, cached};
-pub(crate) use self::preview::cached_copy;
+pub(crate) use self::preview::{cached_copy, whole_copy};
 pub(crate) use self::promise::{cache, file_provider, prefetch};
 
 use std::collections::{HashSet, VecDeque};
