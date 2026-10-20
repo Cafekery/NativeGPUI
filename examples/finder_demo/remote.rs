@@ -450,6 +450,7 @@ impl FinderDemo {
         let cached = listings::cached(id);
         let (show, list) = listings::decide(cached.as_ref().map(|(_, age)| *age), !fresh);
         let early = cached.filter(|_| show).map(|(rows, _)| rows);
+        let bounce = fresh && early.is_none();
         let order = self.order();
         let plain = self.plain();
         let sorted = move |mut rows: Vec<Arc<Row>>| {
@@ -494,7 +495,7 @@ impl FinderDemo {
                         io::ErrorKind::Other
                     };
                     let error = io::Error::new(kind, error.to_string());
-                    this.troubled(id, Trouble::Refused(error), fresh || dropped, order, cx);
+                    this.troubled(id, Trouble::Refused(error), bounce || dropped, order, cx);
                 }
             })
             .ok();

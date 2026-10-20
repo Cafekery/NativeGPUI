@@ -10,6 +10,7 @@ use super::connected;
 use crate::data::Row;
 
 pub(super) const FRESH: Duration = Duration::from_secs(20);
+const AHEAD_FRESH: Duration = Duration::from_secs(5 * 60);
 const HELD: usize = 256;
 const LISTERS: usize = 2;
 
@@ -40,7 +41,7 @@ pub(super) fn cached(id: &str) -> Option<(Rows, Duration)> {
 }
 
 fn young(id: &str) -> bool {
-    cached(id).is_some_and(|(_, age)| age < FRESH)
+    cached(id).is_some_and(|(_, age)| age < AHEAD_FRESH)
 }
 
 /// Whether a read shows the cached rows at once, and whether it lists anyway.
@@ -68,7 +69,13 @@ pub(super) fn store(id: &'static str, rows: Vec<Arc<Row>>) {
 }
 
 pub(crate) fn forget_listings(under: &str) {
-    LISTINGS.lock().retain(|id, _| !id.starts_with(under));
+    LISTINGS.lock().retain(|id, _| !within(id, under));
+}
+
+/// A server root ends in '/', so everything after it is inside.
+fn within(id: &str, under: &str) -> bool {
+    (id.strip_prefix(under))
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/') || under.ends_with('/'))
 }
 
 pub(super) fn want(scene: &'static str, wants: Vec<(&'static str, f32)>) {
@@ -138,5 +145,14 @@ mod tests {
         assert_eq!(decide(old, true), (false, true));
         assert_eq!(decide(old, false), (true, true));
         assert_eq!(decide(None, false), (false, true));
+    }
+
+    #[test]
+    fn forgetting_a_folder_spares_its_namesake_siblings() {
+        assert!(within("sftp://h/a/b", "sftp://h/a/b"));
+        assert!(within("sftp://h/a/b/c", "sftp://h/a/b"));
+        assert!(!within("sftp://h/a/bc", "sftp://h/a/b"));
+        assert!(within("sftp://h/a", "sftp://h/"));
+        assert!(!within("sftp://hx/a", "sftp://h/"));
     }
 }
