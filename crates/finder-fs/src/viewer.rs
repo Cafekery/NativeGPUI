@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
@@ -16,6 +16,7 @@ use objc2_core_services::{LSCopyApplicationURLsForBundleIdentifier, LSRegisterUR
 use objc2_foundation::{NSDictionary, NSString, ns_string};
 
 const KEY: &str = "NSFileViewer";
+const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 
 /// A reinstall takes the bundle away for a moment, and Launch Services still knows a copy that moved.
 const GUARD: &str = r#"present() { [ -e "$VIEWER_BUNDLE/Contents/Info.plist" ]; }
@@ -91,6 +92,26 @@ pub fn register(bundle: &Path) {
         CFURL::with_file_system_path(None, Some(&path), CFURLPathStyle::CFURLPOSIXPathStyle, true);
     if let Some(url) = url {
         unsafe { LSRegisterURL(&url, true) };
+    }
+}
+
+/// Makes Launch Services forget every copy carrying one of `ids` other than `own`; blocks on `lsregister`.
+pub fn unregister_others(ids: &[&str], own: &Path) {
+    let own = canonical(own);
+    for id in ids {
+        for path in app_paths(id) {
+            if canonical(&path) == own {
+                continue;
+            }
+            // Launch Services has no public call to unregister a bundle.
+            _ = Command::new(LSREGISTER)
+                .arg("-u")
+                .arg(&path)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
     }
 }
 
@@ -329,20 +350,30 @@ fn in_domain<R>(domain: Option<&str>, run: impl FnOnce(&CFString) -> R) -> R {
     }
 }
 
-#[allow(deprecated)]
 fn is_installed(id: &str) -> bool {
+    app_paths(id)
+        .iter()
+        .any(|path| !is_trashed(path) && path.exists())
+}
+
+#[allow(deprecated)]
+fn app_paths(id: &str) -> Vec<PathBuf> {
     let urls = unsafe {
         LSCopyApplicationURLsForBundleIdentifier(&CFString::from_str(id), std::ptr::null_mut())
     };
     let Some(urls) = urls else {
-        return false;
+        return Vec::new();
     };
     // SAFETY: Launch Services answers with an array of URLs.
     let urls = unsafe { urls.cast_unchecked::<CFURL>() };
     urls.iter()
         .filter_map(|url| url.file_system_path(CFURLPathStyle::CFURLPOSIXPathStyle))
         .map(|path| PathBuf::from(path.to_string()))
-        .any(|path| !is_trashed(&path) && path.exists())
+        .collect()
+}
+
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn is_trashed(path: &Path) -> bool {
@@ -671,6 +702,60 @@ mod tests {
         scratch.site.follow(&scratch.id, &scratch.bundle).unwrap();
         assert!(!scratch.site.is_loaded() && !scratch.site.plist.exists());
         assert_eq!(scratch.viewer().as_deref(), Some(OTHER));
+    }
+
+    struct Apps(PathBuf);
+
+    impl Drop for Apps {
+        fn drop(&mut self) {
+            _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Launch Services skips temporary folders and bundles without an executable.
+    fn make_app(dir: &Path, name: &str, id: &str) -> PathBuf {
+        let bundle = dir.join(name);
+        std::fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
+        let info = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+             <key>CFBundleIdentifier</key><string>{id}</string>\
+             <key>CFBundlePackageType</key><string>APPL</string>\
+             <key>CFBundleExecutable</key><string>app</string></dict></plist>\n"
+        );
+        std::fs::write(bundle.join("Contents/Info.plist"), info).unwrap();
+        std::fs::copy("/usr/bin/true", bundle.join("Contents/MacOS/app")).unwrap();
+        bundle
+    }
+
+    #[test]
+    fn unregister_others_forgets_every_copy_but_our_own() {
+        let Some(home) = crate::home() else {
+            return;
+        };
+        let tag = format!(
+            "{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        );
+        let apps = Apps(home.join(format!("Library/Caches/finder-fs-viewer-stale-{tag}")));
+        let id = format!("dev.cafekery.nativegpui.viewer-test.stale.{tag}");
+        let (own, stale) = (
+            make_app(&apps.0, "Own.app", &id),
+            make_app(&apps.0, "Stale.app", &id),
+        );
+        register(&own);
+        register(&stale);
+        let known = |path: &Path| {
+            app_paths(&id)
+                .iter()
+                .any(|at| canonical(at) == canonical(path))
+        };
+        assert!(known(&own) && known(&stale));
+
+        unregister_others(&[&id], &own);
+        assert!(known(&own) && !known(&stale));
+        unregister_others(&[&id], &apps.0);
+        assert!(!known(&own));
     }
 
     #[test]

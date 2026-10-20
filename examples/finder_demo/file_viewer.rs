@@ -27,6 +27,7 @@ const DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
 const LIST: u32 = u32::from_be_bytes(*b"list");
 const BOOKMARK: u32 = u32::from_be_bytes(*b"bmrk");
 const FILE_URL: u32 = u32::from_be_bytes(*b"furl");
+const FORMER_IDS: &[&str] = &["dev.cafekery.nativegpui.finder_demo"];
 
 thread_local! {
     static APP: OnceCell<AsyncApp> = const { OnceCell::new() };
@@ -293,11 +294,27 @@ pub(crate) fn toggle_default(cx: &mut App) {
 
 pub(crate) fn keep_guard() {
     let bundle = own_bundle();
+    let id = own_id();
     if !viewer::is_translocated(&bundle) {
         viewer::register(&bundle);
+        viewer::unregister_others(FORMER_IDS, &bundle);
+        if let Some(id) = &id {
+            take_over_viewer(id, &bundle);
+        }
     }
-    if let Some(id) = own_id() {
+    if let Some(id) = id {
         _ = viewer::follow(&id, &bundle);
+    }
+}
+
+/// The viewer role and its guard follow a rename; the former id's guard would otherwise outlive it.
+fn take_over_viewer(id: &str, bundle: &Path) {
+    let was_ours = viewer::current().is_some_and(|viewer| FORMER_IDS.contains(&viewer.as_str()));
+    for former in FORMER_IDS {
+        _ = viewer::off(former);
+    }
+    if was_ours {
+        _ = viewer::on(id, bundle);
     }
 }
 
