@@ -2,14 +2,14 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use block2::DynBlock;
+use block2::{DynBlock, RcBlock};
 use gpui::Context;
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, Bool, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSButton, NSControlStateValueOff, NSControlStateValueOn, NSModalResponseOK, NSOpenPanel,
-    NSOpenSavePanelDelegate, NSPopUpButton, NSTextField, NSView, NSWorkspace,
+    NSOpenSavePanelDelegate, NSPopUpButton, NSRunningApplication, NSTextField, NSView, NSWorkspace,
     NSWorkspaceLaunchOptions, NSWorkspaceOpenConfiguration,
 };
 use objc2_foundation::{
@@ -129,7 +129,35 @@ pub(crate) fn alias_folder(file: &Path) -> Option<PathBuf> {
     )
     .ok()?;
     let target = path_of(&target)?;
-    (target != file && target.is_dir()).then_some(target)
+    let package = target
+        .file_name()
+        .is_some_and(|name| finder_fs::kind::is_package_name(&name.to_string_lossy()));
+    (target != file && target.is_dir() && !package).then_some(target)
+}
+
+pub(crate) fn is_app(file: &Path) -> bool {
+    file.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
+        && file.is_dir()
+}
+
+// `openURL:` shows a bundle Launch Services won't run in the file viewer; this one says why instead.
+pub(crate) fn launch(app: &Path) -> Result<(), String> {
+    let Some(url) = url(app) else {
+        return Ok(());
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let done = RcBlock::new(move |_: *mut NSRunningApplication, error: *mut NSError| {
+        // SAFETY: AppKit passes a live NSError or null.
+        let error = unsafe { error.as_ref() }.map(|error| error.localizedDescription().to_string());
+        tx.send(error).ok();
+    });
+    NSWorkspace::sharedWorkspace().openApplicationAtURL_configuration_completionHandler(
+        &url,
+        &NSWorkspaceOpenConfiguration::configuration(),
+        Some(&done),
+    );
+    rx.recv().ok().flatten().map_or(Ok(()), Err)
 }
 
 pub(crate) fn open_with(files: &[PathBuf], app: &Path) {

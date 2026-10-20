@@ -12,7 +12,7 @@ use objc2_core_foundation::{
     CFURLPathStyle, kCFPreferencesAnyApplication, kCFPreferencesAnyHost, kCFPreferencesCurrentUser,
 };
 #[allow(deprecated)]
-use objc2_core_services::LSCopyApplicationURLsForBundleIdentifier;
+use objc2_core_services::{LSCopyApplicationURLsForBundleIdentifier, LSRegisterURL};
 use objc2_foundation::{NSDictionary, NSString, ns_string};
 
 const KEY: &str = "NSFileViewer";
@@ -82,6 +82,16 @@ pub fn off(id: &str) -> io::Result<()> {
 /// Points the guard at `bundle` while the app is the viewer, and drops a guard another viewer outlived.
 pub fn follow(id: &str, bundle: &Path) -> io::Result<()> {
     Site::of(id)?.follow(id, bundle)
+}
+
+/// Launch Services opens an id with the copy it registered last; a stale build elsewhere otherwise opens as a second app.
+pub fn register(bundle: &Path) {
+    let path = CFString::from_str(&bundle.to_string_lossy());
+    let url =
+        CFURL::with_file_system_path(None, Some(&path), CFURLPathStyle::CFURLPOSIXPathStyle, true);
+    if let Some(url) = url {
+        unsafe { LSRegisterURL(&url, true) };
+    }
 }
 
 /// A translocated app runs from a read-only copy that vanishes when it quits.

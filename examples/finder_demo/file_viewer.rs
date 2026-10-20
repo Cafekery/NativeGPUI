@@ -292,8 +292,12 @@ pub(crate) fn toggle_default(cx: &mut App) {
 }
 
 pub(crate) fn keep_guard() {
+    let bundle = own_bundle();
+    if !viewer::is_translocated(&bundle) {
+        viewer::register(&bundle);
+    }
     if let Some(id) = own_id() {
-        _ = viewer::follow(&id, &own_bundle());
+        _ = viewer::follow(&id, &bundle);
     }
 }
 

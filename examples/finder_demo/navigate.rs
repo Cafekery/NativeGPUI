@@ -613,31 +613,39 @@ impl FinderDemo {
             return;
         }
         cx.spawn(async move |this, cx| {
-            let (folder, lost) = cx
+            let (folder, lost, refused) = cx
                 .background_executor()
                 .spawn(async move {
                     let (found, lost): (Vec<PathBuf>, Vec<PathBuf>) = files
                         .into_iter()
                         .partition(|file| std::fs::metadata(file).is_ok());
                     let mut folder = None;
+                    let mut apps = Vec::new();
                     let mut documents = Vec::with_capacity(found.len());
                     for file in found {
                         match crate::openwith::alias_folder(&file) {
                             Some(target) => folder = folder.or(Some(target)),
+                            None if crate::openwith::is_app(&file) => apps.push(file),
                             None => documents.push(file),
                         }
                     }
                     crate::openwith::open_default(&documents);
+                    let refused = apps
+                        .iter()
+                        .find_map(|app| crate::openwith::launch(app).err());
                     let lost = lost
                         .into_iter()
                         .find(|link| std::fs::symlink_metadata(link).is_ok());
-                    (folder, lost)
+                    (folder, lost, refused)
                 })
                 .await;
             this.update(cx, |this, cx| {
                 if let Some(folder) = folder {
                     this.vanished = Some(intern_path(&folder));
                     cx.notify();
+                }
+                if let Some(why) = refused {
+                    this.complain(&why);
                 }
                 let Some(link) = lost else {
                     return;
