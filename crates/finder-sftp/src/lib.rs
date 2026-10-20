@@ -21,7 +21,7 @@ pub use server::Server;
 pub enum Lane {
     /// Metadata calls and mutations.
     Control,
-    /// What the user is looking at or asked for; large transfers also borrow the `Bulk` connection.
+    /// What the user is looking at or asked for; large transfers also borrow the `Bulk` and `Preview` connections.
     #[default]
     Interactive,
     /// Small range reads for thumbnails.

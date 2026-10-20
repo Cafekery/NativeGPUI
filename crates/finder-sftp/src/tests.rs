@@ -167,7 +167,10 @@ fn round_trip(len: usize) -> Server {
 #[test]
 fn round_trips_a_file_split_across_sessions() {
     let server = round_trip(20 << 20);
-    assert!(server.inner.pool.lock().sessions[Lane::Bulk as usize].is_some());
+    let pool = server.inner.pool.lock();
+    let used = |lane: Lane| pool.sessions[lane as usize].is_some();
+    assert!(used(Lane::Interactive) && used(Lane::Bulk) && used(Lane::Preview));
+    assert!(!used(Lane::Listing));
 }
 
 #[test]

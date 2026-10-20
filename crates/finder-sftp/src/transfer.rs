@@ -183,13 +183,15 @@ impl Server {
                 move || finished.send(work(&first))
             });
             if self.lane == Lane::Interactive && total >= SPLIT_AT {
-                let finished = finished.clone();
-                scope.spawn(move || {
-                    let Ok(session) = self.inner.session(Lane::Bulk as usize) else {
-                        return;
-                    };
-                    let _ = finished.send(open(&session).and_then(|handle| work(&handle)));
-                });
+                for lane in [Lane::Bulk, Lane::Preview] {
+                    let finished = finished.clone();
+                    scope.spawn(move || {
+                        let Ok(session) = self.inner.session(lane as usize) else {
+                            return;
+                        };
+                        let _ = finished.send(open(&session).and_then(|handle| work(&handle)));
+                    });
+                }
             }
             drop(finished);
             let mut result = Ok(());
