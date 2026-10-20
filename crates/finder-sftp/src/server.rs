@@ -10,10 +10,10 @@ use parking_lot::Mutex;
 
 use crate::session::{Pending, Session};
 use crate::wire::*;
-use crate::{Address, Attrs, Entry, Error, Space, askpass};
+use crate::{Address, Attrs, Entry, Error, Lane, Space, askpass};
 
-/// Transfer sessions; slot 0, before them, only carries metadata calls.
-pub(crate) const POOL: usize = 4;
+/// One session per [`Lane`].
+const POOL: usize = 5;
 const CHUNK: u32 = 256 << 10;
 const READ_AHEAD: usize = 4;
 const SSH: &str = "/usr/bin/ssh";
@@ -127,9 +127,9 @@ fn login(address: &Address) -> String {
         .unwrap_or_default()
 }
 
-struct Pool {
+pub(crate) struct Pool {
     closed: bool,
-    sessions: [Option<Arc<Session>>; 1 + POOL],
+    pub(crate) sessions: [Option<Arc<Session>>; POOL],
 }
 
 pub(crate) struct Inner {
@@ -139,7 +139,7 @@ pub(crate) struct Inner {
     extensions: Vec<String>,
     pub(crate) read_size: u32,
     pub(crate) write_size: u32,
-    pool: Mutex<Pool>,
+    pub(crate) pool: Mutex<Pool>,
 }
 
 impl Inner {
@@ -205,6 +205,7 @@ fn open(path: &str, flags: u32) -> Packet {
 #[derive(Clone)]
 pub struct Server {
     pub(crate) inner: Arc<Inner>,
+    pub(crate) lane: Lane,
 }
 
 impl Server {
@@ -251,8 +252,8 @@ impl Server {
             (read_size, write_size) = (cap(read), cap(write));
         }
         let home = home.wait()?.name()?;
-        let mut sessions: [Option<Arc<Session>>; 1 + POOL] = Default::default();
-        sessions[0] = Some(session);
+        let mut sessions: [Option<Arc<Session>>; POOL] = Default::default();
+        sessions[Lane::Control as usize] = Some(session);
         Ok(Server {
             inner: Arc::new(Inner {
                 address,
@@ -266,7 +267,27 @@ impl Server {
                     sessions,
                 }),
             }),
+            lane: Lane::default(),
         })
+    }
+
+    /// A handle whose transfers ride `lane`'s connection.
+    pub fn on(&self, lane: Lane) -> Server {
+        Server {
+            inner: self.inner.clone(),
+            lane,
+        }
+    }
+
+    pub(crate) fn session(&self) -> Result<Arc<Session>, Error> {
+        self.inner.session(self.lane as usize)
+    }
+
+    fn lookup(&self) -> Result<Arc<Session>, Error> {
+        match self.lane {
+            Lane::Listing => self.session(),
+            _ => self.inner.session(Lane::Control as usize),
+        }
     }
 
     pub fn address(&self) -> &Address {
@@ -286,12 +307,12 @@ impl Server {
     }
 
     fn call(&self, packet: Packet) -> Result<Reply, Error> {
-        self.inner.session(0)?.call(packet)
+        self.inner.session(Lane::Control as usize)?.call(packet)
     }
 
     /// The directory's entries without `.` and `..`.
     pub fn list(&self, dir: &str) -> Result<Vec<Entry>, Error> {
-        let session = self.inner.session(0)?;
+        let session = self.lookup()?;
         let handle = Handle::new(&session, session.send(Packet::new(OPENDIR).str(dir)))?;
         let read = || session.send(Packet::new(READDIR).bytes(&handle.id));
         let mut pending: VecDeque<Pending> = (0..READ_AHEAD).map(|_| read()).collect();
@@ -312,11 +333,11 @@ impl Server {
 
     /// Does not follow a final symlink.
     pub fn stat(&self, path: &str) -> Result<Attrs, Error> {
-        self.call(Packet::new(LSTAT).str(path))?.attrs()
+        self.lookup()?.call(Packet::new(LSTAT).str(path))?.attrs()
     }
 
     pub fn stat_follow(&self, path: &str) -> Result<Attrs, Error> {
-        self.call(Packet::new(STAT).str(path))?.attrs()
+        self.lookup()?.call(Packet::new(STAT).str(path))?.attrs()
     }
 
     pub fn readlink(&self, path: &str) -> Result<String, Error> {
@@ -390,7 +411,7 @@ impl Server {
 
     pub fn copy_data(&self, from: &str, to: &str) -> Option<Result<(), Error>> {
         self.has("copy-data").then(|| {
-            let session = self.inner.session(1)?;
+            let session = self.session()?;
             let source = Handle::open(&session, from, FXF_READ)?;
             let target = Handle::open(&session, to, FXF_WRITE | FXF_CREAT | FXF_TRUNC)?;
             let packet = Packet::new(EXTENDED)

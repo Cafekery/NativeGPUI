@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
-use finder_sftp::{Error, Server};
+use finder_sftp::{Error, Lane, Server};
 use gpui::SharedString;
 use parking_lot::Mutex;
 
@@ -282,7 +282,7 @@ fn work() {
         let fetched = if current(&job.local, whole.then_some(job.bytes), modified) {
             Ok(false)
         } else {
-            fetch(&job.key, &job.local).map(|()| true)
+            fetch(&job).map(|()| true)
         };
         let mut queue = QUEUE.lock();
         queue.running.retain(|run| run.key != job.key);
@@ -298,18 +298,25 @@ fn work() {
     }
 }
 
-fn fetch(key: &Key, local: &Path) -> Result<(), Error> {
+fn fetch(job: &Job) -> Result<(), Error> {
+    let (key, local) = (&job.key, job.local.as_path());
     let server = connected(&key.0).ok_or(Error::Disconnected)?;
     if let Some(parent) = local.parent() {
         fs::create_dir_all(parent)?;
     }
     let remote = split(&key.0).1;
     if key.2 == Want::Whole {
+        let lane = if job.rank <= 0. {
+            Lane::Interactive
+        } else {
+            Lane::Bulk
+        };
+        let server = server.server.on(lane);
         return stage(local, |part| {
-            server.server.download(remote, part, &mut |_, _| true)
+            server.download(remote, part, &mut |_, _| true)
         });
     }
-    let Some(bytes) = preview(&server.server, remote, key.2)? else {
+    let Some(bytes) = preview(&server.server.on(Lane::Preview), remote, key.2)? else {
         QUEUE.lock().bare.insert(key.clone());
         super::ahead::replan_all();
         crate::thumbs::wake();

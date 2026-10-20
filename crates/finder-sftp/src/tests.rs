@@ -5,7 +5,7 @@ use std::process::Command;
 use std::time::{Duration, UNIX_EPOCH};
 
 use crate::askpass::{Prompt, classify};
-use crate::{Address, Error, Kind, Server};
+use crate::{Address, Error, Kind, Lane, Server};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("finder-sftp-{name}-{}", std::process::id()));
@@ -139,7 +139,7 @@ fn missing_paths_are_not_found() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
-fn round_trip(len: usize) {
+fn round_trip(len: usize) -> Server {
     let dir = scratch(&format!("trip-{len}"));
     let server = serve(&dir);
     let bytes = noise(len);
@@ -161,16 +161,19 @@ fn round_trip(len: usize) {
         .unwrap();
     assert!(fs::read(dir.join("back")).unwrap() == bytes);
     fs::remove_dir_all(&dir).unwrap();
+    server
 }
 
 #[test]
 fn round_trips_a_file_split_across_sessions() {
-    round_trip(20 << 20);
+    let server = round_trip(20 << 20);
+    assert!(server.inner.pool.lock().sessions[Lane::Bulk as usize].is_some());
 }
 
 #[test]
 fn round_trips_a_small_file() {
-    round_trip(3 << 10);
+    let server = round_trip(3 << 10);
+    assert!(server.inner.pool.lock().sessions[Lane::Bulk as usize].is_none());
 }
 
 #[test]
@@ -331,6 +334,34 @@ fn a_dead_session_is_replaced() {
     let server = serve(&dir);
     server.inner.session(0).unwrap().kill();
     assert_eq!(server.realpath(path(&dir)).unwrap(), path(&dir));
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn lanes_ride_their_own_sessions() {
+    let dir = scratch("lanes");
+    fs::write(dir.join("file"), b"lanes").unwrap();
+    let server = serve(&dir);
+    let file = format!("{}/file", path(&dir));
+    assert_eq!(
+        server.on(Lane::Bulk).read_range(&file, 0, 5).unwrap(),
+        b"lanes"
+    );
+    assert_eq!(
+        server.on(Lane::Preview).read_range(&file, 1, 2).unwrap(),
+        b"an"
+    );
+    let slot = |lane: Lane| server.inner.pool.lock().sessions[lane as usize].clone();
+    let (bulk, preview) = (slot(Lane::Bulk).unwrap(), slot(Lane::Preview).unwrap());
+    assert!(!std::sync::Arc::ptr_eq(&bulk, &preview));
+    assert!(slot(Lane::Interactive).is_none());
+
+    server.inner.session(Lane::Control as usize).unwrap().kill();
+    let listing = server.on(Lane::Listing);
+    assert_eq!(listing.list(path(&dir)).unwrap().len(), 1);
+    assert_eq!(listing.stat(&file).unwrap().size, Some(5));
+    assert!(!slot(Lane::Control).unwrap().alive());
+    assert!(slot(Lane::Listing).unwrap().alive());
     fs::remove_dir_all(&dir).unwrap();
 }
 

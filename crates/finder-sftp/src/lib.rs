@@ -16,6 +16,22 @@ use std::path::PathBuf;
 
 pub use server::Server;
 
+/// The connection a [`Server`] handle's transfers ride, so lookahead never queues ahead of the user.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Lane {
+    /// Metadata calls and mutations.
+    Control,
+    /// What the user is looking at or asked for; large transfers also borrow the `Bulk` connection.
+    #[default]
+    Interactive,
+    /// Small range reads for thumbnails.
+    Preview,
+    /// Whole files fetched ahead of need.
+    Bulk,
+    /// Directory reads ahead of navigation; `list` and `stat` use it too.
+    Listing,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Address {
     pub user: Option<String>,

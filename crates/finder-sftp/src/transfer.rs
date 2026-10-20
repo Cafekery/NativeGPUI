@@ -11,10 +11,10 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 
-use crate::server::{Handle, POOL};
+use crate::server::Handle;
 use crate::session::Session;
 use crate::wire::*;
-use crate::{Attrs, Error, Server};
+use crate::{Attrs, Error, Lane, Server};
 
 const SPLIT_AT: u64 = 16 << 20;
 const WINDOW: usize = 64;
@@ -66,7 +66,7 @@ impl Server {
         local: &Path,
         progress: &mut dyn FnMut(u64, u64) -> bool,
     ) -> Result<(), Error> {
-        let session = self.inner.session(1)?;
+        let session = self.session()?;
         let (handle, attrs) = Handle::open_stat(&session, remote)?;
         let size = attrs.size.unwrap_or(0);
         let file = File::create(local)?;
@@ -102,7 +102,7 @@ impl Server {
     ) -> Result<(), Error> {
         let file = File::open(local)?;
         let meta = file.metadata()?;
-        let session = self.inner.session(1)?;
+        let session = self.session()?;
         let handle = Handle::open(&session, remote, FXF_WRITE | FXF_CREAT | FXF_TRUNC)?;
         let job = Job::new(0, meta.len());
         let result = self.transfer(
@@ -129,7 +129,7 @@ impl Server {
 
     /// The whole file, for previews; [`Error::Protocol`] when it is larger than `limit`.
     pub fn read_all(&self, remote: &str, limit: u64) -> Result<Vec<u8>, Error> {
-        let session = self.inner.session(1)?;
+        let session = self.session()?;
         let (handle, attrs) = Handle::open_stat(&session, remote)?;
         let too_large = || Error::Protocol(format!("{remote} is larger than {limit} bytes"));
         let size = attrs.size.unwrap_or(0);
@@ -145,7 +145,7 @@ impl Server {
 
     /// `len` bytes from `offset`, fewer where the file ends first.
     pub fn read_range(&self, remote: &str, offset: u64, len: u64) -> Result<Vec<u8>, Error> {
-        let session = self.inner.session(1)?;
+        let session = self.session()?;
         let handle = Handle::open(&session, remote, FXF_READ)?;
         self.read(&handle, offset, offset.saturating_add(len))
     }
@@ -182,11 +182,10 @@ impl Server {
                 let finished = finished.clone();
                 move || finished.send(work(&first))
             });
-            let workers = if total >= SPLIT_AT { POOL } else { 1 };
-            for slot in 2..=workers {
+            if self.lane == Lane::Interactive && total >= SPLIT_AT {
                 let finished = finished.clone();
                 scope.spawn(move || {
-                    let Ok(session) = self.inner.session(slot) else {
+                    let Ok(session) = self.inner.session(Lane::Bulk as usize) else {
                         return;
                     };
                     let _ = finished.send(open(&session).and_then(|handle| work(&handle)));
