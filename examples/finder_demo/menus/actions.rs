@@ -42,6 +42,7 @@ pub(crate) enum Act {
     OpenTabs,
     OpenWindow,
     ShowOriginal,
+    ShowPackage(&'static str),
     Trash,
     DeleteNow,
     EmptyTrash,
@@ -161,6 +162,7 @@ impl FinderDemo {
             }
             Act::OpenWindow => open_windows(self.chosen_folders(), cx),
             Act::ShowOriginal => self.show_original(window, cx),
+            Act::ShowPackage(id) => self.go(id, window, cx),
             Act::Trash => self.trash_selection(cx),
             Act::DeleteNow => self.delete_selection(cx),
             Act::EmptyTrash => self.empty_trash(cx),

@@ -257,7 +257,10 @@ fn folder_kind(path: &'static str, full: bool) -> FileType<'static> {
 }
 
 pub(crate) fn folder_artwork(path: &'static str, holds: bool) -> FileType<'static> {
-    if crate::custom::custom_icon(&SharedString::new_static(path)) {
+    let package = Path::new(path)
+        .file_name()
+        .is_some_and(|name| kind::is_package_name(&name.to_string_lossy()));
+    if package || crate::custom::custom_icon(&SharedString::new_static(path)) {
         return FileType::Path(path);
     }
     let seen = crate::fsearch::visible(Path::new(path));

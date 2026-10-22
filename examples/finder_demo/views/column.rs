@@ -131,7 +131,9 @@ impl FinderDemo {
                         listing
                             .rows
                             .iter()
-                            .find(|row| row.opens == Some(*next))
+                            .find(|row| {
+                                row.opens == Some(*next) || row.package && *row.path == **next
+                            })
                             .map(|row| row.path.clone())
                     }),
                     None => Some(cursor.clone()),

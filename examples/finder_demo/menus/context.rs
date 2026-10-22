@@ -135,12 +135,24 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
                 Act::Nothing,
             );
         }
-        None => {
-            menu.item(MenuEntry::item("Open"), Act::Open);
-            if !original {
-                open_with(&mut menu, line);
-            }
-        }
+        None => menu.item(MenuEntry::item("Open"), Act::Open),
+    }
+    let package = if line.row.package {
+        Some(intern(&line.key))
+    } else {
+        ((original && !many).then(|| original_of(Path::new(line.key.as_ref()))))
+            .flatten()
+            .filter(|original| original.is_dir() && is_package(original))
+            .map(|original| intern_path(&original))
+    };
+    if let Some(package) = package.filter(|_| !many) {
+        menu.item(
+            MenuEntry::item("Show Package Contents"),
+            Act::ShowPackage(package),
+        );
+    }
+    if folder.is_none() && !original {
+        open_with(&mut menu, line);
     }
     if original {
         menu.item(MenuEntry::item("Show Original"), Act::ShowOriginal);
@@ -287,6 +299,10 @@ fn remote_item(line: &Line, many: bool, chosen: usize) -> Menu {
         }
         None => menu.item(MenuEntry::item("Open"), Act::Open),
     }
+    if line.row.package && !many {
+        let package = Act::ShowPackage(intern(&line.key));
+        menu.item(MenuEntry::item("Show Package Contents"), package);
+    }
     if let Some(folder) = line.row.opens.filter(|_| can_paste()) {
         paste_rows(&mut menu, folder);
     }
@@ -404,10 +420,12 @@ fn folder_behind(line: &Line) -> Option<&'static str> {
         return line.row.opens;
     }
     let original = original_of(Path::new(line.key.as_ref()))?;
-    let package = original
-        .file_name()
-        .is_some_and(|name| is_package_name(&name.to_string_lossy()));
-    (original.is_dir() && !package).then(|| intern_path(&original))
+    (original.is_dir() && !is_package(&original)).then(|| intern_path(&original))
+}
+
+fn is_package(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| is_package_name(&name.to_string_lossy()))
 }
 
 pub(super) fn unlistable_folder(line: &Line) -> bool {
