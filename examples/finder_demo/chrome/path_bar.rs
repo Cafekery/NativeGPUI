@@ -17,7 +17,7 @@ use objc2_foundation::{NSAttributedString, NSBundle, NSDictionary, NSString};
 
 use crate::app::FinderDemo;
 use crate::data::{Line, folder_artwork, icloud_drive, is_volume_root, split_key};
-use crate::dragdrop::{Grabbed, RowDrag};
+use crate::dragdrop::{CrumbGhost, Grabbed, RowDrag};
 use crate::locations::{SHARED, is_location};
 use crate::menus;
 use crate::palette::Palette;
@@ -31,9 +31,9 @@ pub(crate) const LABEL_INSET: f32 = 2.;
 pub(crate) const EDGE_ROW: f32 = 0.5;
 const TRAIL_INSET: f32 = 6.;
 const TRAIL_ROOM: f32 = 16.;
-const ICON_LEAD: f32 = 5.;
-const CRUMB_ICON: f32 = 16.;
-const LABEL_LEAD: f32 = 1.;
+pub(crate) const ICON_LEAD: f32 = 5.;
+pub(crate) const CRUMB_ICON: f32 = 16.;
+pub(crate) const LABEL_LEAD: f32 = 1.;
 const CHEVRON_LEAD: f32 = 1.;
 const CRUMB_CHROME: f32 = 29.;
 const LAST_CHROME: f32 = 24.;
@@ -120,7 +120,11 @@ fn takes_drop<D: Grabbed + 'static>(
 ) -> Stateful<Div> {
     crumb
         .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<D>, _, cx| {
-            this.lit_crumb(index, event.bounds.contains(&event.event.position), cx);
+            let over = event.bounds.contains(&event.event.position)
+                && !event
+                    .drag(cx)
+                    .carries(&this.selected.snapshot(), &into.into());
+            this.lit_crumb(index, over, cx);
         }))
         .on_drop(cx.listener(move |this, grab: &D, window: &mut Window, cx| {
             this.crumb_dropped(into, grab, window, cx);
@@ -292,6 +296,23 @@ impl FinderDemo {
                     ),
                 );
             }
+            let grabs = match &lone {
+                Some(line) if last => Some(line.key.clone()),
+                _ => target.map(SharedString::new_static),
+            }
+            .filter(|key| key.starts_with('/') || crate::remote::is_remote(key));
+            let (name, fill, ink) = (crumb.clone(), palette.selection, palette.selection_text);
+            let segment = segment.when_some(grabs, |crumb_row, key| {
+                crumb_row.on_drag(RowDrag { key }, move |_, _, _, cx| {
+                    let name = name.clone();
+                    cx.new(|_| CrumbGhost {
+                        kind,
+                        name,
+                        fill,
+                        ink,
+                    })
+                })
+            });
             let segment = segment.when_some(target, |crumb_row, id| {
                 let crumb_row =
                     crumb_row.on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
@@ -353,10 +374,11 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) {
         self.crumb_drop = None;
-        if !grab.wandered(window, self.pressed_at) {
+        let selected = self.selected.snapshot();
+        if !grab.wandered(window, self.pressed_at) || grab.carries(&selected, &into.into()) {
             return;
         }
-        let keys = grab.keys(&self.selected.snapshot());
+        let keys = grab.keys(&selected);
         self.drop_into(into, &keys, window, cx);
         cx.notify();
     }

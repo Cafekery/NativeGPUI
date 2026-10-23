@@ -9,10 +9,11 @@ use gpui::{
     AnyElement, App, Div, DragMoveEvent, ExternalPaths, Hsla, Pixels, Point, SharedString,
     Stateful, WeakEntity, Window, div, prelude::*, px,
 };
-use native_gpui::tokens;
+use native_gpui::tokens::{self, FileType};
 use objc2_foundation::{NSNumber, NSString, NSUserDefaults};
 
 use crate::app::FinderDemo;
+use crate::chrome::path_bar::{CRUMB_ART, CRUMB_ICON, ICON_LEAD, LABEL_INSET, LABEL_LEAD, PATH_H};
 use crate::data::{Line, Row, split_key};
 use crate::ops::After;
 use crate::view::{COLUMN_VIEW, ICON_VIEW};
@@ -295,6 +296,48 @@ impl Render for RowGhost {
                     .whitespace_nowrap()
                     .text_ellipsis_middle()
                     .child(row.display.clone()),
+            )
+    }
+}
+
+pub(crate) struct CrumbGhost {
+    pub(crate) kind: Option<FileType<'static>>,
+    pub(crate) name: SharedString,
+    pub(crate) fill: Hsla,
+    pub(crate) ink: Hsla,
+}
+
+impl Render for CrumbGhost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let icon = self
+            .kind
+            .and_then(|kind| crate::icons::icon(kind, CRUMB_ART));
+        div()
+            .h(px(PATH_H))
+            .pl(px(ICON_LEAD))
+            .flex()
+            .items_center()
+            .font_family(tokens::system_font_family())
+            .text_size(tokens::small_system_font_size())
+            .opacity(GHOST_ALPHA)
+            .child(
+                div()
+                    .size(px(CRUMB_ICON))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .children(icon.map(|icon| icon.img())),
+            )
+            .child(
+                div()
+                    .ml(px(LABEL_LEAD + LABEL_INSET - GHOST_PAD))
+                    .px(px(GHOST_PAD))
+                    .rounded(px(GHOST_RADIUS))
+                    .bg(self.fill)
+                    .text_color(self.ink)
+                    .whitespace_nowrap()
+                    .child(self.name.clone()),
             )
     }
 }

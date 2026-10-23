@@ -19,7 +19,7 @@ use objc2_app_kit::NSFont;
 use crate::app::FinderDemo;
 use crate::art::{Anchor, HIDDEN_ALPHA, art_at, item_art, marked};
 use crate::data::{Column, Line, Order, Row};
-use crate::dragdrop::{GHOST_ALPHA, Grabbed, KeyDrag, Lit, drop_hover, drop_target};
+use crate::dragdrop::{GHOST_ALPHA, Grabbed, KeyDrag, Lit, RowDrag, drop_hover, drop_target};
 use crate::elastic::stretching;
 use crate::item_info::item_info;
 use crate::menus::tiles_menu;
@@ -1180,7 +1180,14 @@ impl FinderDemo {
                 .on_click(pick_on_click(line, this.clone()));
             let tile = match line.row.opens {
                 Some(into) => drop_target::<ExternalPaths>(
-                    drop_hover::<TileDrag>(tile, line.key.clone(), into, None, this.clone()),
+                    drop_target::<RowDrag>(
+                        drop_hover::<TileDrag>(tile, line.key.clone(), into, None, this.clone()),
+                        line.key.clone(),
+                        into,
+                        None,
+                        Lit::Drawn,
+                        this.clone(),
+                    ),
                     line.key.clone(),
                     into,
                     None,
