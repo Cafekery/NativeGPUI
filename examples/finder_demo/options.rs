@@ -101,7 +101,8 @@ fn set_background(demo: &mut FinderDemo, background: Background, cx: &mut Contex
 }
 
 struct Build<'a> {
-    demo: &'a Entity<FinderDemo>,
+    /// Weak: the panel's controls outlive a closed window, whose state would keep its NSWindow.
+    demo: WeakEntity<FinderDemo>,
     state: &'a FinderDemo,
 }
 
@@ -113,6 +114,7 @@ impl Build<'_> {
                 change(this, value, cx);
                 cx.notify();
             })
+            .ok();
         }
     }
 
@@ -461,6 +463,7 @@ impl Build<'_> {
                         set_background(this, picture, cx)
                     })
                 })
+                .ok();
             });
         let value = div()
             .w_full()
@@ -527,6 +530,7 @@ impl Build<'_> {
                                 cx.notify();
                             }
                         })
+                        .ok();
                     })
                 });
                 let on = column.is_some_and(|column| shows(self.state, column));
@@ -617,7 +621,10 @@ impl Build<'_> {
 }
 
 fn sheet(demo: &Entity<FinderDemo>, state: &FinderDemo, width: f32, hair: f32) -> Sheet {
-    let build = Build { demo, state };
+    let build = Build {
+        demo: demo.downgrade(),
+        state,
+    };
     let (view, here) = (state.view, state.here());
     let name = view_name(view);
     let opens = prefs::opens_in(here).filter(|(opens, _)| *opens == view);

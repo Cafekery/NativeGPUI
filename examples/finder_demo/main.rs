@@ -237,7 +237,7 @@ fn finder_window(
                     }
                 })
                 .detach();
-                preview::close_with_finder(cx);
+                preview::close_with_finder(window, cx);
                 let owner = cx.entity_id();
                 cx.on_release(move |_, _| crate::remote::leave(owner))
                     .detach();

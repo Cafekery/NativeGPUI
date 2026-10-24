@@ -250,13 +250,16 @@ impl Render for PreviewPane {
     }
 }
 
-pub(crate) fn close_with_finder(cx: &mut Context<FinderDemo>) {
-    cx.on_release(|this, cx| {
-        if let Some(pane) = this.preview_window.take() {
+/// With the window, not only its state: the pane's last frame may be what holds that state.
+pub(crate) fn close_with_finder(window: &Window, cx: &mut Context<FinderDemo>) {
+    let (id, finder) = (window.window_handle().window_id(), cx.entity().downgrade());
+    let closed = cx.on_window_closed(move |cx, closed| {
+        let taken = (closed == id).then(|| finder.update(cx, |this, _| this.preview_window.take()));
+        if let Some(Ok(Some(pane))) = taken {
             pane.close(cx);
         }
-    })
-    .detach();
+    });
+    cx.on_release(move |_, _| drop(closed)).detach();
 }
 
 fn open_preview_window(
