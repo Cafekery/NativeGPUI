@@ -109,6 +109,7 @@ pub(crate) struct Shown {
     expanded: bool,
     renaming: Option<Line>,
     typed_ahead: Option<String>,
+    rename_draft: Option<(SharedString, String)>,
     pub(super) list_focused: bool,
     option: bool,
 }
@@ -337,6 +338,7 @@ pub(super) struct CardKey {
     look: (bool, bool, u64),
     expanded: bool,
     renaming: Option<SharedString>,
+    rename_draft: Option<(SharedString, String)>,
     option: bool,
     options: u64,
 }
@@ -535,6 +537,7 @@ impl FinderDemo {
             expanded: self.preview_expanded,
             renaming,
             typed_ahead: self.typed_ahead.clone(),
+            rename_draft: self.rename_draft.clone(),
             list_focused: self.list_focused,
             option: option_held(),
         })
@@ -595,6 +598,7 @@ impl FinderDemo {
             look: (self.list_focused, key, tokens::generation()),
             expanded: self.preview_expanded,
             renaming: self.renaming.clone(),
+            rename_draft: self.rename_draft.clone(),
             option: option_held(),
             options: options::changed(),
         }
@@ -775,8 +779,14 @@ impl Shown {
         };
         let rows = card.rows.len();
         let title: AnyElement = match &self.renaming {
-            Some(line) => rename_field(line, 0, self.typed_ahead.as_deref(), finder.downgrade())
-                .into_any_element(),
+            Some(line) => rename_field(
+                line,
+                0,
+                self.typed_ahead.as_deref(),
+                self.rename_draft.as_ref(),
+                finder.downgrade(),
+            )
+            .into_any_element(),
             None => card.title.clone().into_any_element(),
         };
 

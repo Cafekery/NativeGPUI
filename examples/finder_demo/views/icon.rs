@@ -1126,8 +1126,14 @@ impl FinderDemo {
             let carried = row_tags(&line.key);
             let held = dragging.as_ref() == Some(&line.key);
             let editor = (self.renaming.as_ref() == Some(&line.key)).then(|| {
-                rename_field(line, index, self.typed_ahead.as_deref(), this.clone())
-                    .into_any_element()
+                rename_field(
+                    line,
+                    index,
+                    self.typed_ahead.as_deref(),
+                    self.rename_draft.as_ref(),
+                    this.clone(),
+                )
+                .into_any_element()
             });
             let info = options.info.then(|| item_info(&line.row)).flatten();
 

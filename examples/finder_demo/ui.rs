@@ -101,6 +101,7 @@ pub(crate) fn rename_field(
     line: &Line,
     at: usize,
     typed: Option<&str>,
+    draft: Option<&(SharedString, String)>,
     this: WeakEntity<FinderDemo>,
 ) -> impl IntoElement {
     let name = line.row.name.clone();
@@ -112,11 +113,21 @@ pub(crate) fn rename_field(
         }
         None => (name.to_string(), 0..name[..dot].chars().count()),
     };
+    let text = (draft.filter(|(key, _)| *key == line.key)).map_or(text, |(_, draft)| draft.clone());
     let key = line.key.clone();
-    let leave = this.clone();
+    let (leave, drafts) = (this.clone(), this.clone());
+    let drafting = key.clone();
     native_text_field(("ng.finder.rename", at), &text)
         .stretch()
         .editing(editing)
+        .on_change(move |text, _, cx| {
+            drafts
+                .update(cx, |this, cx| {
+                    this.rename_draft = Some((drafting.clone(), text.clone()));
+                    cx.notify();
+                })
+                .ok();
+        })
         .on_submit(move |text, window, cx| {
             end_rename(&this, window, cx, |this, cx| this.rename(&key, text, cx))
         })
@@ -133,6 +144,7 @@ fn end_rename(
         then(this, cx);
         this.renaming = None;
         this.typed_ahead = None;
+        this.rename_draft = None;
         focus_gpui(window);
         key_to_parent(window);
         cx.notify();

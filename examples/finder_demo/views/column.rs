@@ -229,6 +229,7 @@ impl FinderDemo {
         };
         let renaming = self.renaming.clone();
         let typed_ahead = self.typed_ahead.clone();
+        let rename_draft = self.rename_draft.clone();
         let resting = self.drop_row().cloned();
         let springing = self.spring_flash().cloned();
         let cursor = self.cursor.clone();
@@ -334,6 +335,7 @@ impl FinderDemo {
                                     line,
                                     row,
                                     typed_ahead.as_deref(),
+                                    rename_draft.as_ref(),
                                     this.clone(),
                                 ))
                             } else {
