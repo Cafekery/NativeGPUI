@@ -427,6 +427,13 @@ impl Drop for SidebarState {
         for observer in &self.observers {
             unsafe { center.removeObserver(observer.as_ref()) };
         }
+        // A closing tab draws once more after its state is gone; rows kept past their source throw.
+        let outline = &self.shared.outline;
+        unsafe {
+            outline.setDataSource(None);
+            outline.setDelegate(None);
+        }
+        outline.reloadData();
     }
 }
 
