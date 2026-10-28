@@ -636,6 +636,10 @@ impl FinderDemo {
         self.stats_stale.store(true, Relaxed);
         self.stats_stale = Arc::default();
         let lines = self.focused_lines();
+        let newest = preview::Newest {
+            cursor: self.cursor.clone(),
+            anchor: self.anchor.clone(),
+        };
         if self.selected.len() <= STATS_NOW {
             let chosen = self.chosen_in(&lines, usize::MAX);
             if chosen
@@ -643,7 +647,7 @@ impl FinderDemo {
                 .all(|line| preview::sized_by_index(&line.row).is_none())
             {
                 self.stats_pending = None;
-                self.stats = preview::summarize(key, &chosen, &self.stats_stale);
+                self.stats = preview::summarize(key, &chosen, &newest, &self.stats_stale);
                 return;
             }
         }
@@ -655,7 +659,7 @@ impl FinderDemo {
                 .background_executor()
                 .spawn(async move {
                     let picked = lines.iter().filter(|line| chosen.contains(&line.key));
-                    preview::summarize(key, picked, &stale)
+                    preview::summarize(key, picked, &newest, &stale)
                 })
                 .await;
             let Some(stats) = summary else {

@@ -24,9 +24,17 @@ pub(crate) struct Stats {
     pub(crate) head: Vec<Line>,
 }
 
+/// The items a range or click just added, newest first, for the stack's top layers.
+#[derive(Clone, Default)]
+pub(crate) struct Newest {
+    pub(crate) cursor: Option<SharedString>,
+    pub(crate) anchor: Option<SharedString>,
+}
+
 pub(crate) fn summarize<'a>(
     key: (u64, usize),
     picked: impl IntoIterator<Item = &'a Line>,
+    newest: &Newest,
     stale: &AtomicBool,
 ) -> Option<Stats> {
     let mut stats = Stats {
@@ -41,6 +49,9 @@ pub(crate) fn summarize<'a>(
         head: Vec::new(),
     };
     let mut weighed = HashMap::new();
+    let layers = STACK_LAYERS.len();
+    let (mut first, mut before, mut after) = (Vec::new(), Vec::<&Line>::new(), Vec::new());
+    let (mut top, mut anchor_above) = (None, false);
     let widen = |(lo, hi): (f64, f64), at: f64| (lo.min(at), hi.max(at));
     for line in picked.into_iter().take(STATS_CAP) {
         if stale.load(Ordering::Relaxed) {
@@ -53,8 +64,21 @@ pub(crate) fn summarize<'a>(
         stats.flat_bytes += row.bytes;
         stats.created = widen(stats.created, row.created_at);
         stats.modified = widen(stats.modified, row.modified_at);
-        if stats.head.len() < STACK_LAYERS.len() {
-            stats.head.push(line.clone());
+        if top.is_some() {
+            if after.len() < layers - 1 {
+                after.push(line);
+            }
+        } else if newest.cursor.as_ref() == Some(&line.key) {
+            top = Some(line);
+        } else {
+            anchor_above |= newest.anchor.as_ref() == Some(&line.key);
+            if before.len() == layers - 1 {
+                before.remove(0);
+            }
+            before.push(line);
+        }
+        if first.len() < layers {
+            first.push(line);
         }
         for tag in row_tags(&line.key) {
             if !stats.tags.iter().any(|held| held.name == tag.name) {
@@ -62,6 +86,18 @@ pub(crate) fn summarize<'a>(
             }
         }
     }
+    let head: Vec<&Line> = match top {
+        Some(top) => {
+            let nearest_before = before.into_iter().rev();
+            let rest: Vec<&Line> = match anchor_above || after.is_empty() {
+                true => nearest_before.chain(after).collect(),
+                false => after.into_iter().chain(nearest_before).collect(),
+            };
+            std::iter::once(top).chain(rest).take(layers).collect()
+        }
+        None => first,
+    };
+    stats.head = head.into_iter().cloned().collect();
     let listed = all();
     stats.tags.sort_by_key(|tag| {
         listed

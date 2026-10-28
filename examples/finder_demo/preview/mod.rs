@@ -30,7 +30,7 @@ use objc2_foundation::{
 };
 
 pub(crate) use self::card::{duration, follow_stacks};
-pub(crate) use self::stats::{Stats, sized_by_index, summarize};
+pub(crate) use self::stats::{Newest, Stats, sized_by_index, summarize};
 use crate::app::FinderDemo;
 use crate::frame::ns_window;
 use crate::palette::Palette;
