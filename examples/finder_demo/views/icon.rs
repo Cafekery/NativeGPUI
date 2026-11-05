@@ -1095,7 +1095,7 @@ impl FinderDemo {
             .overflow_x_scroll()
             .overflow_y_scroll()
             .track_scroll(&scroll)
-            .on_scroll_wheel(stretching(
+            .on_scroll(stretching(
                 |this| (&mut this.bands.icons, this.icons.scroll.clone()),
                 cx,
             ))

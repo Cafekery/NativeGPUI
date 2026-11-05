@@ -457,7 +457,7 @@ impl FinderDemo {
         })
         .flex_1()
         .track_scroll(&self.scroll)
-        .on_scroll_wheel(stretching(
+        .on_scroll(stretching(
             |this| {
                 (
                     &mut this.bands.rows,

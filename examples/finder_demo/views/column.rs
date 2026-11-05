@@ -418,7 +418,7 @@ impl FinderDemo {
         .flex_1()
         .pt(inset)
         .track_scroll(&handle)
-        .on_scroll_wheel(stretching(
+        .on_scroll(stretching(
             move |this| {
                 let handle = this.column_scrolls[index].0.borrow().base_handle.clone();
                 (&mut this.bands.columns[index], handle)
@@ -751,7 +751,7 @@ impl FinderDemo {
             ))
             .overflow_x_scroll()
             .track_scroll(&self.column_scroll)
-            .on_scroll_wheel(stretching(
+            .on_scroll(stretching(
                 |this| (&mut this.bands.browser, this.column_scroll.clone()),
                 cx,
             ))

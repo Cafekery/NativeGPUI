@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, Context, Pixels, Point, ScrollHandle, ScrollWheelEvent, TouchPhase, Window,
-    div, point, prelude::*, px,
+    AnyElement, App, Context, Pixels, Point, ScrollEvent, ScrollHandle, TouchPhase, Window, div,
+    point, prelude::*, px,
 };
 
 use crate::app::FinderDemo;
@@ -60,7 +60,7 @@ pub(crate) fn shifted(item: AnyElement, by: Pixels) -> AnyElement {
 pub(crate) fn stretching(
     band: impl Fn(&mut FinderDemo) -> (&mut Elastic, ScrollHandle) + 'static,
     cx: &mut Context<FinderDemo>,
-) -> impl Fn(&ScrollWheelEvent, &mut Window, &mut App) + 'static {
+) -> impl Fn(&ScrollEvent, &mut Window, &mut App) + 'static {
     let view = cx.entity().downgrade();
     move |event, _, cx| {
         view.update(cx, |this, cx| {
@@ -112,7 +112,7 @@ impl Spring {
 }
 
 impl Elastic {
-    fn wheel(&mut self, event: &ScrollWheelEvent, handle: &ScrollHandle) {
+    fn wheel(&mut self, event: &ScrollEvent, handle: &ScrollHandle) {
         if !event.delta.precise() {
             return;
         }

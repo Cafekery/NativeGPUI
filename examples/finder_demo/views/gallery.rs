@@ -134,7 +134,7 @@ impl FinderDemo {
             .relative()
             .overflow_x_scroll()
             .track_scroll(&self.strip)
-            .on_scroll_wheel(stretching(
+            .on_scroll(stretching(
                 |this| (&mut this.bands.strip, this.strip.clone()),
                 cx,
             ))

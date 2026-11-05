@@ -8,7 +8,7 @@ use crate::controls::menu::{event_mask, set_state};
 use crate::controls::{CheckState, MenuView};
 use crate::system::wording::worded;
 use block2::RcBlock;
-use gpui::{Action, App, AsyncApp, Keystroke, Menu, MenuItem, SharedString};
+use gpui::{Action, App, AsyncApp, Keystroke, Menu, MenuItem, OperatingSystem, SharedString};
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, Bool, ProtocolObject, Sel};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel};
@@ -753,7 +753,7 @@ fn equivalent_key(key: &str) -> Option<String> {
 }
 
 fn equivalent(chord: &str) -> Option<(String, NSEventModifierFlags)> {
-    let keystroke = Keystroke::parse(chord).ok()?;
+    let keystroke = Keystroke::parse_with_os(chord, OperatingSystem::Mac).ok()?;
     Some((
         equivalent_key(&keystroke.key)?,
         event_mask(keystroke.modifiers),

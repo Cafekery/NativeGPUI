@@ -292,7 +292,7 @@ impl FinderDemo {
                 scroller
                     .overflow_x_scroll()
                     .track_scroll(&self.hscroll)
-                    .on_scroll_wheel(stretching(
+                    .on_scroll(stretching(
                         |this| (&mut this.bands.sideways, this.hscroll.clone()),
                         cx,
                     )),
