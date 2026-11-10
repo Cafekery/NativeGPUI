@@ -21,7 +21,7 @@ jobs:
             ~/.cargo/bin
           key: release-${{ hashFiles('Cargo.lock') }}
       - run: rustup update stable && rustup default stable
-      - run: cargo install cargo-about --locked --features cli
+      - run: command -v cargo-about >/dev/null || cargo install cargo-about --locked --features cli
       - run: ./founder/scripts/release.sh
       - run: |
           gh release delete latest --yes --cleanup-tag || true
