@@ -1,0 +1,252 @@
+Trace first drawable lifecycle / on_first_present
+
+This change applies to zed-industries/zed 90d8514059561f0e44af0a32e84e1c329cef3232
+after patches/0001, 0002 and 0003.
+
+What it does:
+- Adds src/launch_trace.rs with on_first_present /
+  on_first_drawable_completed. GPUI_LAUNCH_TRACE opt-in telemetry.
+- Safety release is 250 ms after first commit, or three submitted
+  drawables. This is a scheduling boundary, not verified scanout.
+
+Metal presented-handler traces are not included: the renderer lives in
+the git dep gpui_apple, which this crate does not fork. MacWindow::draw
+counts a commit after renderer.draw returns, so the public API fires via
+the safeties above (no silent no-op, no claim of scanout).
+
+Three-way on 90d8514: gpui_macos.rs conflicted where #65058 removed
+`pub(crate) use text_system::*` (CoreText text system moved to
+gpui_apple::AppleTextSystem). Keep `pub use launch_trace::{...}`. Do
+not restore the text_system re-export; the module is gone. platform.rs
+and window.rs applied cleanly. The sharedApplication trace stays around
+that call, then #64969's accessory policy.
+
+Re-apply on a roll: git apply --3way patches/0004-first-drawable-lifecycle.patch
+---
+diff --git a/src/gpui_macos.rs b/src/gpui_macos.rs
+index a48dc8f..7bdd778 100644
+--- a/src/gpui_macos.rs
++++ b/src/gpui_macos.rs
+@@ -8,6 +8,7 @@ mod display;
+ mod display_link;
+ mod events;
+ mod keyboard;
++mod launch_trace;
+ mod pasteboard;
+ mod system_notifications;
+ 
+@@ -45,6 +46,7 @@ pub(crate) use keyboard::*;
+ pub(crate) use platform::*;
+ pub(crate) use window::*;
+ 
++pub use launch_trace::{on_first_drawable_completed, on_first_present};
+ pub use platform::MacPlatform;
+ 
+ trait BoolExt {
+diff --git a/src/launch_trace.rs b/src/launch_trace.rs
+new file mode 100644
+index 0000000..5abfbd2
+--- /dev/null
++++ b/src/launch_trace.rs
+@@ -0,0 +1,111 @@
++//! Opt-in wall-clock launch telemetry. Presented handlers may run off-main.
++use std::{
++    fs::OpenOptions,
++    io::Write,
++    sync::OnceLock,
++    time::{SystemTime, UNIX_EPOCH},
++};
++
++fn sink() -> Option<&'static std::ffi::OsStr> {
++    static SINK: OnceLock<Option<std::ffi::OsString>> = OnceLock::new();
++    SINK.get_or_init(|| std::env::var_os("GPUI_LAUNCH_TRACE"))
++        .as_deref()
++}
++
++pub(crate) fn emit(fields: &str) {
++    let Some(sink) = sink() else { return };
++    let epoch_ms = SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .map_or(0.0, |time| time.as_secs_f64() * 1000.0);
++    let line = format!("GPUI_TRACE {fields} epoch_ms={epoch_ms:.3}");
++    if sink == "1" {
++        eprintln!("{line}");
++    } else if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(sink) {
++        let _ = writeln!(file, "{line}");
++    }
++}
++
++pub(crate) fn phase(name: &str) {
++    emit(&format!("phase={name}"));
++}
++
++// Scheduling readiness is deliberately distinct from verified scanout telemetry.
++// Some macOS display paths always report presentedTime=0 (e.g. screen sharing).
++// Metal presented-handler early release is deferred: Metal lives in git dep
++// gpui_apple and this crate does not fork it. Commits are counted from
++// MacWindow::draw after renderer.draw returns (command buffer already
++// committed inside gpui_apple). Safety is still 250 ms / three draws.
++static READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++thread_local! {
++    static AFTER_DRAWABLE: std::cell::RefCell<Vec<Box<dyn FnOnce()>>> = Default::default();
++}
++
++/// Run on the next main-queue turn after first-drawable scheduling is ready.
++/// This is a scheduling boundary, NOT proof of on-screen pixels: presentedTime
++/// may be zero on remote/compositor display paths. Safety release is 250 ms
++/// after first commit, or three submitted drawables. On this roll the Metal
++/// presented handler is not hooked (gpui_apple), so those safeties are the
++/// release. Register on main and capture weak entities if the window may close
++/// first. Late registration is also asynchronous, never reentrant.
++pub fn on_first_drawable_completed(callback: impl FnOnce() + 'static) {
++    use objc::{class, msg_send, sel, sel_impl};
++    let is_main: cocoa::base::BOOL = unsafe { msg_send![class!(NSThread), isMainThread] };
++    assert!(
++        is_main == cocoa::base::YES,
++        "launch callbacks require main thread"
++    );
++    AFTER_DRAWABLE.with(|queue| queue.borrow_mut().push(Box::new(callback)));
++    if READY.load(std::sync::atomic::Ordering::Acquire) {
++        schedule_after_drawable();
++    }
++}
++
++/// Compatibility spelling for launch clients. Like `on_first_drawable_completed`,
++/// this schedules work after submission/compositor handoff, not verified scanout.
++pub fn on_first_present(callback: impl FnOnce() + 'static) {
++    on_first_drawable_completed(callback);
++}
++
++pub(crate) fn drawable_committed() {
++    static COMMITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
++    if READY.load(std::sync::atomic::Ordering::Acquire) {
++        return;
++    }
++    let count = COMMITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
++    if count == 1 {
++        emit("milestone=first_drawable_committed");
++        let when = dispatch2::DispatchTime::NOW.time(250_000_000);
++        let _ = dispatch2::DispatchQueue::main().after(when, || release("250ms_safety"));
++    } else if count >= 3 {
++        release("three_drawable_safety");
++    }
++}
++
++fn release(reason: &str) {
++    if !READY.swap(true, std::sync::atomic::Ordering::AcqRel) {
++        emit(&format!("phase=after_drawable_ready reason={reason}"));
++        schedule_after_drawable();
++    }
++}
++
++fn schedule_after_drawable() {
++    dispatch2::DispatchQueue::main().exec_async(|| {
++        let callbacks = AFTER_DRAWABLE.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
++        for callback in callbacks {
++            callback();
++        }
++    });
++}
++
++pub(crate) struct Span(&'static str);
++impl Span {
++    pub(crate) fn new(name: &'static str) -> Self {
++        phase(&format!("{name}_begin"));
++        Self(name)
++    }
++}
++impl Drop for Span {
++    fn drop(&mut self) {
++        phase(&format!("{}_end", self.0));
++    }
++}
+diff --git a/src/platform.rs b/src/platform.rs
+index 2ac8e61..9c10d48 100644
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -560,7 +560,9 @@ impl Platform for MacPlatform {
+         }
+ 
+         unsafe {
++            crate::launch_trace::phase("sharedApplication_begin");
+             let app: id = msg_send![APP_CLASS, sharedApplication];
++            crate::launch_trace::phase("sharedApplication_end");
+             // An accessory app must not register in the Dock during launch, so its
+             // policy has to precede the run loop. `Regular` is applied in
+             // `did_finish_launching` instead: setting it this early leaves the menu
+@@ -589,10 +591,14 @@ impl Platform for MacPlatform {
+             // when it has already happened; the delegate's
+             // `did_finish_launching` still installs its observers when the
+             // event lands, and finds no callback left to run.
++            crate::launch_trace::phase("finishLaunching_begin");
+             app.finishLaunching();
++            crate::launch_trace::phase("finishLaunching_end");
+             let callback = self.0.lock().finish_launching.take();
+             if let Some(callback) = callback {
++                crate::launch_trace::phase("app_callback_begin");
+                 callback();
++                crate::launch_trace::phase("app_callback_end");
+             }
+             app.run();
+             pool.drain();
+@@ -1352,7 +1358,9 @@ extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
+             state.finish_launching.take()
+         };
+         if let Some(callback) = callback {
++            crate::launch_trace::phase("app_callback_begin");
+             callback();
++            crate::launch_trace::phase("app_callback_end");
+         }
+     }
+ }
+diff --git a/src/window.rs b/src/window.rs
+index 202541b..b29f140 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -1070,6 +1070,7 @@ impl MacWindow {
+                 ),
+             );
+ 
++            crate::launch_trace::phase("NSWindow_init_begin");
+             let native_window = native_window.initWithContentRect_styleMask_backing_defer_screen_(
+                 window_rect,
+                 style_mask,
+@@ -1077,6 +1078,7 @@ impl MacWindow {
+                 NO,
+                 target_screen,
+             );
++            crate::launch_trace::phase("NSWindow_init_end");
+             assert!(!native_window.is_null());
+             // Browser image drags advertise URL/image UTIs, while Finder search and
+             // iCloud may advertise file URLs or promises instead of the legacy list.
+@@ -1304,11 +1306,13 @@ impl MacWindow {
+                 }
+             }
+ 
++            crate::launch_trace::phase("orderFront_begin");
+             if focus && show {
+                 native_window.makeKeyAndOrderFront_(nil);
+             } else if show {
+                 native_window.orderFront_(nil);
+             }
++            crate::launch_trace::phase("orderFront_end");
+ 
+             // Set the initial position of the window to the specified origin.
+             // Although we already specified the position using `initWithContentRect_styleMask_backing_defer_screen_`,
+@@ -2138,8 +2142,16 @@ impl PlatformWindow for MacWindow {
+     }
+ 
+     fn draw(&self, scene: &gpui::Scene) {
++        static FIRST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
++        let _trace = FIRST
++            .swap(false, std::sync::atomic::Ordering::Relaxed)
++            .then(|| crate::launch_trace::Span::new("first_Window_present"));
+         let mut this = self.0.lock();
+         this.renderer.draw(scene);
++        // Metal presented-handler is in gpui_apple (not forked). Count this
++        // draw as a committed drawable so 250ms / three-draw safety can
++        // release on_first_present without lying about scanout.
++        crate::launch_trace::drawable_committed();
+     }
+ 
+     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {

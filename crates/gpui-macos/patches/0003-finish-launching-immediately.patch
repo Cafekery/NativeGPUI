@@ -1,0 +1,45 @@
+Run the finish-launching callback right after finishLaunching
+
+This change applies to zed-industries/zed 90d8514059561f0e44af0a32e84e1c329cef3232
+after patches/0001 and patches/0002.
+
+What it does:
+- Call NSApplication.finishLaunching and run the app's finish-launching
+  callback before app.run(), instead of waiting for LaunchServices'
+  open-application Apple Event (~35ms idle on an M4).
+- `run` skips finishLaunching when it has already happened; the
+  delegate's did_finish_launching still installs observers when the
+  event lands and finds no callback left to run.
+
+Applied cleanly onto 90d8514 after 0001 and 0002. #64969's accessory
+activation policy still runs before finishLaunching; Regular is still
+applied in did_finish_launching. #65059's screen-parameters observer
+and #65058's keychain/thermal moves sit elsewhere in platform.rs and
+were not in this hunk.
+
+Re-apply on a roll: git apply --3way patches/0003-finish-launching-immediately.patch
+---
+diff --git a/src/platform.rs b/src/platform.rs
+index f053856..2ac8e61 100644
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -581,6 +581,19 @@ impl Platform for MacPlatform {
+             (*app_delegate).set_ivar(MAC_PLATFORM_IVAR, self_ptr);
+ 
+             let pool = NSAutoreleasePool::new(nil);
++            // Finish launching now and run the app's callback directly. Left
++            // to `run`, AppKit sends `applicationDidFinishLaunching:` only
++            // once LaunchServices' open-application Apple Event has arrived,
++            // which is ~35ms of idle main thread between `finishLaunching`
++            // and the first window on an M4. `run` skips `finishLaunching`
++            // when it has already happened; the delegate's
++            // `did_finish_launching` still installs its observers when the
++            // event lands, and finds no callback left to run.
++            app.finishLaunching();
++            let callback = self.0.lock().finish_launching.take();
++            if let Some(callback) = callback {
++                callback();
++            }
+             app.run();
+             pool.drain();
+ 

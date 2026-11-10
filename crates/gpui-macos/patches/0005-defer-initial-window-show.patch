@@ -1,0 +1,229 @@
+Show initial content in one transaction / defer_initial_window_show
+
+This change applies to zed-industries/zed 90d8514059561f0e44af0a32e84e1c329cef3232
+after patches/0001, 0002, 0003 and 0004.
+
+What it does:
+- defer_initial_window_show(): opt in during the app callback before the
+  first window. Untabbed normal windows stay hidden until the callback
+  returns, then order and request the first frame in one CATransaction.
+- Hidden/popup/tabbed-window behavior is unchanged.
+- Display link starts on the next main-queue turn.
+- Drop sets closed so deferred show cannot touch a dying window.
+
+Do not turn presents_with_transaction back off
+after the initial transaction (patches/0002 keeps it on for every frame).
+
+Three-way on bcf6582: one conflict in MacWindow::drop. Upstream #64143
+drops the accesskit adapter to break the window-close retain cycle; the
+patch stores closed so deferred show cannot touch a dying window. Keep
+both: closed.store first, then accesskit_adapter.take.
+
+Applied cleanly onto 90d8514 after 0001–0004. #65170's redraw-before-reveal
+stays in activate(): a hidden window gets setNeedsDisplay before
+makeKeyAndOrderFront. While initial_show_pending, displayLayer still
+returns without drawing, so that setNeedsDisplay does not present early;
+show_initial_windows still orders and requests the first frame in one
+CATransaction. #65059's display_changed_callback is untouched. The
+initial transaction's request-frame callback stays
+RequestFrameOptions::default() (no display-link signal yet).
+
+Re-apply on a roll: git apply --3way patches/0005-defer-initial-window-show.patch
+---
+diff --git a/src/gpui_macos.rs b/src/gpui_macos.rs
+index 7bdd778..07c15ad 100644
+--- a/src/gpui_macos.rs
++++ b/src/gpui_macos.rs
+@@ -48,6 +48,7 @@ pub(crate) use window::*;
+ 
+ pub use launch_trace::{on_first_drawable_completed, on_first_present};
+ pub use platform::MacPlatform;
++pub use window::defer_initial_window_show;
+ 
+ trait BoolExt {
+     fn to_objc(self) -> BOOL;
+diff --git a/src/platform.rs b/src/platform.rs
+index 9c10d48..62ee9a8 100644
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -599,6 +599,7 @@ impl Platform for MacPlatform {
+                 crate::launch_trace::phase("app_callback_begin");
+                 callback();
+                 crate::launch_trace::phase("app_callback_end");
++                crate::window::show_initial_windows();
+             }
+             app.run();
+             pool.drain();
+@@ -1361,6 +1362,7 @@ extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
+             crate::launch_trace::phase("app_callback_begin");
+             callback();
+             crate::launch_trace::phase("app_callback_end");
++            crate::window::show_initial_windows();
+         }
+     }
+ }
+diff --git a/src/window.rs b/src/window.rs
+index b29f140..61b1b46 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -662,6 +662,7 @@ struct MacWindowState {
+     foreground_executor: ForegroundExecutor,
+     background_executor: BackgroundExecutor,
+     native_window: id,
++    initial_show_pending: bool,
+     native_view: NonNull<Object>,
+     blurred_view: Option<id>,
+     background_appearance: WindowBackgroundAppearance,
+@@ -838,6 +839,9 @@ impl MacWindowState {
+     }
+ 
+     fn start_display_link(&mut self) {
++        if self.initial_show_pending {
++            return;
++        }
+         self.stop_display_link();
+         unsafe {
+             if !self
+@@ -961,6 +965,76 @@ unsafe impl Send for MacWindowState {}
+ 
+ pub(crate) struct MacWindow(Arc<Mutex<MacWindowState>>, MainThreadMarker);
+ 
++thread_local! {
++    static DEFER_INITIAL_SHOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++    static INITIAL_WINDOWS: std::cell::RefCell<Vec<(Weak<Mutex<MacWindowState>>, bool)>> =
++        Default::default();
++}
++
++/// Opt in during the application launch callback, before opening the first
++/// window. GPUI's callback must return (releasing its App borrow) before the
++/// fork orders and requests presentation of the synchronously built scene.
++/// Untabbed normal windows only; hidden/popup/tabbed-window behavior is unchanged.
++pub fn defer_initial_window_show() {
++    let is_main: BOOL = unsafe { msg_send![class!(NSThread), isMainThread] };
++    assert!(is_main == YES, "initial show requires main thread");
++    DEFER_INITIAL_SHOW.with(|defer| defer.set(true));
++}
++
++pub(crate) fn show_initial_windows() {
++    DEFER_INITIAL_SHOW.with(|defer| defer.set(false));
++    let windows = INITIAL_WINDOWS.with(|windows| std::mem::take(&mut *windows.borrow_mut()));
++    for (window, focus) in windows {
++        let Some(state) = window.upgrade() else {
++            continue;
++        };
++        let (native, callback) = {
++            let mut lock = state.lock();
++            if lock.closed.load(Ordering::Acquire) {
++                continue;
++            }
++            // 0002 keeps presents-with-transaction on for every frame. The
++            // initial show still owns one CATransaction around orderFront and
++            // the first request-frame; do not turn the flag back off.
++            lock.renderer.set_presents_with_transaction(true);
++            (lock.native_window, lock.request_frame_callback.take())
++        };
++        // Own exactly this transaction. Never commit AppKit's implicit one.
++        // No state lock or App borrow may be held across AppKit callbacks.
++        unsafe {
++            let _: () = msg_send![class!(CATransaction), begin];
++            crate::launch_trace::phase("initial_transaction_begin");
++            crate::launch_trace::phase("orderFront_begin");
++            if focus {
++                native.makeKeyAndOrderFront_(nil);
++            } else {
++                native.orderFront_(nil);
++            }
++            crate::launch_trace::phase("orderFront_end");
++        }
++        if let Some(mut callback) = callback {
++            callback(Default::default());
++            state.lock().request_frame_callback = Some(callback);
++        }
++        {
++            let mut lock = state.lock();
++            lock.initial_show_pending = false;
++        }
++        unsafe {
++            let _: () = msg_send![class!(CATransaction), commit];
++        }
++        crate::launch_trace::phase("initial_transaction_end");
++        DispatchQueue::main().exec_async(move || {
++            if let Some(state) = window.upgrade() {
++                let mut lock = state.lock();
++                if !lock.closed.load(Ordering::Acquire) {
++                    lock.start_display_link();
++                }
++            }
++        });
++    }
++}
++
+ impl MacWindow {
+     pub fn open(
+         handle: AnyWindowHandle,
+@@ -988,6 +1062,10 @@ impl MacWindow {
+         unsafe {
+             let pool = NSAutoreleasePool::new(nil);
+ 
++            let initial_show_pending = show
++                && kind == WindowKind::Normal
++                && tabbing_identifier.is_none()
++                && DEFER_INITIAL_SHOW.with(|defer| defer.get());
+             let allows_automatic_window_tabbing = tabbing_identifier.is_some();
+             if allows_automatic_window_tabbing {
+                 let () = msg_send![class!(NSWindow), setAllowsAutomaticWindowTabbing: YES];
+@@ -1111,6 +1189,7 @@ impl MacWindow {
+                 foreground_executor,
+                 background_executor,
+                 native_window,
++                initial_show_pending,
+                 native_view: NonNull::new_unchecked(native_view),
+                 blurred_view: None,
+                 background_appearance: WindowBackgroundAppearance::Opaque,
+@@ -1306,13 +1385,21 @@ impl MacWindow {
+                 }
+             }
+ 
+-            crate::launch_trace::phase("orderFront_begin");
+-            if focus && show {
+-                native_window.makeKeyAndOrderFront_(nil);
+-            } else if show {
+-                native_window.orderFront_(nil);
++            if initial_show_pending {
++                INITIAL_WINDOWS.with(|windows| {
++                    windows
++                        .borrow_mut()
++                        .push((Arc::downgrade(&window.0), focus));
++                });
++            } else {
++                crate::launch_trace::phase("orderFront_begin");
++                if focus && show {
++                    native_window.makeKeyAndOrderFront_(nil);
++                } else if show {
++                    native_window.orderFront_(nil);
++                }
++                crate::launch_trace::phase("orderFront_end");
+             }
+-            crate::launch_trace::phase("orderFront_end");
+ 
+             // Set the initial position of the window to the specified origin.
+             // Although we already specified the position using `initWithContentRect_styleMask_backing_defer_screen_`,
+@@ -1398,6 +1485,8 @@ impl MacWindow {
+ impl Drop for MacWindow {
+     fn drop(&mut self) {
+         let mut this = self.0.lock();
++        // Invalidate weak deferred launch work before the asynchronous native close.
++        this.closed.store(true, Ordering::Release);
+         // `accesskit_macos::SubclassingAdapter::for_window` strong-retains the
+         // window's content view, and that content view keeps the `GPUIView` it
+         // hosts alive. Together with the `Arc<Mutex<MacWindowState>>` parked in
+@@ -3359,6 +3448,9 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
+     let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
+     let window_state = unsafe { get_window_state(this) };
+     let mut lock = window_state.lock();
++    if lock.initial_show_pending {
++        return;
++    }
+     if let Some(mut callback) = lock.request_frame_callback.take() {
+         // Every frame presents with the transaction, here and in `frame`, so a hosted AppKit
+         // view's new frame and the scene it sits on reach the screen together.

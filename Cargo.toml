@@ -1,0 +1,112 @@
+[package]
+name = "native-gpui"
+version = "0.1.0"
+edition = "2021"
+description = "Real AppKit controls, materials and macOS 26 liquid glass hosted inside a GPUI window"
+license = "MIT"
+publish = false
+
+[workspace]
+members = ["crates/*", "founder", "founder/crates/*"]
+
+[lib]
+name = "native_gpui"
+path = "src/lib.rs"
+
+[features]
+default = []
+# Undocumented material values and private AppKit selectors. Off by default: the semantic
+# `Material` set and the public glass API are the supported surface.
+private-api = []
+
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "90d8514059561f0e44af0a32e84e1c329cef3232" }
+image = "0.25"
+raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-foundation = "0.3.2"
+objc2-quartz-core = "0.3.2"
+objc2-quick-look-ui = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "objc2-app-kit",
+    "QLPreviewItem",
+    "QLPreviewPanel",
+] }
+objc2-quick-look-thumbnailing = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-app-kit",
+    "objc2-core-foundation",
+    "QLThumbnailGenerationRequest",
+    "QLThumbnailGenerator",
+    "QLThumbnailRepresentation",
+] }
+# without font-kit you get NoopTextSystem and no text.
+gpui_macos = { path = "crates/gpui-macos", features = ["font-kit"] }
+
+[dev-dependencies]
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "90d8514059561f0e44af0a32e84e1c329cef3232", features = ["font-kit"] }
+parking_lot = "0.12"
+
+[[example]]
+name = "custom_glass"
+path = "examples/custom_glass.rs"
+required-features = ["private-api"]
+
+[[example]]
+name = "glass_variants"
+path = "examples/glass_variants.rs"
+required-features = ["private-api"]
+
+[[example]]
+name = "decoration_hit"
+path = "probes/decoration_hit.rs"
+
+[[example]]
+name = "glass_hit"
+path = "probes/glass_hit.rs"
+
+[[example]]
+name = "menu_bar"
+path = "probes/menu_bar.rs"
+
+[[example]]
+name = "menu_probe"
+path = "probes/menu_probe.rs"
+
+[[example]]
+name = "ngdispatch"
+path = "probes/ngdispatch.rs"
+
+[[example]]
+name = "sidebar_probe"
+path = "probes/sidebar_probe.rs"
+
+[[example]]
+name = "smoke"
+path = "probes/smoke.rs"
+
+[[example]]
+name = "tabular_figures"
+path = "probes/tabular_figures.rs"
+
+[[example]]
+name = "z_order"
+path = "probes/z_order.rs"
+
+[profile.release]
+# Thin LTO cost 4x on every rebuild and bought no frames: measured 119.2 scroll and 106 resize
+# unique frames/s without it, against 119.2 and 93 with it.
+lto = false
+incremental = true
+
+[patch."https://github.com/zed-industries/zed"]
+gpui_macos = { path = "crates/gpui-macos" }
+
+[lints.clippy]
+type_complexity = "allow"

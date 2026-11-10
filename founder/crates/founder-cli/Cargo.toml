@@ -1,0 +1,24 @@
+[package]
+name = "founder-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Found'er's file engine from the command line: listings, every file operation, search, undo"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "founder-cli"
+path = "src/main.rs"
+
+[dependencies]
+finder-fs = { path = "../finder-fs" }
+fsearch = { path = "../fsearch" }
+libc = "0.2"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSImage", "NSWorkspace"] }
+objc2-foundation = "0.3.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints.clippy]
+type_complexity = "allow"

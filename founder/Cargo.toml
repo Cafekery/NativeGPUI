@@ -1,0 +1,36 @@
+[package]
+name = "founder"
+version = "0.1.0"
+edition = "2021"
+description = "Found'er: a Finder clone built on native-gpui"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "founder"
+path = "src/main.rs"
+
+[features]
+default = ["private-api"]
+private-api = ["native-gpui/private-api"]
+
+[dependencies]
+native-gpui = { path = ".." }
+finder-fs = { path = "crates/finder-fs" }
+finder-sftp = { path = "crates/finder-sftp" }
+fsearch = { path = "crates/fsearch" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "90d8514059561f0e44af0a32e84e1c329cef3232" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "90d8514059561f0e44af0a32e84e1c329cef3232", features = ["font-kit"] }
+image = "0.25"
+parking_lot = "0.12"
+raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-foundation = "0.3.2"
+
+[lints.clippy]
+type_complexity = "allow"

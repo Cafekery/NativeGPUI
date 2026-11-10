@@ -1,0 +1,32 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+          key: release-${{ hashFiles('Cargo.lock') }}
+      - run: rustup update stable && rustup default stable
+      - run: cargo install cargo-about --locked --features cli
+      - run: ./founder/scripts/release.sh
+      - run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest dist/Founder.zip dist/Founder.zip.sha256 \
+            --title "Found'er" \
+            --notes "Latest build of Found'er from main (${GITHUB_SHA::7}). Unsigned: move it to Applications, open it, then allow it under System Settings > Privacy & Security."
+        env:
+          GH_TOKEN: ${{ github.token }}

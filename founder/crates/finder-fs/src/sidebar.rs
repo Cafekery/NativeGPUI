@@ -1,0 +1,634 @@
+use std::io;
+use std::path::{Path, PathBuf};
+
+use objc2::AnyThread;
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2_core_foundation::{
+    CFArray, CFBoolean, CFNumber, CFRetained, CFString, CFType, CFURLPathStyle,
+};
+use objc2_core_services::{
+    LSSharedFileList, LSSharedFileListItem, kLSSharedFileListDoNotMountVolumes,
+    kLSSharedFileListNoUserInteraction,
+};
+use objc2_foundation::{
+    NSArray, NSData, NSDictionary, NSKeyedUnarchiver, NSNumber, NSString, NSURL, NSURLPathKey,
+    ns_string,
+};
+
+use crate::tags::Tag;
+use crate::volumes::{self, Standard, Volume};
+use crate::{icloud, sort};
+
+const LISTS: &str = "Library/Application Support/com.apple.sharedfilelist";
+const SUFFIXES: [&str; 3] = ["sfl4", "sfl3", "sfl2"];
+const FAVORITES: &str = "com.apple.LSSharedFileList.FavoriteItems";
+const VOLUMES: &str = "com.apple.LSSharedFileList.FavoriteVolumes";
+const HIDDEN: &str = "com.apple.LSSharedFileList.ItemIsHidden";
+const TAGS: &str = "com.apple.LSSharedFileList.ProjectsItems";
+const TAG_LABEL: &str = "kLSSharedTagFileListItemLabel";
+const SHOWN: [&str; 4] = [
+    "com.apple.LSSharedFileList.FavoriteVolumes.ShowHardDrives",
+    "com.apple.LSSharedFileList.FavoriteVolumes.ShowRemovableVolumes",
+    "com.apple.LSSharedFileList.FavoriteVolumes.ShowEjectableVolumes",
+    "com.apple.LSSharedFileList.FavoriteVolumes.ShowNetworkVolumes",
+];
+const MIXED: [&str; 3] = [
+    "com.apple.LSSharedFileList.FavoriteVolumes.ShowHardDrivesExceptions",
+    "com.apple.LSSharedFileList.FavoriteVolumes.ShowRemovableVolumesExceptions",
+    "com.apple.LSSharedFileList.FavoriteVolumes.ShowEjectableVolumesExceptions",
+];
+const CLOUD: &str = "com.apple.finder.showcloudservices";
+const PROVIDER_HIDDEN: &str = "com.apple.finder.kLSSharedFileListItemIsFileProviderHidden";
+
+struct Flags {
+    shown: [bool; 4],
+    mixed: [bool; 3],
+    cloud: bool,
+}
+
+const UNSET: Flags = Flags {
+    shown: [true; 4],
+    mixed: [false; 3],
+    cloud: true,
+};
+
+impl Flags {
+    fn read(flag: impl Fn(&'static str, bool) -> bool) -> Self {
+        Flags {
+            shown: SHOWN.map(|key| flag(key, true)),
+            mixed: MIXED.map(|key| flag(key, false)),
+            cloud: flag(CLOUD, true),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct VolumeSettings {
+    /// Hard disks, External disks, CDs, DVDs, and iOS Devices, Connected servers.
+    pub shown: [bool; 4],
+    /// Hard disks, External disks, CDs, DVDs, and iOS Devices: mixed while single volumes are exceptions.
+    pub mixed: [bool; 3],
+    /// Cloud Storage: `None` while only some of its locations are hidden.
+    pub cloud: Option<bool>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Special {
+    Computer,
+    ICloudDrive,
+    FileProvider,
+    Home,
+    AirDrop,
+    Network,
+    Trash,
+    RemoteDisc,
+}
+
+impl Special {
+    fn parse(identifier: &str) -> Option<Self> {
+        Some(match identifier.rsplit('.').next()? {
+            "IsComputer" => Self::Computer,
+            "IsICloudDrive" => Self::ICloudDrive,
+            "FileProvider" => Self::FileProvider,
+            "IsHome" => Self::Home,
+            "IsMeetingRoom" | "IsAirDrop" => Self::AirDrop,
+            "IsNetwork" | "IsBonjour" | "IsBonjourComputers" => Self::Network,
+            "IsTrash" => Self::Trash,
+            "IsRemoteDisc" => Self::RemoteDisc,
+            _ => return None,
+        })
+    }
+}
+
+struct Item {
+    visible: bool,
+    path: Option<PathBuf>,
+    name: Option<String>,
+    special: Option<Special>,
+}
+
+impl Item {
+    fn listed(&self) -> Option<Listed> {
+        match &self.name {
+            Some(name) => Some(Listed::new(name.clone(), self.path.clone(), self.special)),
+            None => Listed::at(self.path.clone()?, self.special),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Listed {
+    pub title: String,
+    pub path: Option<PathBuf>,
+    pub special: Option<Special>,
+    pub network: bool,
+    pub ejectable: bool,
+    pub server: Option<String>,
+}
+
+impl Listed {
+    fn new(title: impl Into<String>, path: Option<PathBuf>, special: Option<Special>) -> Self {
+        Listed {
+            title: title.into(),
+            path,
+            special,
+            network: false,
+            ejectable: false,
+            server: None,
+        }
+    }
+
+    fn at(path: PathBuf, special: Option<Special>) -> Option<Self> {
+        let title = path.file_name()?.to_string_lossy().into_owned();
+        Some(Listed::new(title, Some(path), special))
+    }
+
+    fn volume(title: String, volume: &Volume) -> Self {
+        Listed {
+            network: volume.network,
+            ejectable: volume.ejectable,
+            server: volume.server.clone(),
+            ..Listed::new(title, Some(volume.path.clone()), None)
+        }
+    }
+}
+
+/// Finder lists home under Locations, never under Favorites.
+pub fn listed_favorites() -> Vec<Listed> {
+    let Some((items, _)) = read(FAVORITES) else {
+        use Standard::*;
+        return [Applications, Desktop, Documents, Downloads]
+            .into_iter()
+            .filter_map(volumes::standard)
+            .filter_map(|path| Listed::at(path, None))
+            .collect();
+    };
+    items
+        .iter()
+        .filter(|item| item.visible && item.path.is_some() && item.special != Some(Special::Home))
+        .filter_map(Item::listed)
+        .collect()
+}
+
+pub fn listed_locations() -> Vec<Listed> {
+    let (items, flags) = read(VOLUMES).unwrap_or_else(|| {
+        let items = [Special::Home, Special::AirDrop, Special::Trash].map(|special| Item {
+            visible: true,
+            path: None,
+            name: None,
+            special: Some(special),
+        });
+        (items.into(), UNSET)
+    });
+    let [disks, external, _, network] = flags.shown;
+    arrange(&items, [disks, external, network], &volumes::mounted())
+}
+
+pub fn volume_settings() -> VolumeSettings {
+    let (items, flags) = read(VOLUMES).unwrap_or((Vec::new(), UNSET));
+    let providers = |visible| {
+        items
+            .iter()
+            .any(|item| item.special == Some(Special::FileProvider) && item.visible == visible)
+    };
+    let cloud = match (flags.cloud, providers(true), providers(false)) {
+        (false, ..) | (true, false, true) => Some(false),
+        (true, _, false) => Some(true),
+        (true, true, true) => None,
+    };
+    VolumeSettings {
+        shown: flags.shown,
+        mixed: flags.mixed,
+        cloud,
+    }
+}
+
+pub fn provider_symbol(root: &Path) -> Option<String> {
+    let domain = crate::xattr::get(
+        &crate::c_path(root).ok()?,
+        c"com.apple.file-provider-domain-id",
+    )?;
+    let extension = std::str::from_utf8(&domain).ok()?.split('/').next()?;
+    crate::servers::bundle_symbol(extension)
+}
+
+fn arrange(
+    items: &[Item],
+    [disks, external, network]: [bool; 3],
+    mounted: &[Volume],
+) -> Vec<Listed> {
+    let listed = |special| {
+        items
+            .iter()
+            .filter(move |item| item.visible && item.special == Some(special))
+    };
+    let has = |special| listed(special).next().is_some();
+    let shown = |volume: &&Volume| {
+        !items.iter().any(|item| {
+            // The special rows' bookmarks point at `/` too.
+            !item.visible
+                && item.special.is_none()
+                && (item.path.as_deref() == Some(volume.path.as_path())
+                    || item.path.is_none() && item.name.as_deref() == Some(volume.name.as_str()))
+        }) && match (volume.network, volume.ejectable) {
+            (true, _) => network,
+            (_, true) => external,
+            _ => disks,
+        }
+    };
+    let mut rows = Vec::new();
+    if has(Special::Computer) {
+        rows.push(Listed::new("Computer", None, Some(Special::Computer)));
+    }
+    if has(Special::ICloudDrive) {
+        rows.push(Listed::new(
+            "iCloud Drive",
+            icloud::drive(),
+            Some(Special::ICloudDrive),
+        ));
+    }
+    rows.extend(listed(Special::FileProvider).filter_map(Item::listed));
+    if has(Special::Home) {
+        let home = volumes::standard(Standard::Home);
+        rows.extend(home.and_then(|home| Listed::at(home, Some(Special::Home))));
+    }
+    for eject in [false, true] {
+        rows.extend(
+            mounted
+                .iter()
+                .filter(|volume| !volume.network && volume.ejectable == eject)
+                .filter(shown)
+                .map(|volume| Listed::volume(volume.name.clone(), volume)),
+        );
+    }
+    if has(Special::AirDrop) {
+        rows.push(Listed::new("AirDrop", None, Some(Special::AirDrop)));
+    }
+    rows.extend(server_rows(
+        mounted.iter().filter(|volume| volume.network).filter(shown),
+    ));
+    rows.push(Listed::new("Network", None, Some(Special::Network)));
+    if has(Special::Trash) {
+        let trash = volumes::standard(Standard::Trash);
+        rows.push(Listed::new("Trash", trash, Some(Special::Trash)));
+    }
+    rows
+}
+
+/// One row per computer, however many of its shares are mounted, in Finder's order.
+pub fn server_rows<'a>(volumes: impl Iterator<Item = &'a Volume>) -> Vec<Listed> {
+    let mut servers: Vec<Listed> = Vec::new();
+    for volume in volumes {
+        let title = crate::servers::title(volume.server.as_deref().unwrap_or(&volume.name));
+        let same = |row: &Listed| match (&row.server, &volume.server) {
+            (Some(known), Some(server)) => crate::servers::same_host(known, server),
+            _ => row.title == title,
+        };
+        if !servers.iter().any(same) {
+            servers.push(Listed::volume(title, volume));
+        }
+    }
+    servers.sort_by(|a, b| sort::name_cmp(&a.title, &b.title));
+    servers
+}
+
+fn read(name: &'static str) -> Option<(Vec<Item>, Flags)> {
+    let lists = crate::home()?.join(LISTS);
+    let Some(root) = SUFFIXES
+        .iter()
+        .find_map(|suffix| decode(std::fs::read(lists.join(format!("{name}.{suffix}"))).ok()?))
+    else {
+        return shared(name);
+    };
+    let items = root
+        .objectForKey(ns_string!("items"))
+        .and_then(|items| items.downcast::<NSArray>().ok())
+        .map(|items| items.iter().filter_map(|item| entry(&item)).collect())
+        .unwrap_or_default();
+    let properties = root
+        .objectForKey(ns_string!("properties"))
+        .and_then(|properties| properties.downcast::<NSDictionary>().ok());
+    let flags = Flags::read(|key, unset| {
+        properties
+            .as_deref()
+            .and_then(|properties| number(properties, &NSString::from_str(key)))
+            .map_or(unset, |flag| flag.boolValue())
+    });
+    Some((items, flags))
+}
+
+/// An app may not read Finder's lists itself; `sharedfilelistd` hands over their visible items.
+#[allow(deprecated)]
+fn shared(name: &'static str) -> Option<(Vec<Item>, Flags)> {
+    let (list, items) = snapshot(name)?;
+    let special = CFString::from_static_str("com.apple.LSSharedFileList.SpecialItemIdentifier");
+    let provider_hidden = CFString::from_static_str(PROVIDER_HIDDEN);
+    let items = items
+        .iter()
+        .map(|item| {
+            let name = unsafe { item.display_name() }.to_string();
+            Item {
+                visible: unsafe { item.property(&provider_hidden) }
+                    .and_then(|value| truthy(&value))
+                    != Some(true),
+                path: resolved(&item).map(PathBuf::from),
+                name: (!name.is_empty()).then_some(name),
+                special: unsafe { item.property(&special) }
+                    .and_then(|value| value.downcast::<CFString>().ok())
+                    .and_then(|value| Special::parse(&value.to_string())),
+            }
+        })
+        .collect();
+    let flags = Flags::read(|key, unset| {
+        unsafe { list.property(&CFString::from_static_str(key)) }
+            .and_then(|value| truthy(&value))
+            .unwrap_or(unset)
+    });
+    Some((items, flags))
+}
+
+#[allow(deprecated)]
+fn snapshot(
+    name: &'static str,
+) -> Option<(
+    CFRetained<LSSharedFileList>,
+    CFRetained<CFArray<LSSharedFileListItem>>,
+)> {
+    let list = unsafe { LSSharedFileList::new(None, &CFString::from_static_str(name), None) }?;
+    let items = unsafe { list.snapshot(std::ptr::null_mut()) }?;
+    Some((list, unsafe { CFRetained::cast_unchecked(items) }))
+}
+
+#[allow(deprecated)]
+fn resolved(item: &LSSharedFileListItem) -> Option<String> {
+    let quiet = kLSSharedFileListNoUserInteraction | kLSSharedFileListDoNotMountVolumes;
+    let url = unsafe { item.resolved_url(quiet, std::ptr::null_mut()) }?;
+    url.file_system_path(CFURLPathStyle::CFURLPOSIXPathStyle)
+        .map(|path| path.to_string())
+}
+
+fn truthy(value: &CFType) -> Option<bool> {
+    match value.downcast_ref::<CFBoolean>() {
+        Some(value) => Some(value.as_bool()),
+        None => Some(value.downcast_ref::<CFNumber>()?.as_i64()? != 0),
+    }
+}
+
+/// Finder's sidebar tags in its order, each with whether it is pinned there.
+#[allow(deprecated)]
+pub(crate) fn tags() -> Option<Vec<(Tag, bool)>> {
+    let (_list, items) = snapshot(TAGS)?;
+    let hidden = CFString::from_static_str(HIDDEN);
+    let pinned = CFString::from_static_str("kLSSharedTagFileListItemPinned");
+    let label = CFString::from_static_str(TAG_LABEL);
+    Some(
+        items
+            .iter()
+            .filter(|item| {
+                unsafe { item.property(&hidden) }.and_then(|value| truthy(&value)) != Some(true)
+            })
+            .map(|item| {
+                let pinned = unsafe { item.property(&pinned) }
+                    .is_none_or(|value| truthy(&value) == Some(true));
+                let color = unsafe { item.property(&label) }
+                    .and_then(|value| value.downcast_ref::<CFNumber>()?.as_i64())
+                    .and_then(|color| u8::try_from(color).ok())
+                    .unwrap_or_default();
+                let name = unsafe { item.display_name() }.to_string();
+                (Tag { name, color }, pinned)
+            })
+            .filter(|(tag, _)| !tag.name.is_empty())
+            .collect(),
+    )
+}
+
+#[allow(deprecated)]
+pub fn recolor_tag(name: &str, color: u8) -> io::Result<()> {
+    let (_list, items) = snapshot(TAGS).ok_or_else(|| io::Error::other("no tag list"))?;
+    let item = items
+        .iter()
+        .find(|item| unsafe { item.display_name() }.to_string() == name)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name))?;
+    let label = CFString::from_static_str(TAG_LABEL);
+    match unsafe { item.set_property(&label, &CFNumber::new_i32(color.into())) } {
+        0 => Ok(()),
+        status => Err(io::Error::other(format!(
+            "tag list refused the colour: {status}"
+        ))),
+    }
+}
+
+/// Whether Finder's sidebar shows Recents and Shared, the rows above Favorites.
+#[allow(deprecated)]
+pub fn top_rows_shown() -> [bool; 2] {
+    let hidden = CFString::from_static_str(HIDDEN);
+    let paths: Vec<String> = snapshot("com.apple.LSSharedFileList.TopSidebarSection")
+        .map(|(_list, items)| {
+            items
+                .iter()
+                .filter(|item| {
+                    unsafe { item.property(&hidden) }
+                        .is_none_or(|value| truthy(&value) == Some(false))
+                })
+                .filter_map(|item| resolved(&item))
+                .collect()
+        })
+        .unwrap_or_default();
+    ["myDocuments.cannedSearch", "SharedDocuments.cannedSearch"]
+        .map(|leaf| paths.iter().any(|path| path.ends_with(leaf)))
+}
+
+fn decode(bytes: Vec<u8>) -> Option<Retained<NSDictionary>> {
+    let data = NSData::from_vec(bytes);
+    let unarchiver = unsafe {
+        NSKeyedUnarchiver::initForReadingFromData_error(NSKeyedUnarchiver::alloc(), &data)
+    }
+    .ok()?;
+    // The archived classes are not known ahead of time: secure coding would fail every decode.
+    unsafe { unarchiver.setRequiresSecureCoding(false) };
+    let root = unsafe { unarchiver.decodeObjectForKey(ns_string!("root")) }?;
+    root.downcast::<NSDictionary>().ok()
+}
+
+fn entry(item: &AnyObject) -> Option<Item> {
+    let item = item.downcast_ref::<NSDictionary>()?;
+    let properties = item
+        .objectForKey(ns_string!("CustomItemProperties"))
+        .and_then(|properties| properties.downcast::<NSDictionary>().ok());
+    let property = |key: &NSString| properties.as_ref()?.objectForKey(key);
+    let flag = |key: &NSString| {
+        property(key)
+            .and_then(|value| value.downcast::<NSNumber>().ok())
+            .is_some_and(|value| value.boolValue())
+    };
+    let special = property(ns_string!(
+        "com.apple.LSSharedFileList.SpecialItemIdentifier"
+    ))
+    .and_then(|value| Special::parse(&value.downcast::<NSString>().ok()?.to_string()))
+    .or_else(|| {
+        flag(ns_string!(
+            "com.apple.finder.kLSSharedFileListItemIsFileProvider"
+        ))
+        .then_some(Special::FileProvider)
+    });
+    Some(Item {
+        visible: !flag(&NSString::from_str(PROVIDER_HIDDEN))
+            && number(item, ns_string!("visibility"))
+                .is_none_or(|visibility| visibility.integerValue() == 0),
+        path: item
+            .objectForKey(ns_string!("Bookmark"))
+            .and_then(|bookmark| bookmark.downcast::<NSData>().ok())
+            .and_then(|bookmark| stored_path(&bookmark)),
+        name: item
+            .objectForKey(ns_string!("Name"))
+            .and_then(|name| name.downcast::<NSString>().ok())
+            .map(|name| name.to_string()),
+        special,
+    })
+}
+
+fn number(dict: &NSDictionary, key: &NSString) -> Option<Retained<NSNumber>> {
+    dict.objectForKey(key)?.downcast::<NSNumber>().ok()
+}
+
+/// Resolving a bookmark stats its target, which waits for as long as a dead network share does.
+fn stored_path(bookmark: &NSData) -> Option<PathBuf> {
+    let key = unsafe { NSURLPathKey };
+    let values =
+        NSURL::resourceValuesForKeys_fromBookmarkData(&NSArray::from_slice(&[key]), bookmark)?;
+    let path = values.objectForKey(key)?.downcast::<NSString>().ok()?;
+    Some(PathBuf::from(path.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_special_identifier_names_the_row_it_stands_for() {
+        assert_eq!(
+            Special::parse("com.apple.LSSharedFileList.IsHome"),
+            Some(Special::Home)
+        );
+        assert_eq!(
+            Special::parse("com.apple.LSSharedFileList.IsMeetingRoom"),
+            Some(Special::AirDrop)
+        );
+        assert_eq!(Special::parse("FileProvider"), Some(Special::FileProvider));
+        assert_eq!(
+            Special::parse("com.apple.LSSharedFileList.IsAnything"),
+            None
+        );
+    }
+
+    fn item(
+        special: Option<Special>,
+        name: Option<&str>,
+        path: Option<&str>,
+        visible: bool,
+    ) -> Item {
+        Item {
+            visible,
+            path: path.map(PathBuf::from),
+            name: name.map(str::to_owned),
+            special,
+        }
+    }
+
+    fn volume(name: &str, path: &str, ejectable: bool, server: Option<&str>) -> Volume {
+        Volume {
+            name: name.into(),
+            path: path.into(),
+            ejectable: ejectable || server.is_some(),
+            network: server.is_some(),
+            capacity: 0,
+            available: 0,
+            format: String::new(),
+            server: server.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn locations_keep_finders_sections_whatever_order_its_list_keeps() {
+        use Special::*;
+        let items = [
+            item(Some(Computer), None, Some("/"), false),
+            item(Some(ICloudDrive), None, Some("/"), false),
+            item(
+                Some(FileProvider),
+                Some("Team Bucket"),
+                Some("/cloud/S3Mount-TeamBucket"),
+                true,
+            ),
+            item(Some(RemoteDisc), None, Some("/"), true),
+            item(Some(ICloudDrive), Some("iCloud"), Some("/"), true),
+            item(Some(Home), None, Some("/Users/me"), true),
+            item(Some(AirDrop), None, Some("/"), true),
+            item(Some(Trash), Some("Trash"), Some("/"), true),
+            item(None, Some("Gone"), Some("/Volumes/Gone"), false),
+        ];
+        let bonjour = "NG%20Alex%E2%80%99s%20Mini._smb._tcp.local";
+        let mounted = [
+            volume("Macintosh HD", "/", false, None),
+            volume("share", "/Volumes/share", false, Some(bonjour)),
+            volume("Archive", "/Volumes/Archive", false, Some("192.0.2.62")),
+            volume("Queue", "/Volumes/Queue", true, None),
+            volume("Photos", "/Volumes/Photos", false, Some("nas.local")),
+            volume("Media", "/Volumes/Media", false, Some("192.0.2.62")),
+            volume("Backup", "/Volumes/Backup", false, Some("10.0.0.9")),
+            volume("Gone", "/Volumes/Gone", true, None),
+        ];
+        let rows = arrange(&items, [true; 3], &mounted);
+        let titles: Vec<&str> = rows.iter().map(|row| row.title.as_str()).collect();
+        let home = volumes::standard(Standard::Home).unwrap();
+        let home = home.file_name().unwrap().to_str().unwrap();
+        assert_eq!(
+            titles,
+            [
+                "iCloud Drive",
+                "Team Bucket",
+                home,
+                "Macintosh HD",
+                "Queue",
+                "AirDrop",
+                "10.0.0.9",
+                "192.0.2.62",
+                "nas.local",
+                "NG Alex’s Mini",
+                "Network",
+                "Trash"
+            ]
+        );
+        let ejects: Vec<&str> = rows
+            .iter()
+            .filter(|row| row.ejectable)
+            .map(|row| row.title.as_str())
+            .collect();
+        assert_eq!(
+            ejects,
+            [
+                "Queue",
+                "10.0.0.9",
+                "192.0.2.62",
+                "nas.local",
+                "NG Alex’s Mini"
+            ]
+        );
+        assert_eq!(
+            rows[7].path.as_deref(),
+            Some(PathBuf::from("/Volumes/Archive").as_path())
+        );
+        assert_eq!(rows[9].server.as_deref(), Some(bonjour));
+
+        let titles: Vec<String> = arrange(&items, [false; 3], &mounted)
+            .into_iter()
+            .map(|row| row.title)
+            .collect();
+        assert!(
+            !titles
+                .iter()
+                .any(|title| title == "Macintosh HD" || title == "192.0.2.62")
+        );
+    }
+}

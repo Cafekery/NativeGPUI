@@ -1,0 +1,16 @@
+[package]
+name = "fsearch"
+version = "0.1.0"
+edition = "2024"
+description = "Whole-disk file search for macOS: fuzzy names, filters, indexed content and symbol lookup, kept live from FSEvents"
+license = "MIT"
+publish = false
+
+[dependencies]
+libc = "0.2"
+memchr = "2.8"
+memmap2 = "0.9"
+rayon = "1.12"
+regex = "1.12"
+regex-syntax = "0.8"
+serde = { version = "1", features = ["derive"] }
