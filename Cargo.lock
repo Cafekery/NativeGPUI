@@ -1622,7 +1622,7 @@ dependencies = [
 
 [[package]]
 name = "founder"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "block2 0.6.2",
  "finder-fs",
