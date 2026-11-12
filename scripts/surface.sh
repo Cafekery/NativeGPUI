@@ -6,18 +6,26 @@ cd "$(dirname "$0")/.." || exit 1
 
 target=${CARGO_TARGET_DIR:-target}
 rlib=$target/release/libnative_gpui.rlib
-if ! cargo build --release --lib >/dev/null 2>&1; then
+if ! built=$(cargo build --release --lib --message-format=json 2>/dev/null); then
   echo "surface: cargo build --release --lib failed; surface state unknown" >&2
   exit 1
 fi
 [ -f "$rlib" ] || { echo "surface: $rlib not produced" >&2; exit 1; }
+
+# Where cargo keeps dependency artifacts differs by version (deps/ or build/*/*/out), so ask it.
+search=()
+while IFS= read -r dir; do
+  search+=(-L "dependency=$dir")
+done < <(printf '%s\n' "$built" | grep -o '"filenames":\[[^]]*\]' \
+  | grep -oE '"[^"]+\.(rlib|rmeta|dylib)"' | tr -d '"' | sed 's,/[^/]*$,,' | sort -u)
+[ "${#search[@]}" -gt 0 ] || { echo "surface: cargo reported no dependency artifacts" >&2; exit 1; }
 
 out=$(mktemp -d) || exit 1
 trap 'rm -rf "$out"' EXIT
 
 check() {
   rustc --edition 2021 --emit=metadata \
-    --extern "native_gpui=$rlib" -L "dependency=$target/release/deps" \
+    --extern "native_gpui=$rlib" "${search[@]}" \
     --out-dir "$out" "scripts/surface/$1.rs" 2>&1
 }
 
