@@ -35,25 +35,41 @@ jobs:
     concurrency:
       group: release
       cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/cache@v4
+      - id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' founder/Cargo.toml | head -1)
+          echo "version=$version" >> "$GITHUB_ENV"
+          gh release view "v$version" >/dev/null 2>&1 || echo "publish=true" >> "$GITHUB_OUTPUT"
+      - if: steps.version.outputs.publish == 'true'
+        run: |
+          {
+            ./founder/scripts/notes.sh "$version"
+            printf '\nUnsigned: move it to Applications, open it, then allow it under System Settings > Privacy & Security.\n'
+          } > "$RUNNER_TEMP/notes.md"
+      - if: steps.version.outputs.publish == 'true'
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             ~/.cargo/bin
           key: release-${{ hashFiles('Cargo.lock') }}
-      - run: rustup update stable && rustup default stable
-      - run: cargo about --version || cargo install cargo-about --locked --features cli
-      - run: ./founder/scripts/release.sh
-      - run: |
-          gh release delete latest --yes --cleanup-tag || true
-          gh release create latest dist/Founder.zip dist/Founder.zip.sha256 \
+      - if: steps.version.outputs.publish == 'true'
+        run: rustup update stable && rustup default stable
+      - if: steps.version.outputs.publish == 'true'
+        run: cargo about --version || cargo install cargo-about --locked --features cli
+      - if: steps.version.outputs.publish == 'true'
+        run: ./founder/scripts/release.sh
+      - if: steps.version.outputs.publish == 'true'
+        run: |
+          gh release create "v$version" dist/Founder.zip dist/Founder.zip.sha256 \
             --target "$GITHUB_SHA" \
-            --title "Found'er" \
-            --notes "Latest build of Found'er from main (${GITHUB_SHA::7}). Unsigned: move it to Applications, open it, then allow it under System Settings > Privacy & Security."
-        env:
-          GH_TOKEN: ${{ github.token }}
+            --title "Found'er $version" \
+            --latest \
+            --notes-file "$RUNNER_TEMP/notes.md"
