@@ -1,0 +1,238 @@
+Accept browser, promise and image drags, not only Finder file lists
+
+This change applies to crates/gpui_macos/src/window.rs of
+zed-industries/zed 90d8514059561f0e44af0a32e84e1c329cef3232
+(here: src/window.rs on the verbatim 90d8514 tree), after the objc2
+start_external_drag migration (72c53bf).
+
+What it does:
+- registerForDraggedTypes: public.file-url, public.url, PNG and TIFF data
+  and the file-promise types (com.apple.pasteboard.promised-file-url,
+  com.apple.filepromise, NSFilesPromisePboardType) alongside
+  NSFilenamesPboardType.
+- external_paths_from_event: legacy Finder list first (it is the only
+  representation that carries several paths); then promised files are
+  fulfilled into a temporary directory; then a single public.file-url;
+  then an http(s) public.url passed through ExternalPaths as an opaque
+  value for the app to download; then raw PNG/TIFF data written to a
+  temporary file (512 MiB cap).
+- helpers string_from_ns, pasteboard_string, pasteboard_has_type,
+  promised_paths, unique_drop_directory and the DROP_SEQUENCE counter.
+
+Three-way on 90d8514: the cocoa import block conflicted with #65361,
+which adds NSVisualEffectBlendingMode. Keep the blending mode and the
+patch's NSPasteboardTypePNG / NSPasteboardTypeTIFF. Incoming drag
+behavior is unchanged. Outgoing start_external_drag stays the objc2
+NSDraggingItem path (72c53bf); this patch never owned that function.
+UnderWindowBackground (#65361) stays.
+
+Re-apply on a roll: git apply --3way patches/0001-accept-browser-promise-and-image-drags.patch
+---
+diff --git a/src/window.rs b/src/window.rs
+index b042825..1d99a96 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -10,11 +10,11 @@ use block2::RcBlock;
+ use cocoa::{
+     appkit::{
+         NSApplication, NSBackingStoreBuffered, NSColor, NSEvent, NSEventModifierFlags, NSEventType,
+-        NSFilenamesPboardType, NSPasteboard, NSRequestUserAttentionType, NSScreen, NSView,
+-        NSViewHeightSizable, NSViewWidthSizable, NSVisualEffectBlendingMode,
+-        NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow,
+-        NSWindowCollectionBehavior, NSWindowOcclusionState, NSWindowOrderingMode,
+-        NSWindowStyleMask, NSWindowTitleVisibility,
++        NSFilenamesPboardType, NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeTIFF,
++        NSRequestUserAttentionType, NSScreen, NSView, NSViewHeightSizable, NSViewWidthSizable,
++        NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
++        NSVisualEffectView, NSWindow, NSWindowCollectionBehavior, NSWindowOcclusionState,
++        NSWindowOrderingMode, NSWindowStyleMask, NSWindowTitleVisibility,
+     },
+     base::{id, nil},
+     foundation::{
+@@ -76,9 +76,9 @@ use std::{
+     rc::Rc,
+     sync::{
+         Arc, Once, Weak,
+-        atomic::{AtomicBool, Ordering},
++        atomic::{AtomicBool, AtomicU64, Ordering},
+     },
+-    time::Duration,
++    time::{Duration, SystemTime, UNIX_EPOCH},
+ };
+ 
+ const WINDOW_STATE_IVAR: &str = "windowState";
+@@ -92,6 +92,8 @@ static mut BLURRED_VIEW_CLASS: *const Class = ptr::null();
+ static mut WINDOW_STATE_ARCHIVER_DELEGATE_CLASS: *const Class = ptr::null();
+ static mut WINDOW_STATE_UNARCHIVER_CLASS: *const Class = ptr::null();
+ 
++static DROP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
++
+ #[allow(non_upper_case_globals)]
+ const NSWindowStyleMaskNonactivatingPanel: NSWindowStyleMask =
+     NSWindowStyleMask::from_bits_retain(1 << 7);
+@@ -1074,10 +1076,21 @@ impl MacWindow {
+                 target_screen,
+             );
+             assert!(!native_window.is_null());
++            // Browser image drags advertise URL/image UTIs, while Finder search and
++            // iCloud may advertise file URLs or promises instead of the legacy list.
++            let drag_types = [
++                NSFilenamesPboardType,
++                ns_string("public.file-url"),
++                ns_string("public.url"),
++                NSPasteboardTypeTIFF,
++                NSPasteboardTypePNG,
++                ns_string("com.apple.pasteboard.promised-file-url"),
++                ns_string("com.apple.filepromise"),
++                ns_string("NSFilesPromisePboardType"),
++            ];
+             let () = msg_send![
+                 native_window,
+-                registerForDraggedTypes:
+-                    NSArray::arrayWithObject(nil, NSFilenamesPboardType)
++                registerForDraggedTypes: NSArray::arrayWithObjects(nil, &drag_types)
+             ];
+             let () = msg_send![
+                 native_window,
+@@ -3640,20 +3653,132 @@ extern "C" fn perform_drag_operation(this: &Object, _: Sel, dragging_info: id) -
+ }
+ 
+ fn external_paths_from_event(dragging_info: *mut Object) -> Option<ExternalPaths> {
+-    let mut paths = SmallVec::new();
+     let pasteboard: id = unsafe { msg_send![dragging_info, draggingPasteboard] };
++
++    // Keep the legacy Finder representation first. It can contain several paths,
++    // unlike the scalar UTI representations used by browser drags.
+     let filenames = unsafe { NSPasteboard::propertyListForType(pasteboard, NSFilenamesPboardType) };
+-    if filenames == nil {
++    if filenames != nil {
++        let mut paths = SmallVec::new();
++        for file in unsafe { filenames.iter() } {
++            paths.push(PathBuf::from(unsafe { string_from_ns(file) }));
++        }
++        if !paths.is_empty() {
++            return Some(ExternalPaths(paths));
++        }
++    }
++
++    // Promise boards can also contain a not-yet-materialized file URL. Ask the
++    // drag source to fulfill it before accepting that URL as an ordinary file.
++    if let Some(paths) = promised_paths(dragging_info, pasteboard)
++        && !paths.is_empty()
++    {
++        return Some(ExternalPaths(paths));
++    }
++
++    if let Some(file_url) = pasteboard_string(pasteboard, "public.file-url") {
++        let url: id = unsafe { msg_send![class!(NSURL), URLWithString: ns_string(&file_url)] };
++        if url != nil {
++            let path: id = unsafe { msg_send![url, path] };
++            if path != nil {
++                let mut paths = SmallVec::new();
++                paths.push(PathBuf::from(unsafe { string_from_ns(path) }));
++                return Some(ExternalPaths(paths));
++            }
++        }
++    }
++
++    // Pass a web URL through ExternalPaths as an opaque value; the app recognises it.
++    if let Some(url) = pasteboard_string(pasteboard, "public.url")
++        && (url.starts_with("http://") || url.starts_with("https://"))
++    {
++        let mut paths = SmallVec::new();
++        paths.push(PathBuf::from(url));
++        return Some(ExternalPaths(paths));
++    }
++
++    for (pasteboard_type, extension) in [
++        (unsafe { NSPasteboardTypePNG }, "png"),
++        (unsafe { NSPasteboardTypeTIFF }, "tiff"),
++    ] {
++        let data: id = unsafe { msg_send![pasteboard, dataForType: pasteboard_type] };
++        if data == nil {
++            continue;
++        }
++        let length: usize = unsafe { msg_send![data, length] };
++        let bytes: *const u8 = unsafe { msg_send![data, bytes] };
++        if length == 0 || length > 512 * 1024 * 1024 || bytes.is_null() {
++            continue;
++        }
++        let directory = unique_drop_directory();
++        if std::fs::create_dir_all(&directory).is_err() {
++            return None;
++        }
++        let path = directory.join(format!("image.{extension}"));
++        let contents = unsafe { std::slice::from_raw_parts(bytes, length) };
++        if std::fs::write(&path, contents).is_ok() {
++            let mut paths = SmallVec::new();
++            paths.push(path);
++            return Some(ExternalPaths(paths));
++        }
++    }
++
++    None
++}
++
++unsafe fn string_from_ns(string: id) -> String {
++    unsafe {
++        CStr::from_ptr(NSString::UTF8String(string))
++            .to_string_lossy()
++            .into_owned()
++    }
++}
++
++fn pasteboard_string(pasteboard: id, pasteboard_type: &str) -> Option<String> {
++    let value: id = unsafe { msg_send![pasteboard, stringForType: ns_string(pasteboard_type)] };
++    (value != nil).then(|| unsafe { string_from_ns(value) })
++}
++
++fn pasteboard_has_type(pasteboard: id, pasteboard_type: &str) -> bool {
++    let types: id = unsafe { msg_send![pasteboard, types] };
++    types != nil && unsafe { msg_send![types, containsObject: ns_string(pasteboard_type)] }
++}
++
++fn promised_paths(dragging_info: id, pasteboard: id) -> Option<SmallVec<[PathBuf; 2]>> {
++    if !pasteboard_has_type(pasteboard, "com.apple.pasteboard.promised-file-url")
++        && !pasteboard_has_type(pasteboard, "com.apple.filepromise")
++        && !pasteboard_has_type(pasteboard, "NSFilesPromisePboardType")
++    {
+         return None;
+     }
+-    for file in unsafe { filenames.iter() } {
+-        let path = unsafe {
+-            let f = NSString::UTF8String(file);
+-            CStr::from_ptr(f).to_string_lossy().into_owned()
+-        };
+-        paths.push(PathBuf::from(path))
++
++    let directory = unique_drop_directory();
++    std::fs::create_dir_all(&directory).ok()?;
++    let destination: id = unsafe {
++        msg_send![class!(NSURL), fileURLWithPath: ns_string(&directory.to_string_lossy())]
++    };
++    let names: id =
++        unsafe { msg_send![dragging_info, namesOfPromisedFilesDroppedAtDestination: destination] };
++    if names == nil {
++        return None;
+     }
+-    Some(ExternalPaths(paths))
++    let mut paths = SmallVec::new();
++    for name in unsafe { names.iter() } {
++        paths.push(directory.join(unsafe { string_from_ns(name) }));
++    }
++    Some(paths)
++}
++
++fn unique_drop_directory() -> PathBuf {
++    let timestamp = SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .unwrap_or_default()
++        .as_nanos();
++    std::env::temp_dir().join(format!(
++        "gpui-drop-{}-{timestamp}-{}",
++        std::process::id(),
++        DROP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
++    ))
+ }
+ 
+ extern "C" fn conclude_drag_operation(this: &Object, _: Sel, _: id) {

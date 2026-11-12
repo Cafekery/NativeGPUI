@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Found'er Acknowledgements</title>
+<style>
+body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, sans-serif; max-width: 50rem; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
+h1 { font-size: 1.8em; margin-bottom: 0.3em; }
+h2 { font-size: 1.25em; margin: 2.5em 0 0.5em; }
+ul.used-by { columns: 2; padding-left: 1.2em; }
+pre { white-space: pre-wrap; font: 12px/1.45 ui-monospace, Menlo, monospace; padding: 1em; border-radius: 8px; background: rgba(127, 127, 127, 0.12); }
+</style>
+</head>
+<body>
+<h1>Acknowledgements</h1>
+<p>Found'er is built on the open-source software listed below. Each component is used under the license shown with it.</p>
+<ul>
+{{#each overview}}
+<li><a href="#{{id}}">{{name}}</a> ({{count}})</li>
+{{/each}}
+</ul>
+<h2>Rust standard library</h2>
+<p>Found'er includes the Rust standard library, available under the MIT License or the Apache License 2.0. Copyright The Rust Project Developers.</p>
+{{#each licenses}}
+<h2{{#if first_of_kind}} id="{{id}}"{{/if}}>{{name}}</h2>
+<p>Used by:</p>
+<ul class="used-by">
+{{#each used_by}}
+{{#if (eq crate.source "registry+https://github.com/rust-lang/crates.io-index")}}
+<li><a href="https://crates.io/crates/{{crate.name}}/{{crate.version}}">{{crate.name}} {{crate.version}}</a></li>
+{{else if crate.repository}}
+<li><a href="{{crate.repository}}">{{crate.name}} {{crate.version}}</a></li>
+{{else}}
+<li>{{crate.name}} {{crate.version}}</li>
+{{/if}}
+{{/each}}
+</ul>
+{{#unless source_path}}
+<p>These components include no copy of this license; its standard text follows.</p>
+{{/unless}}
+{{#if (eq id "MPL-2.0")}}
+<p>The unmodified source code of these components is available at the links above.</p>
+{{/if}}
+<pre>{{text}}</pre>
+{{/each}}
+</body>
+</html>

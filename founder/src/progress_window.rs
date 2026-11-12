@@ -1,0 +1,260 @@
+use std::cell::Cell;
+use std::collections::HashMap;
+use std::time::Duration;
+
+use gpui::{
+    App, Bounds, Context, Entity, EntityId, FocusHandle, KeyDownEvent, Pixels, Subscription,
+    Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px, size,
+};
+use native_gpui::tokens::{self, SystemColor, system_color};
+use native_gpui::{
+    LabelAlign, RawMaterial, material, native_label, native_root, remember_frame, titlebar_band,
+    window_options,
+};
+use objc2::MainThreadMarker;
+use objc2_app_kit::NSWindowButton;
+
+use crate::app::FinderDemo;
+use crate::chrome::toolbar::{system_corners, titled_height};
+use crate::frame::ns_window;
+use crate::menus::ShowProgressWindow;
+use crate::ops::conflicts::conflict_row;
+use crate::ops::jobs::{HAIRLINE_Y, LAST_ROW_H, ROW_H, WIDTH, progress_row};
+
+const TICK: Duration = Duration::from_millis(100);
+const FRAME: &str = "ng.finder.progress";
+
+thread_local! {
+    static OPEN: Cell<Option<WindowHandle<Progress>>> = const { Cell::new(None) };
+}
+
+pub(crate) fn shown() -> bool {
+    OPEN.get().is_some()
+}
+
+pub(crate) fn toggle(_: &ShowProgressWindow, cx: &mut App) {
+    match OPEN.get() {
+        Some(open) => {
+            open.update(cx, |_, window, _| window.remove_window()).ok();
+        }
+        None => open(true, cx),
+    }
+}
+
+pub(crate) fn present(cx: &mut App) {
+    match OPEN.get() {
+        Some(open) => cx.defer(move |cx| {
+            open.update(cx, |_, window, _| window.activate_window())
+                .ok();
+        }),
+        None => open(true, cx),
+    }
+}
+
+pub(crate) fn reveal(cx: &mut App) {
+    if !shown() {
+        open(false, cx);
+    }
+}
+
+fn open(focus: bool, cx: &mut App) {
+    // Deferred: the first draw reads every Finder window, and callers are inside one's update.
+    cx.defer(move |cx| {
+        let Some(mtm) = MainThreadMarker::new().filter(|_| !shown()) else {
+            return;
+        };
+        let rows: Vec<f32> = demos(cx)
+            .iter()
+            .flat_map(|demo| demo.read(cx).jobs.iter().filter(|job| job.shown()))
+            .map(|job| job.height())
+            .collect();
+        let tall = height(&rows, mtm);
+        let opened = cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds {
+                    origin: point(px(160.), px(160.)),
+                    size: size(px(WIDTH), tall),
+                })),
+                focus,
+                is_resizable: false,
+                ..window_options()
+            },
+            |window, cx| {
+                window.set_window_title("Copy");
+                system_corners(window);
+                remember_frame(window, FRAME);
+                window.resize(size(px(WIDTH), tall));
+                cx.new(|cx| {
+                    cx.on_release(|_, _| OPEN.set(None)).detach();
+                    let focus = cx.focus_handle();
+                    window.focus(&focus, cx);
+                    Progress {
+                        focus,
+                        watching: HashMap::new(),
+                        tall,
+                        had_rows: !rows.is_empty(),
+                        ticking: false,
+                    }
+                })
+            },
+        );
+        OPEN.set(opened.ok());
+    });
+}
+
+fn demos(cx: &App) -> Vec<Entity<FinderDemo>> {
+    cx.windows()
+        .into_iter()
+        .filter_map(|window| window.downcast::<FinderDemo>()?.entity(cx).ok())
+        .collect()
+}
+
+fn height(rows: &[f32], mtm: MainThreadMarker) -> Pixels {
+    let content = rows.iter().sum::<f32>() - (ROW_H - LAST_ROW_H);
+    titled_height(content.max(LAST_ROW_H), mtm)
+}
+
+struct Progress {
+    focus: FocusHandle,
+    watching: HashMap<EntityId, Subscription>,
+    tall: Pixels,
+    /// Checked when a job changes, not on draw: a covered window never draws.
+    had_rows: bool,
+    ticking: bool,
+}
+
+impl Progress {
+    fn tick(&mut self, cx: &mut Context<Self>) {
+        self.ticking = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(TICK).await;
+                let running = this.update(cx, |this, cx| {
+                    let mut running = false;
+                    for demo in demos(cx) {
+                        running |= demo.update(cx, |demo, _| demo.poll_jobs());
+                    }
+                    this.ticking = running;
+                    cx.notify();
+                    running
+                });
+                if !matches!(running, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn jobs_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let shown = demos(cx).iter().any(|demo| demo.read(cx).progress_shown());
+        if self.had_rows && !shown {
+            cx.defer_in(window, |_, window, _| window.remove_window());
+        }
+        self.had_rows |= shown;
+        cx.notify();
+    }
+}
+
+impl Render for Progress {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let demos = demos(cx);
+        let mut running = false;
+        let mut rows = Vec::new();
+        let mut heights = Vec::new();
+        for demo in &demos {
+            self.watching.entry(demo.entity_id()).or_insert_with(|| {
+                cx.observe_in(demo, window, |this, _, window, cx| {
+                    this.jobs_changed(window, cx)
+                })
+            });
+            if let Some((row, tall)) = conflict_row(demo, cx) {
+                heights.push(tall + ROW_H - LAST_ROW_H);
+                rows.push(row);
+            }
+            for job in demo.read(cx).jobs.iter().filter(|job| job.shown()) {
+                running |= job.running();
+                heights.push(job.height());
+                rows.push(progress_row(job, demo));
+            }
+        }
+        let asking = demos.iter().any(|demo| demo.read(cx).conflict.is_some());
+        if let Some(close) =
+            ns_window(window).and_then(|ns| ns.standardWindowButton(NSWindowButton::CloseButton))
+        {
+            close.setEnabled(!asking);
+        }
+        self.had_rows |= !rows.is_empty();
+        if running && !self.ticking {
+            self.tick(cx);
+        }
+        if let Some(mtm) = MainThreadMarker::new() {
+            let tall = height(&heights, mtm);
+            if tall != self.tall {
+                self.tall = tall;
+                cx.defer_in(window, move |_, window, _| {
+                    window.resize(size(window.bounds().size.width, tall));
+                });
+            }
+        }
+        let last = rows.len().saturating_sub(1);
+        native_root(
+            div()
+                .size_full()
+                .relative()
+                .child(
+                    material(
+                        "ng.finder.progress.background",
+                        RawMaterial::WindowBackground,
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+                .child(
+                    div()
+                        .size_full()
+                        .track_focus(&self.focus)
+                        .on_key_down(cx.listener(|_, event: &KeyDownEvent, _, cx| {
+                            if event.keystroke.key != "escape" {
+                                return;
+                            }
+                            let asking = self::demos(cx)
+                                .into_iter()
+                                .find(|demo| demo.read(cx).conflict.is_some());
+                            if let Some(demo) = asking {
+                                demo.update(cx, |demo, cx| demo.stop_conflict(cx));
+                            }
+                        }))
+                        .pt(titlebar_band(window))
+                        .flex()
+                        .flex_col()
+                        .when(rows.is_empty(), |body| {
+                            body.child(
+                                div().h(px(LAST_ROW_H)).flex().items_center().child(
+                                    native_label(
+                                        "ng.finder.progress.none",
+                                        "No operations in progress",
+                                    )
+                                    .font_size(tokens::small_system_font_size())
+                                    .color(SystemColor::SecondaryLabel)
+                                    .align(LabelAlign::Center),
+                                ),
+                            )
+                        })
+                        .children(rows.into_iter().enumerate().map(|(at, row)| {
+                            div().relative().child(row).when(at < last, |row| {
+                                row.child(
+                                    div()
+                                        .absolute()
+                                        .left_0()
+                                        .right_0()
+                                        .bottom(px(ROW_H - HAIRLINE_Y - 1.))
+                                        .h(px(1.))
+                                        .bg(system_color(SystemColor::Separator)),
+                                )
+                            })
+                        })),
+                ),
+        )
+    }
+}

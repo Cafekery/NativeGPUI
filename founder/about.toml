@@ -1,0 +1,64 @@
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "Unicode-3.0",
+    "bzip2-1.0.6",
+]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+ignore-build-dependencies = true
+max-depth = 2
+
+# The notices link to its unmodified source, as MPL-2.0 asks of a binary.
+[option-ext]
+accepted = ["MPL-2.0"]
+
+[native-gpui.clarify]
+license = "MIT"
+[[native-gpui.clarify.files]]
+path = "LICENSE"
+checksum = "2fa5b217344633c55e347f25f17d9523131e473f574c07272609b2ec9b947b4a"
+
+[finder-fs.clarify]
+license = "MIT"
+[[finder-fs.clarify.files]]
+path = "../../../LICENSE"
+checksum = "2fa5b217344633c55e347f25f17d9523131e473f574c07272609b2ec9b947b4a"
+
+# derive_refineable's copy of the same text sits inside this crate's folder.
+[refineable.clarify]
+license = "Apache-2.0"
+[[refineable.clarify.files]]
+path = "LICENSE-APACHE"
+checksum = "752daf2fb234ca4a1fa372c073fe127f44b7b90fd2529ae44273a64f9d53da7a"
+
+# Some of its tables are generated from Microsoft's shaping data in scripts/ms-use.
+[rustybuzz.clarify]
+license = "MIT"
+[[rustybuzz.clarify.files]]
+path = "LICENSE"
+checksum = "3a7c3f0b887abb7c638faf022d29257418458614c6724b120ceeffb279f9c7d2"
+[[rustybuzz.clarify.files]]
+path = "scripts/ms-use/COPYING"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+# The rest ship license texts cargo-about can't match on its own.
+[exr.clarify]
+license = "BSD-3-Clause"
+[[exr.clarify.files]]
+path = "LICENSE.md"
+checksum = "97e4d3aa7a9e8ac31979c16ca8bb2b628a9cb72c3362185ad2bf4ad77f43551f"
+
+[chrono.clarify]
+license = "MIT OR Apache-2.0"
+[[chrono.clarify.files]]
+path = "LICENSE.txt"
+checksum = "946c9835d8034d24404f8cfec5f4654cee5dad17e944afc3d06d742cf2882831"
+
+[libm.clarify]
+license = "MIT"
+[[libm.clarify.files]]
+path = "LICENSE.txt"
+checksum = "3823dda7cf046602f4b4e77ec8e227863dc4736037cc85bb33d9f19febe16bb7"

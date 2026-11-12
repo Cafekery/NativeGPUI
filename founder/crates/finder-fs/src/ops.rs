@@ -1,0 +1,2740 @@
+use std::borrow::Cow;
+use std::collections::HashSet;
+use std::io;
+use std::os::macos::fs::MetadataExt as _;
+use std::os::unix::fs::MetadataExt as _;
+use std::path::{Path, PathBuf};
+
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2_foundation::{
+    NSByteCountFormatter, NSByteCountFormatterCountStyle, NSCocoaErrorDomain, NSDictionary,
+    NSError, NSFileAttributeKey, NSFileManager, NSFileNoSuchFileError, NSFilePathErrorKey,
+    NSFileReadNoPermissionError, NSFileReadNoSuchFileError, NSFileWriteFileExistsError,
+    NSFileWriteInvalidFileNameError, NSFileWriteNoPermissionError, NSFileWriteOutOfSpaceError,
+    NSFileWriteVolumeReadOnlyError, NSString, NSURL, NSURLBookmarkCreationOptions,
+    NSURLBookmarkFileCreationOptions,
+};
+
+use crate::volumes;
+
+mod deep;
+mod quick;
+mod temp;
+pub mod transfer;
+
+pub use quick::{ImageFormat, ImageSize, Quick};
+pub use temp::{Cleaned, clean_temps};
+
+use temp::{clean_in, drop_slot, replace_slot, staging_path, trash_slot};
+use transfer::{End, Failure, Kind, OnError, Request, Transfer};
+
+const NAME_MAX: usize = 255;
+
+#[derive(Clone, Debug)]
+pub enum Op {
+    Move {
+        items: Vec<PathBuf>,
+        into: PathBuf,
+    },
+    Copy {
+        items: Vec<PathBuf>,
+        into: PathBuf,
+    },
+    /// A copy that also keeps each item's owner and group, as far as this process may set them.
+    CopyExactly {
+        items: Vec<PathBuf>,
+        into: PathBuf,
+    },
+    Trash(Vec<PathBuf>),
+    DeleteImmediately(Vec<PathBuf>),
+    Rename {
+        path: PathBuf,
+        name: String,
+    },
+    Duplicate(Vec<PathBuf>),
+    /// A bookmark file beside each item, not a symlink.
+    MakeAlias(Vec<PathBuf>),
+    Compress(Vec<PathBuf>),
+    NewFolder {
+        into: PathBuf,
+        name: String,
+    },
+    NewFile {
+        into: PathBuf,
+        name: String,
+    },
+    PutBack(Vec<Restore>),
+    Retry(Request),
+    Quick(Quick),
+    Batch(Vec<Op>),
+}
+
+#[derive(Clone, Debug)]
+pub struct Restore {
+    pub item: PathBuf,
+    pub to: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Conflict {
+    /// `name 2`, `name 3`, …
+    KeepBoth,
+    Replace,
+    /// Folders merge, files inside follow `Replace`.
+    Merge,
+    Skip,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Done {
+    /// Where each item ended up, in input order.
+    pub results: Vec<PathBuf>,
+    pub undo: Option<Op>,
+}
+
+pub fn perform(op: Op, conflict: Conflict) -> io::Result<Done> {
+    match op {
+        Op::Trash(items) => trash(items),
+        Op::DeleteImmediately(items) => delete(items),
+        Op::Rename { path, name } => rename(path, name, conflict),
+        Op::MakeAlias(items) => make_alias(items),
+        Op::Compress(items) => compress(items),
+        Op::NewFolder { into, name } => new_item(into, name, true),
+        Op::NewFile { into, name } => new_item(into, name, false),
+        Op::Quick(quick) => quick::perform(quick),
+        Op::Move { .. }
+        | Op::Copy { .. }
+        | Op::CopyExactly { .. }
+        | Op::Duplicate(_)
+        | Op::PutBack(_)
+        | Op::Retry(_)
+        | Op::Batch(_) => match carry(op, conflict, OnError::Stop, &Transfer::default()) {
+            Ok(carried) => carried.into_done(),
+            Err(Op::Batch(ops)) => batch(ops, conflict),
+            Err(_) => unreachable!("carry hands back only a batch"),
+        },
+    }
+}
+
+#[derive(Debug)]
+pub struct Carried {
+    pub done: Done,
+    pub failures: Vec<Failure>,
+    pub end: End,
+    /// The failed items again, merged into what landed.
+    pub left: Option<Op>,
+}
+
+impl Carried {
+    fn into_done(self) -> io::Result<Done> {
+        let cause = self.failures.into_iter().next().map(|first| first.error);
+        Unfinished::check(self.done, self.left, cause)
+    }
+}
+
+/// Runs a move, copy, duplicate, put back or retry on `transfer`; other ops come back unchanged.
+pub fn carry(
+    op: Op,
+    conflict: Conflict,
+    on_error: OnError,
+    transfer: &Transfer,
+) -> Result<Carried, Op> {
+    let (kind, items, into) = match op {
+        Op::Move { items, into } => (Kind::Move, items, into),
+        Op::Copy { items, into } => (Kind::Copy, items, into),
+        Op::CopyExactly { items, into } => (Kind::CopyExactly, items, into),
+        Op::Retry(request) => return Ok(run_one(request, transfer)),
+        Op::Duplicate(items) => return Ok(duplicate(items, on_error, transfer)),
+        Op::PutBack(items) => return Ok(put_back(items, transfer)),
+        Op::Batch(ops) if !ops.is_empty() && ops.iter().all(carried_alone) => {
+            let each = |op| match carry(op, conflict, on_error, transfer) {
+                Ok(carried) => carried,
+                Err(_) => unreachable!("only carried ops are batched here"),
+            };
+            return Ok(in_turn(ops, each, |op| op));
+        }
+        op => return Err(op),
+    };
+    let request = Request::new(kind, items, &into, conflict, on_error);
+    Ok(run_one(request, transfer))
+}
+
+fn carried_alone(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Move { .. }
+            | Op::Copy { .. }
+            | Op::CopyExactly { .. }
+            | Op::Duplicate(_)
+            | Op::PutBack(_)
+            | Op::Retry(_)
+    )
+}
+
+fn run_one(request: Request, transfer: &Transfer) -> Carried {
+    let outcome = transfer.run(request);
+    Carried {
+        left: outcome.retry().map(Op::Retry),
+        done: outcome.done,
+        failures: outcome.failures,
+        end: outcome.end,
+    }
+}
+
+fn in_turn<T>(
+    items: impl IntoIterator<Item = T>,
+    mut each: impl FnMut(T) -> Carried,
+    again: impl FnMut(T) -> Op,
+) -> Carried {
+    let mut carried = Carried {
+        done: Done::default(),
+        failures: Vec::new(),
+        end: End::Finished,
+        left: None,
+    };
+    let (mut undos, mut left) = (Vec::new(), Vec::new());
+    let mut items = items.into_iter();
+    for item in items.by_ref() {
+        let step = each(item);
+        carried.done.results.extend(step.done.results);
+        undos.extend(step.done.undo);
+        left.extend(step.left);
+        carried.failures.extend(step.failures);
+        carried.end = step.end;
+        if step.end != End::Finished {
+            break;
+        }
+    }
+    if carried.end != End::Cancelled {
+        left.extend(items.map(again));
+    }
+    undos.reverse();
+    carried.done.undo = one_or_batch(undos);
+    carried.left = one_or_batch(left);
+    carried
+}
+
+/// What of `op` a cancel left undone: the items still where the op would take them from.
+pub fn remaining(op: Op) -> Option<Op> {
+    let present = |items: Vec<PathBuf>| -> Vec<PathBuf> {
+        items.into_iter().filter(|item| taken(item)).collect()
+    };
+    let rest = match op {
+        Op::Move { items, into } => Op::Move {
+            items: present(items),
+            into,
+        },
+        Op::Copy { items, into } => Op::Copy {
+            items: present(items),
+            into,
+        },
+        Op::CopyExactly { items, into } => Op::CopyExactly {
+            items: present(items),
+            into,
+        },
+        Op::Trash(items) => Op::Trash(present(items)),
+        Op::DeleteImmediately(items) => Op::DeleteImmediately(present(items)),
+        Op::Duplicate(items) => Op::Duplicate(present(items)),
+        Op::MakeAlias(items) => Op::MakeAlias(present(items)),
+        Op::Compress(items) => Op::Compress(present(items)),
+        Op::PutBack(items) => Op::PutBack(items.into_iter().filter(|r| taken(&r.item)).collect()),
+        Op::Rename { path, name } => {
+            return taken(&path).then_some(Op::Rename { path, name });
+        }
+        Op::Batch(ops) => return one_or_batch(ops.into_iter().filter_map(remaining).collect()),
+        other => return Some(other),
+    };
+    let empty = match &rest {
+        Op::Move { items, .. }
+        | Op::Copy { items, .. }
+        | Op::CopyExactly { items, .. }
+        | Op::Trash(items)
+        | Op::DeleteImmediately(items)
+        | Op::Duplicate(items)
+        | Op::MakeAlias(items)
+        | Op::Compress(items) => items.is_empty(),
+        Op::PutBack(items) => items.is_empty(),
+        _ => false,
+    };
+    (!empty).then_some(rest)
+}
+
+fn one_or_batch(mut ops: Vec<Op>) -> Option<Op> {
+    match ops.len() {
+        0 | 1 => ops.pop(),
+        _ => Some(Op::Batch(ops)),
+    }
+}
+
+/// A destination whose folder cannot be read gets a request of its own, so its refusal names it.
+fn by_volume(
+    kind: Kind,
+    pairs: impl IntoIterator<Item = (PathBuf, PathBuf)>,
+    conflict: Conflict,
+    on_error: OnError,
+) -> impl Iterator<Item = Request> {
+    let mut groups: Vec<(Option<u64>, Vec<(PathBuf, PathBuf)>)> = Vec::new();
+    for (source, dest) in pairs {
+        let volume = std::fs::metadata(dir_of(&dest)).ok().map(|meta| meta.dev());
+        match volume.and_then(|volume| groups.iter().position(|(at, _)| *at == Some(volume))) {
+            Some(at) => groups[at].1.push((source, dest)),
+            None => groups.push((volume, vec![(source, dest)])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(move |(_, pairs)| Request::each(kind, pairs, conflict, on_error))
+}
+
+fn run_all(requests: impl IntoIterator<Item = Request>, transfer: &Transfer) -> Carried {
+    in_turn(requests, |request| run_one(request, transfer), Op::Retry)
+}
+
+#[derive(Debug)]
+pub struct Unfinished {
+    pub done: Done,
+    pub left: Op,
+    pub cause: io::Error,
+}
+
+impl std::fmt::Display for Unfinished {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.cause.fmt(f)
+    }
+}
+
+impl std::error::Error for Unfinished {}
+
+impl Unfinished {
+    fn check(done: Done, left: Option<Op>, cause: Option<io::Error>) -> io::Result<Done> {
+        let Some(cause) = cause else {
+            return Ok(done);
+        };
+        let left = left.unwrap_or(Op::Batch(Vec::new()));
+        Err(io::Error::new(
+            cause.kind(),
+            Unfinished { done, left, cause },
+        ))
+    }
+
+    pub fn from_error(error: io::Error) -> Result<Unfinished, io::Error> {
+        error.downcast()
+    }
+}
+
+fn url(path: &Path) -> Retained<NSURL> {
+    NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()))
+}
+
+fn path_from(url: &NSURL) -> PathBuf {
+    url.path()
+        .map(|s| PathBuf::from(s.to_string()))
+        .unwrap_or_default()
+}
+
+fn name_of(path: &Path) -> Cow<'_, str> {
+    path.file_name().unwrap_or_default().to_string_lossy()
+}
+
+fn io_error(err: Retained<NSError>) -> io::Error {
+    use std::io::ErrorKind::{AlreadyExists, NotFound, Other, PermissionDenied};
+    let code = err.code();
+    let kind = match err.domain().to_string().as_str() {
+        "NSCocoaErrorDomain" => {
+            if code == NSFileNoSuchFileError || code == NSFileReadNoSuchFileError {
+                NotFound
+            } else if code == NSFileReadNoPermissionError || code == NSFileWriteNoPermissionError {
+                PermissionDenied
+            } else if code == NSFileWriteFileExistsError {
+                AlreadyExists
+            } else {
+                Other
+            }
+        }
+        "NSPOSIXErrorDomain" => match code as i32 {
+            libc::ENOENT => NotFound,
+            libc::EACCES | libc::EPERM => PermissionDenied,
+            libc::EEXIST => AlreadyExists,
+            _ => Other,
+        },
+        _ => Other,
+    };
+    io::Error::new(kind, err.localizedDescription().to_string())
+}
+
+pub fn walk_size(path: &Path) -> u64 {
+    walk_size_once(path, &mut HashSet::new())
+}
+
+fn walk_size_once(path: &Path, seen: &mut HashSet<(u64, u64)>) -> u64 {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if !meta.is_dir() {
+        if meta.nlink() > 1 && !seen.insert((meta.dev(), meta.ino())) {
+            return 0;
+        }
+        return meta.len();
+    }
+    std::fs::read_dir(path).map_or(0, |entries| {
+        entries
+            .flatten()
+            .map(|entry| walk_size_once(&entry.path(), seen))
+            .sum()
+    })
+}
+
+#[derive(Clone, Copy)]
+enum Refusal {
+    ReadOnly,
+    NoSpace,
+}
+
+fn refusal_of(err: &NSError) -> Option<Refusal> {
+    if err.domain().to_string() != "NSCocoaErrorDomain" {
+        return None;
+    }
+    match err.code() {
+        code if code == NSFileWriteVolumeReadOnlyError => Some(Refusal::ReadOnly),
+        code if code == NSFileWriteOutOfSpaceError => Some(Refusal::NoSpace),
+        _ => None,
+    }
+}
+
+fn byte_string(bytes: u64) -> String {
+    let formatter = NSByteCountFormatter::new();
+    formatter.setCountStyle(NSByteCountFormatterCountStyle::File);
+    formatter.stringFromByteCount(bytes as i64).to_string()
+}
+
+fn volume_of(path: &Path) -> Option<volumes::Volume> {
+    volumes::holding(path).filter(|volume| !volume.name.is_empty())
+}
+
+/// `NSFileManager`'s own message names the boot volume whatever the destination was.
+fn refusal_message(
+    refusal: Refusal,
+    item: Option<&str>,
+    dest: &Path,
+    is_move: bool,
+    needed: u64,
+) -> Option<String> {
+    let volume = volume_of(dest)?;
+    let name = volume.name;
+    Some(match refusal {
+        Refusal::ReadOnly => {
+            let verb = if is_move { "moved" } else { "copied" };
+            let what = match item {
+                Some(item) => format!("The item \u{201c}{item}\u{201d}"),
+                None => "These items".to_string(),
+            };
+            format!(
+                "{what} can't be {verb} because the volume \u{201c}{name}\u{201d} is read only."
+            )
+        }
+        Refusal::NoSpace => {
+            let verb = if is_move { "move" } else { "copy" };
+            let what = match item {
+                Some(item) => format!("\u{201c}{item}\u{201d}"),
+                None => "these items".to_string(),
+            };
+            let short = match needed.saturating_sub(volume.available) {
+                0 => String::new(),
+                short => format!(" You need an additional {}.", byte_string(short)),
+            };
+            format!("There isn't enough space on \u{201c}{name}\u{201d} to {verb} {what}.{short}")
+        }
+    })
+}
+
+/// `NSFileManager` builds an absolute path per item and gives up once one passes `PATH_MAX`.
+fn past_path_max(err: &NSError) -> bool {
+    let too_long = |err: &NSError| {
+        err.domain().to_string() == "NSPOSIXErrorDomain" && err.code() as i32 == libc::ENAMETOOLONG
+    };
+    err.domain().to_string() == "NSCocoaErrorDomain"
+        && err.code() == NSFileWriteInvalidFileNameError
+        && err.underlyingErrors().iter().any(|under| too_long(&under))
+}
+
+fn transfer(fm: &NSFileManager, src: &Path, dst: &Path, is_move: bool) -> io::Result<()> {
+    let flags = std::fs::symlink_metadata(src)
+        .ok()
+        .filter(|meta| !meta.is_symlink())
+        .map_or(0, |meta| meta.st_flags());
+    if is_move && flags & libc::UF_IMMUTABLE != 0 {
+        // The lock goes with the item: off for the rename, back on wherever the item ends up.
+        let set = |path: &Path, flags| {
+            let name = crate::c_path(path)?;
+            crate::check(unsafe { libc::chflags(name.as_ptr(), flags) })
+        };
+        set(src, flags & !libc::UF_IMMUTABLE)?;
+        let moved = transfer(fm, src, dst, true);
+        let _ = set(if moved.is_ok() { dst } else { src }, flags);
+        return moved;
+    }
+    let (from, to) = (url(src), url(dst));
+    let landed = if is_move {
+        fm.moveItemAtURL_toURL_error(&from, &to)
+    } else {
+        fm.copyItemAtURL_toURL_error(&from, &to)
+    };
+    match landed {
+        Ok(()) => Ok(()),
+        Err(err) if past_path_max(&err) => {
+            let done = if is_move {
+                // Only a change of case may land on a name already held, by the item itself.
+                let flags = if same_item(src, dst) {
+                    0
+                } else {
+                    libc::RENAME_EXCL
+                };
+                deep::rename(src, dst, flags)
+            } else {
+                let _ = deep::remove(dst);
+                deep::copy(src, dst)
+            };
+            done.map_err(|err| deep_error(err, src, dst, is_move))
+        }
+        Err(err) => Err(volume_refusal(&err, src, dst, is_move).unwrap_or_else(|| io_error(err))),
+    }
+}
+
+fn deep_error(err: io::Error, src: &Path, dest: &Path, is_move: bool) -> io::Error {
+    let Some(refused) = err.raw_os_error().and_then(|code| cocoa_error(code, dest)) else {
+        return err;
+    };
+    volume_refusal(&refused, src, dest, is_move).unwrap_or_else(|| io_error(refused))
+}
+
+fn cocoa_error(code: i32, path: &Path) -> Option<Retained<NSError>> {
+    let cocoa = match code {
+        libc::EACCES | libc::EPERM => NSFileWriteNoPermissionError,
+        libc::EROFS => NSFileWriteVolumeReadOnlyError,
+        libc::ENOSPC => NSFileWriteOutOfSpaceError,
+        libc::ENAMETOOLONG => NSFileWriteInvalidFileNameError,
+        libc::ENOENT => NSFileNoSuchFileError,
+        libc::EEXIST => NSFileWriteFileExistsError,
+        _ => return None,
+    };
+    let named = NSString::from_str(&path.to_string_lossy());
+    let named: &AnyObject = &named;
+    let info = NSDictionary::from_slices(&[unsafe { NSFilePathErrorKey }], &[named]);
+    Some(unsafe { NSError::errorWithDomain_code_userInfo(NSCocoaErrorDomain, cocoa, Some(&info)) })
+}
+
+fn volume_refusal(err: &NSError, src: &Path, dest: &Path, is_move: bool) -> Option<io::Error> {
+    let refusal = refusal_of(err)?;
+    let needed = match refusal {
+        Refusal::NoSpace => walk_size(src),
+        Refusal::ReadOnly => 0,
+    };
+    let message = refusal_message(refusal, Some(&name_of(src)), dest, is_move, needed)?;
+    Some(io::Error::other(message))
+}
+
+fn remove_path(fm: &NSFileManager, path: &Path) -> io::Result<()> {
+    fm.removeItemAtURL_error(&url(path)).map_err(io_error)
+}
+
+pub fn check_name(name: &str) -> io::Result<()> {
+    let advice = if name.len() > NAME_MAX {
+        " Try using a name with fewer characters."
+    } else if matches!(name, "" | "." | "..") || name.contains(['/', '\0']) {
+        ""
+    } else {
+        return Ok(());
+    };
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("The name \u{201c}{name}\u{201d} can't be used.{advice}"),
+    ))
+}
+
+/// Finder asks before it clears a lock; trashing, deleting, moving and renaming clear it themselves.
+pub fn locked(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.st_flags() & libc::UF_IMMUTABLE != 0)
+}
+
+/// A locked child refuses a delete of the folder it sits in, but not a trash, which is one rename.
+fn unlock(path: &Path, deep: bool) -> io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    let flags = meta.st_flags();
+    // `chflags` follows a link, so the lock a link carries itself is left where it is.
+    if flags & libc::UF_IMMUTABLE != 0 && !meta.is_symlink() {
+        let name = crate::c_path(path)?;
+        crate::check(unsafe { libc::chflags(name.as_ptr(), flags & !libc::UF_IMMUTABLE) })?;
+    }
+    if deep && meta.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            unlock(&entry?.path(), true)?;
+        }
+    }
+    Ok(())
+}
+
+/// Past `PATH_MAX` `lstat` fails, which would read a name that is in use as free.
+fn identity(path: &Path) -> Option<(u64, u64)> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => Some((meta.dev(), meta.ino())),
+        Err(err) if err.raw_os_error() == Some(libc::ENAMETOOLONG) => deep::identity(path).ok(),
+        Err(_) => None,
+    }
+}
+
+/// A broken symlink still holds its name, which `Path::exists` misses because it follows links.
+pub fn taken(path: &Path) -> bool {
+    identity(path).is_some()
+}
+
+/// One entry under another case or composition; a hard link elsewhere is an entry of its own.
+pub fn same_item(one: &Path, other: &Path) -> bool {
+    identity(one).is_some_and(|id| identity(other) == Some(id))
+        && folder_identity(one).is_some_and(|dir| folder_identity(other) == Some(dir))
+        && crate::sort::same_name(&name_of(one), &name_of(other))
+}
+
+fn folder_identity(path: &Path) -> Option<(u64, u64)> {
+    let dir = dir_of(path);
+    match std::fs::metadata(dir) {
+        Ok(meta) => Some((meta.dev(), meta.ino())),
+        Err(err) if err.raw_os_error() == Some(libc::ENAMETOOLONG) => deep::identity(dir).ok(),
+        Err(_) => None,
+    }
+}
+
+fn split_name(name: &str) -> (&str, Option<&str>) {
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => (stem, Some(ext)),
+        _ => (name, None),
+    }
+}
+
+/// Shortens the stem, never the tag or the extension, so the name stays within `NAME_MAX`.
+fn fitted(stem: &str, tag: &str, ext: Option<&str>) -> String {
+    let room = NAME_MAX.saturating_sub(tag.len() + ext.map_or(0, |ext| ext.len() + 1));
+    let mut end = stem.len().min(room);
+    while !stem.is_char_boundary(end) {
+        end -= 1;
+    }
+    let stem = &stem[..end];
+    match ext {
+        Some(ext) => format!("{stem}{tag}.{ext}"),
+        None => format!("{stem}{tag}"),
+    }
+}
+
+fn first_free(dir: &Path, stem: &str, tag: &str, ext: Option<&str>) -> PathBuf {
+    (1..)
+        .map(|n| match n {
+            1 => dir.join(fitted(stem, tag, ext)),
+            n => dir.join(fitted(stem, &format!("{tag} {n}"), ext)),
+        })
+        .find(|path| !taken(path))
+        .expect("an endless range")
+}
+
+fn dir_of(path: &Path) -> &Path {
+    path.parent().unwrap_or(Path::new(""))
+}
+
+fn free_path(path: &Path) -> PathBuf {
+    let name = name_of(path);
+    let (stem, ext) = split_name(&name);
+    first_free(dir_of(path), stem, "", ext)
+}
+
+fn duplicate_path(path: &Path) -> PathBuf {
+    let name = name_of(path);
+    let (stem, ext) = split_name(&name);
+    first_free(dir_of(path), stem, " copy", ext)
+}
+
+fn next_free(source: &Path, wanted: &Path) -> PathBuf {
+    if same_item(source, wanted) {
+        duplicate_path(wanted)
+    } else {
+        free_path(wanted)
+    }
+}
+
+/// A name taken after it was picked had no conflict choice made for it, so the next free one is used.
+fn land<T>(
+    mut at: PathBuf,
+    next: impl Fn() -> PathBuf,
+    mut place: impl FnMut(&Path) -> io::Result<T>,
+) -> io::Result<(PathBuf, T)> {
+    loop {
+        match place(&at) {
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                let free = next();
+                if free == at {
+                    return Err(err);
+                }
+                at = free;
+            }
+            placed => return placed.map(|placed| (at, placed)),
+        }
+    }
+}
+
+fn alias_path(path: &Path) -> PathBuf {
+    first_free(dir_of(path), &name_of(path), " alias", None)
+}
+
+fn archive_path(items: &[PathBuf]) -> Option<PathBuf> {
+    let stem = match items {
+        [] => return None,
+        [only] => name_of(only),
+        _ => Cow::Borrowed("Archive"),
+    };
+    Some(first_free(dir_of(&items[0]), &stem, "", Some("zip")))
+}
+
+fn exchange(staged: &Path, dest: &Path) -> io::Result<()> {
+    match deep::rename(staged, dest, libc::RENAME_SWAP) {
+        Err(err) if matches!(err.raw_os_error(), Some(libc::ENOTSUP | libc::EINVAL)) => {}
+        swapped => return swapped,
+    }
+    let aside = replace_slot(dest)?;
+    let swapped = deep::rename(dest, &aside, 0).and_then(|()| {
+        deep::rename(staged, dest, 0).inspect_err(|_| {
+            let _ = deep::rename(&aside, dest, 0);
+        })
+    });
+    let swapped = swapped.and_then(|()| deep::rename(&aside, staged, 0));
+    let _ = deep::remove_dir(dir_of(&aside));
+    swapped
+}
+
+fn trash_at(fm: &NSFileManager, path: &Path) -> io::Result<PathBuf> {
+    let mut resulting: Option<Retained<NSURL>> = None;
+    fm.trashItemAtURL_resultingItemURL_error(&url(path), Some(&mut resulting))
+        .map_err(io_error)?;
+    Ok(resulting.map_or_else(|| path.to_path_buf(), |landed| path_from(&landed)))
+}
+
+fn past_the_lock<T>(path: &Path, deep: bool, attempt: impl Fn() -> io::Result<T>) -> io::Result<T> {
+    match attempt() {
+        Err(refused) if refused.kind() == io::ErrorKind::PermissionDenied => {
+            unlock(path, deep).map_or(Err(refused), |()| attempt())
+        }
+        done => done,
+    }
+}
+
+fn trash_one(fm: &NSFileManager, path: &Path) -> io::Result<PathBuf> {
+    past_the_lock(path, false, || trash_at(fm, path))
+}
+
+fn delete_one(fm: &NSFileManager, path: &Path) -> io::Result<()> {
+    past_the_lock(path, true, || remove_path(fm, path))
+}
+
+#[derive(Default)]
+struct Placed {
+    dest: Option<PathBuf>,
+    landed: Vec<Restore>,
+    displaced: Vec<Restore>,
+}
+
+impl Placed {
+    fn at(src: &Path, dest: PathBuf) -> Placed {
+        Placed {
+            landed: vec![Restore {
+                item: dest.clone(),
+                to: src.to_path_buf(),
+            }],
+            dest: Some(dest),
+            displaced: Vec::new(),
+        }
+    }
+}
+
+fn real_dir(path: &Path) -> bool {
+    deep::lstat(path).is_ok_and(|meta| meta.is_dir())
+}
+
+fn replace_at(fm: &NSFileManager, src: &Path, dest: PathBuf) -> io::Result<Placed> {
+    let staged = replace_slot(&dest)?;
+    if let Err(err) = transfer(fm, src, &staged, true) {
+        let _ = std::fs::remove_dir(dir_of(&staged));
+        return Err(err);
+    }
+    if let Err(err) = exchange(&staged, &dest) {
+        // A moved item's only copy is the staged one; it goes back where it came from.
+        let _ = transfer(fm, &staged, src, true);
+        let _ = std::fs::remove_dir(dir_of(&staged));
+        return Err(err);
+    }
+    let displaced = match trash_slot(fm, &staged) {
+        Ok(item) => vec![Restore {
+            item,
+            to: dest.clone(),
+        }],
+        Err(_) => {
+            drop_slot(&staged);
+            Vec::new()
+        }
+    };
+    Ok(Placed {
+        displaced,
+        ..Placed::at(src, dest)
+    })
+}
+
+fn place_one(
+    fm: &NSFileManager,
+    src: &Path,
+    dest: PathBuf,
+    conflict: Conflict,
+) -> io::Result<Placed> {
+    let fresh = |at: PathBuf| {
+        land(at, || free_path(&dest), |at| transfer(fm, src, at, true))
+            .map(|(at, ())| Placed::at(src, at))
+    };
+    if !taken(&dest) {
+        return fresh(dest.clone());
+    }
+    if same_item(src, &dest) {
+        return Ok(Placed::at(src, dest));
+    }
+    match conflict {
+        Conflict::Skip => Ok(Placed::default()),
+        Conflict::KeepBoth => fresh(free_path(&dest)),
+        Conflict::Merge if real_dir(src) && real_dir(&dest) => {
+            clean_in(&dest);
+            let (mut landed, mut displaced) = (Vec::new(), Vec::new());
+            for entry in std::fs::read_dir(src)? {
+                let entry = entry?;
+                let child_dest = dest.join(entry.file_name());
+                let placed = place_one(fm, &entry.path(), child_dest, Conflict::Merge)?;
+                landed.extend(placed.landed);
+                displaced.extend(placed.displaced);
+            }
+            std::fs::remove_dir(src)?;
+            Ok(Placed {
+                dest: Some(dest),
+                landed,
+                displaced,
+            })
+        }
+        Conflict::Replace | Conflict::Merge => replace_at(fm, src, dest),
+    }
+}
+
+fn refuse_into_itself(item: &Path, into: &Path, is_move: bool) -> io::Result<()> {
+    let real = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if !real(into).starts_with(real(item)) {
+        return Ok(());
+    }
+    let verb = if is_move { "moved" } else { "copied" };
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "The item \u{201c}{}\u{201d} can't be {verb} into itself.",
+            name_of(item)
+        ),
+    ))
+}
+
+fn undo_of_transfer(is_move: bool, home: Vec<Restore>, displaced: Vec<Restore>) -> Option<Op> {
+    let (landed, mut put_back) = if is_move {
+        (Vec::new(), home)
+    } else {
+        (
+            home.into_iter().map(|restore| restore.item).collect(),
+            Vec::new(),
+        )
+    };
+    let landed = (!landed.is_empty()).then_some(Op::Trash(landed));
+    put_back.extend(displaced);
+    let restored = (!put_back.is_empty()).then_some(Op::PutBack(put_back));
+    match (landed, restored) {
+        (Some(landed), Some(restored)) => Some(Op::Batch(vec![landed, restored])),
+        (landed, restored) => landed.or(restored),
+    }
+}
+
+fn put_back(items: Vec<Restore>, transfer: &Transfer) -> Carried {
+    for restore in &items {
+        let _ = std::fs::create_dir_all(dir_of(&restore.to));
+    }
+    let (into, beside): (Vec<_>, Vec<_>) = items
+        .iter()
+        .map(|restore| (restore.item.clone(), restore.to.clone()))
+        .partition(|(item, to)| real_dir(item) && real_dir(to) && apart(item, to));
+    let merge = by_volume(Kind::Move, into, Conflict::Merge, OnError::Continue);
+    let keep = by_volume(Kind::Move, beside, Conflict::KeepBoth, OnError::Continue);
+    let mut carried = run_all(merge.chain(keep), transfer);
+    let refused = |restore: &Restore| {
+        carried
+            .failures
+            .iter()
+            .any(|failure| failure.source.starts_with(&restore.item))
+    };
+    let left: Vec<Restore> = items.into_iter().filter(refused).collect();
+    carried.left = (!left.is_empty()).then_some(Op::PutBack(left));
+    carried.done.undo = None;
+    carried
+}
+
+/// The halves of a move that failed partway share no names but their folders'.
+fn apart(item: &Path, into: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(item) else {
+        return false;
+    };
+    entries.flatten().all(|entry| {
+        let name = entry.file_name();
+        let (here, there) = (entry.path(), into.join(&name));
+        name == ".DS_Store"
+            || !taken(&there)
+            || (real_dir(&here) && real_dir(&there) && apart(&here, &there))
+    })
+}
+
+fn batch(ops: Vec<Op>, conflict: Conflict) -> io::Result<Done> {
+    let mut results = Vec::new();
+    let (mut left, mut cause) = (Vec::new(), None);
+    for op in ops {
+        match perform(op.clone(), conflict) {
+            Ok(done) => results.extend(done.results),
+            Err(error) => match Unfinished::from_error(error) {
+                Ok(unfinished) => {
+                    results.extend(unfinished.done.results);
+                    left.push(unfinished.left);
+                    cause.get_or_insert(unfinished.cause);
+                }
+                Err(error) => {
+                    left.push(op);
+                    cause.get_or_insert(error);
+                }
+            },
+        }
+    }
+    let done = Done {
+        results,
+        undo: None,
+    };
+    Unfinished::check(done, one_or_batch(left), cause)
+}
+
+fn trash(items: Vec<PathBuf>) -> io::Result<Done> {
+    let fm = NSFileManager::defaultManager();
+    let mut home = Vec::with_capacity(items.len());
+    let (mut left, mut cause) = (Vec::new(), None);
+    for item in items {
+        match trash_one(&fm, &item) {
+            Ok(trashed) => home.push(Restore {
+                item: trashed,
+                to: item,
+            }),
+            Err(error) => {
+                cause.get_or_insert(error);
+                left.push(item);
+            }
+        }
+    }
+    let done = Done {
+        results: home.iter().map(|restore| restore.item.clone()).collect(),
+        undo: (!home.is_empty()).then_some(Op::PutBack(home)),
+    };
+    Unfinished::check(done, Some(Op::Trash(left)), cause)
+}
+
+fn delete(items: Vec<PathBuf>) -> io::Result<Done> {
+    let fm = NSFileManager::defaultManager();
+    for item in &items {
+        delete_one(&fm, item)?;
+    }
+    Ok(Done {
+        results: items,
+        undo: None,
+    })
+}
+
+fn rename(path: PathBuf, name: String, conflict: Conflict) -> io::Result<Done> {
+    check_name(&name)?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "item has no parent"))?;
+    let dest = dir.join(&name);
+    if dest == path {
+        return Ok(Done {
+            results: vec![path],
+            undo: None,
+        });
+    }
+    let fm = NSFileManager::defaultManager();
+    let placed = if same_item(&path, &dest) {
+        transfer(&fm, &path, &dest, true)?;
+        Placed::at(&path, dest)
+    } else {
+        place_one(&fm, &path, dest, conflict)?
+    };
+    let Some(dest) = placed.dest else {
+        return Ok(Done::default());
+    };
+    let back = Op::Rename {
+        path: dest.clone(),
+        name: name_of(&path).into_owned(),
+    };
+    let undo = if placed.displaced.is_empty() {
+        back
+    } else {
+        Op::Batch(vec![back, Op::PutBack(placed.displaced)])
+    };
+    Ok(Done {
+        results: vec![dest],
+        undo: Some(undo),
+    })
+}
+
+fn duplicate(items: Vec<PathBuf>, on_error: OnError, transfer: &Transfer) -> Carried {
+    let pairs = items.into_iter().map(|item| {
+        let dest = duplicate_path(&item);
+        (item, dest)
+    });
+    let requests = by_volume(Kind::Copy, pairs, Conflict::KeepBoth, on_error);
+    let mut carried = run_all(requests, transfer);
+    let results = &carried.done.results;
+    carried.done.undo = (!results.is_empty()).then(|| Op::Trash(results.clone()));
+    carried
+}
+
+/// `ditto` is what Archive Utility runs; it keeps resource forks and extended attributes.
+fn compress(items: Vec<PathBuf>) -> io::Result<Done> {
+    let Some(dest) = archive_path(&items) else {
+        return Ok(Done::default());
+    };
+    let mut ditto = std::process::Command::new("/usr/bin/ditto");
+    ditto.args(["-c", "-k", "--sequesterRsrc"]);
+    let staging = (items.len() > 1).then(|| staging_path(&dest));
+    let source = match &staging {
+        None => {
+            if items[0].is_dir() {
+                ditto.arg("--keepParent");
+            }
+            &items[0]
+        }
+        Some(staging) => {
+            std::fs::create_dir(staging)?;
+            let fm = NSFileManager::defaultManager();
+            let staged = items.iter().try_for_each(|item| {
+                let name = item.file_name().unwrap_or_default();
+                transfer(&fm, item, &staging.join(name), false)
+                    .map_err(|error| not_staged(item, staging, error))
+            });
+            if let Err(error) = staged {
+                let _ = delete_one(&fm, staging);
+                return Err(error);
+            }
+            staging
+        }
+    };
+    let out = ditto.arg(source).arg(&dest).output();
+    if let Some(staging) = &staging {
+        // A locked item's staged copy is locked too.
+        let _ = delete_one(&NSFileManager::defaultManager(), staging);
+    }
+    let out = out?;
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&dest);
+        let mut message = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if let Some(staging) = &staging {
+            message = message.replace(
+                &*staging.to_string_lossy(),
+                &dir_of(&dest).to_string_lossy(),
+            );
+        }
+        return Err(io::Error::other(message));
+    }
+    Ok(created(vec![dest]))
+}
+
+/// `NSFileManager`'s message names the folder copied into, here the hidden staging one.
+fn not_staged(item: &Path, staging: &Path, error: io::Error) -> io::Error {
+    let why = match error.kind() {
+        io::ErrorKind::PermissionDenied => "you don't have permission",
+        io::ErrorKind::NotFound => "it can't be found",
+        kind => {
+            let message = error.to_string();
+            return io::Error::new(
+                kind,
+                message.replace(&*name_of(staging), &name_of(dir_of(staging))),
+            );
+        }
+    };
+    io::Error::new(
+        error.kind(),
+        format!(
+            "The item \u{201c}{}\u{201d} can't be compressed because {why}.",
+            name_of(item)
+        ),
+    )
+}
+
+fn make_alias(items: Vec<PathBuf>) -> io::Result<Done> {
+    items
+        .iter()
+        .map(|item| {
+            let dest = alias_path(item);
+            let bookmark = url(item)
+                .bookmarkDataWithOptions_includingResourceValuesForKeys_relativeToURL_error(
+                    NSURLBookmarkCreationOptions::SuitableForBookmarkFile,
+                    None,
+                    None,
+                )
+                .map_err(io_error)?;
+            NSURL::writeBookmarkData_toURL_options_error(
+                &bookmark,
+                &url(&dest),
+                NSURLBookmarkFileCreationOptions::default(),
+            )
+            .map_err(io_error)?;
+            Ok(dest)
+        })
+        .collect::<io::Result<_>>()
+        .map(created)
+}
+
+fn new_item(into: PathBuf, name: String, is_dir: bool) -> io::Result<Done> {
+    check_name(&name)?;
+    let fm = NSFileManager::defaultManager();
+    let dest = free_path(&into.join(&name));
+    let attributes = None::<&NSDictionary<NSFileAttributeKey, AnyObject>>;
+    if is_dir {
+        unsafe {
+            fm.createDirectoryAtURL_withIntermediateDirectories_attributes_error(
+                &url(&dest),
+                false,
+                attributes,
+            )
+        }
+        .map_err(io_error)?;
+    } else {
+        let path = NSString::from_str(&dest.to_string_lossy());
+        if !unsafe { fm.createFileAtPath_contents_attributes(&path, None, attributes) } {
+            return Err(io::Error::other("could not create file"));
+        }
+    }
+    Ok(created(vec![dest]))
+}
+
+fn created(results: Vec<PathBuf>) -> Done {
+    let undo = (!results.is_empty()).then(|| Op::Trash(results.clone()));
+    Done { results, undo }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::purge;
+    use objc2_foundation::NSURLBookmarkResolutionOptions;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("finder-fs-ops-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn touch(path: &Path, contents: &str) {
+        fs::write(path, contents).unwrap();
+    }
+
+    fn displaced(op: &Op) -> Vec<PathBuf> {
+        match op {
+            Op::PutBack(items) => items.iter().map(|restore| restore.item.clone()).collect(),
+            Op::Batch(ops) => ops.iter().flat_map(displaced).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn lock(path: &Path) {
+        let flags = fs::symlink_metadata(path).unwrap().st_flags() | libc::UF_IMMUTABLE;
+        let name = crate::c_path(path).unwrap();
+        crate::check(unsafe { libc::chflags(name.as_ptr(), flags) }).unwrap();
+    }
+
+    #[test]
+    fn copy_round_trip() {
+        let dir = temp_dir("copy");
+        let src = dir.join("src");
+        let dst = dir.join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        let file = src.join("a.txt");
+        touch(&file, "hello");
+
+        let done = perform(
+            Op::Copy {
+                items: vec![file.clone()],
+                into: dst.clone(),
+            },
+            Conflict::Replace,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![dst.join("a.txt")]);
+        assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "hello");
+        assert!(file.exists(), "copy must leave the source in place");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn move_round_trip() {
+        let dir = temp_dir("move");
+        let src = dir.join("src");
+        let dst = dir.join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        let file = src.join("a.txt");
+        touch(&file, "hello");
+
+        let done = perform(
+            Op::Move {
+                items: vec![file.clone()],
+                into: dst.clone(),
+            },
+            Conflict::Replace,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![dst.join("a.txt")]);
+        assert!(!file.exists(), "move must remove the source");
+
+        let undo = done.undo.expect("a move undoes back to its source folder");
+        let back = perform(undo, Conflict::Replace).unwrap();
+        assert_eq!(back.results, vec![file.clone()]);
+        assert!(file.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn moving_an_item_onto_itself_changes_nothing() {
+        let dir = temp_dir("onto-itself");
+        let file = dir.join("a.txt");
+        touch(&file, "one");
+
+        let done = perform(
+            Op::Move {
+                items: vec![file.clone()],
+                into: dir.clone(),
+            },
+            Conflict::Replace,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![file.clone()]);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "one");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copying_into_its_own_folder_duplicates() {
+        let dir = temp_dir("own-folder");
+        let file = dir.join("a.txt");
+        touch(&file, "one");
+
+        let done = perform(
+            Op::Copy {
+                items: vec![file.clone()],
+                into: dir.clone(),
+            },
+            Conflict::Replace,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![dir.join("a copy.txt")]);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "one");
+        assert_eq!(fs::read_to_string(dir.join("a copy.txt")).unwrap(), "one");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keep_both_names_like_finder() {
+        let dir = temp_dir("keepboth");
+        touch(&dir.join("a.txt"), "one");
+        let into = dir.join("dest");
+        fs::create_dir_all(&into).unwrap();
+        touch(&into.join("a.txt"), "existing");
+
+        let done = perform(
+            Op::Copy {
+                items: vec![dir.join("a.txt")],
+                into: into.clone(),
+            },
+            Conflict::KeepBoth,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![into.join("a 2.txt")]);
+        assert_eq!(fs::read_to_string(into.join("a.txt")).unwrap(), "existing");
+        assert_eq!(fs::read_to_string(into.join("a 2.txt")).unwrap(), "one");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_dangling_link_holds_the_name_it_sits_on() {
+        let dir = temp_dir("dangling");
+        let into = dir.join("dest");
+        fs::create_dir_all(&into).unwrap();
+        touch(&dir.join("a.txt"), "one");
+        for name in ["a.txt", "a 2.txt"] {
+            std::os::unix::fs::symlink(into.join("gone"), into.join(name)).unwrap();
+        }
+
+        let done = perform(
+            Op::Copy {
+                items: vec![dir.join("a.txt")],
+                into: into.clone(),
+            },
+            Conflict::KeepBoth,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![into.join("a 3.txt")]);
+        assert_eq!(fs::read_to_string(into.join("a 3.txt")).unwrap(), "one");
+        assert!(
+            fs::symlink_metadata(into.join("a.txt"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link that was there is still there"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_recurses_and_files_replace() {
+        if !crate::trash_reachable() {
+            return;
+        }
+        let dir = temp_dir("merge");
+        let src = dir.join("Folder");
+        let dst_parent = dir.join("dest");
+        fs::create_dir_all(src.join("nested")).unwrap();
+        fs::create_dir_all(&dst_parent).unwrap();
+        touch(&src.join("keep.txt"), "from src");
+        touch(&src.join("nested").join("child.txt"), "child");
+        let dst = dst_parent.join("Folder");
+        fs::create_dir_all(dst.join("nested")).unwrap();
+        touch(&dst.join("keep.txt"), "from dst");
+        touch(&dst.join("only-in-dst.txt"), "untouched");
+
+        let done = perform(
+            Op::Move {
+                items: vec![src.clone()],
+                into: dst_parent,
+            },
+            Conflict::Merge,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![dst.clone()]);
+        assert!(!src.exists(), "a moved, merged folder disappears");
+        assert_eq!(
+            fs::read_to_string(dst.join("keep.txt")).unwrap(),
+            "from src",
+            "files follow Replace"
+        );
+        assert_eq!(
+            fs::read_to_string(dst.join("only-in-dst.txt")).unwrap(),
+            "untouched"
+        );
+        assert_eq!(
+            fs::read_to_string(dst.join("nested").join("child.txt")).unwrap(),
+            "child"
+        );
+
+        purge(&displaced(&done.undo.unwrap()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn skip_leaves_the_item_where_it_was() {
+        let dir = temp_dir("skip");
+        let into = dir.join("dest");
+        fs::create_dir_all(&into).unwrap();
+        touch(&dir.join("a.txt"), "one");
+        touch(&into.join("a.txt"), "existing");
+
+        let done = perform(
+            Op::Copy {
+                items: vec![dir.join("a.txt")],
+                into: into.clone(),
+            },
+            Conflict::Skip,
+        )
+        .unwrap();
+        assert!(done.results.is_empty(), "nothing landed");
+        assert_eq!(fs::read_to_string(into.join("a.txt")).unwrap(), "existing");
+        assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "one");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_skipped_copy_has_nothing_to_undo() {
+        let dir = temp_dir("skip-undo");
+        let into = dir.join("dest");
+        fs::create_dir_all(&into).unwrap();
+        let source = dir.join("a.txt");
+        touch(&source, "MY ONLY COPY");
+        touch(&into.join("a.txt"), "existing");
+
+        let done = perform(
+            Op::Copy {
+                items: vec![source.clone()],
+                into,
+            },
+            Conflict::Skip,
+        )
+        .unwrap();
+        assert!(
+            done.undo.is_none(),
+            "undoing a skip would trash the source it never touched"
+        );
+        if let Some(undo) = done.undo {
+            perform(undo, Conflict::Replace).unwrap();
+        }
+        assert_eq!(fs::read_to_string(&source).unwrap(), "MY ONLY COPY");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replace_keeps_the_destination_when_the_transfer_fails() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipping: root reads a file whatever its mode says");
+            return;
+        }
+        let dir = temp_dir("replace-fails");
+        let into = dir.join("dest");
+        fs::create_dir_all(&into).unwrap();
+        let source = dir.join("a.txt");
+        touch(&source, "new");
+        touch(&into.join("a.txt"), "IRREPLACEABLE");
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o000)).unwrap();
+
+        perform(
+            Op::Copy {
+                items: vec![source.clone()],
+                into: into.clone(),
+            },
+            Conflict::Replace,
+        )
+        .expect_err("an unreadable source cannot be copied");
+        assert_eq!(
+            fs::read_to_string(into.join("a.txt")).unwrap(),
+            "IRREPLACEABLE",
+            "a replace that failed left the destination destroyed"
+        );
+        let left: Vec<_> = fs::read_dir(&into)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(left.len(), 1, "a staged transfer was left behind: {left:?}");
+
+        let _ = fs::set_permissions(&source, fs::Permissions::from_mode(0o600));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replace_undoes_back_to_the_item_it_displaced() {
+        if !crate::trash_reachable() {
+            return;
+        }
+        let dir = temp_dir("replace-undo");
+        let into = dir.join("dest");
+        fs::create_dir_all(&into).unwrap();
+        touch(&dir.join("a.txt"), "new");
+        touch(&into.join("a.txt"), "MY ONLY COPY");
+
+        let done = perform(
+            Op::Copy {
+                items: vec![dir.join("a.txt")],
+                into: into.clone(),
+            },
+            Conflict::Replace,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![into.join("a.txt")]);
+        assert_eq!(fs::read_to_string(into.join("a.txt")).unwrap(), "new");
+
+        let undo = done.undo.expect("a replace can be undone");
+        let back = perform(undo, Conflict::Replace).unwrap();
+        assert_eq!(
+            fs::read_to_string(into.join("a.txt")).unwrap(),
+            "MY ONLY COPY",
+            "undo put the replaced item back"
+        );
+
+        purge(&back.results);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_round_trip() {
+        let dir = temp_dir("rename");
+        let file = dir.join("old.txt");
+        touch(&file, "content");
+
+        let done = perform(
+            Op::Rename {
+                path: file.clone(),
+                name: "new.txt".into(),
+            },
+            Conflict::Replace,
+        )
+        .unwrap();
+        let renamed = dir.join("new.txt");
+        assert_eq!(done.results, vec![renamed.clone()]);
+        assert!(renamed.exists() && !file.exists());
+
+        let undo = done.undo.unwrap();
+        let back = perform(undo, Conflict::Replace).unwrap();
+        assert_eq!(back.results, vec![file.clone()]);
+        assert!(file.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rename_onto_a_taken_name_resolves_like_a_move() {
+        if !crate::trash_reachable() {
+            return;
+        }
+        let dir = temp_dir("rename-conflict");
+        let source = dir.join("a.txt");
+        let taken = dir.join("b.txt");
+        touch(&source, "new");
+        touch(&taken, "MY ONLY COPY");
+
+        let skipped = perform(
+            Op::Rename {
+                path: source.clone(),
+                name: "b.txt".into(),
+            },
+            Conflict::Skip,
+        )
+        .unwrap();
+        assert!(skipped.results.is_empty() && skipped.undo.is_none());
+        assert_eq!(fs::read_to_string(&taken).unwrap(), "MY ONLY COPY");
+        assert_eq!(fs::read_to_string(&source).unwrap(), "new");
+
+        let done = perform(
+            Op::Rename {
+                path: source.clone(),
+                name: "b.txt".into(),
+            },
+            Conflict::Replace,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![taken.clone()]);
+        assert_eq!(fs::read_to_string(&taken).unwrap(), "new");
+        assert!(!source.exists());
+
+        let undo = done.undo.expect("a rename that replaced can be undone");
+        perform(undo, Conflict::Replace).unwrap();
+        assert_eq!(
+            fs::read_to_string(&taken).unwrap(),
+            "MY ONLY COPY",
+            "undo put the replaced item back"
+        );
+        assert_eq!(fs::read_to_string(&source).unwrap(), "new");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rename_that_only_changes_case_keeps_the_item() {
+        let dir = temp_dir("rename-case");
+        let file = dir.join("a.txt");
+        touch(&file, "mine");
+
+        let done = perform(
+            Op::Rename {
+                path: file,
+                name: "A.TXT".into(),
+            },
+            Conflict::Replace,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![dir.join("A.TXT")]);
+        assert_eq!(fs::read_to_string(dir.join("A.TXT")).unwrap(), "mine");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_refuses_to_go_inside_itself() {
+        let dir = temp_dir("into-itself");
+        let folder = dir.join("Folder");
+        let inner = folder.join("inner");
+        fs::create_dir_all(&inner).unwrap();
+        touch(&folder.join("a.txt"), "one");
+
+        for (is_move, wording) in [
+            (false, "can't be copied into itself"),
+            (true, "can't be moved into itself"),
+        ] {
+            let items = vec![folder.clone()];
+            let into = inner.clone();
+            let op = if is_move {
+                Op::Move { items, into }
+            } else {
+                Op::Copy { items, into }
+            };
+            let err = perform(op, Conflict::KeepBoth).expect_err(wording);
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+            assert!(err.to_string().contains(wording), "{err}");
+        }
+        assert_eq!(
+            fs::read_dir(&inner).unwrap().count(),
+            0,
+            "nothing was written into the descendant"
+        );
+
+        let err = perform(
+            Op::Copy {
+                items: vec![folder.clone()],
+                into: folder,
+            },
+            Conflict::KeepBoth,
+        )
+        .expect_err("a folder is inside itself");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_takes_a_name_and_never_a_path() {
+        let dir = temp_dir("rename-escape");
+        let file = dir.join("a.txt");
+        touch(&file, "mine");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        let outside = std::env::temp_dir().join(format!("ngv-escaped-{}.txt", std::process::id()));
+        let _ = fs::remove_file(&outside);
+        let long = "x".repeat(256);
+
+        for name in [
+            "sub/moved.txt",
+            &outside.to_string_lossy(),
+            "",
+            ".",
+            "..",
+            "a\0b",
+            &long,
+        ] {
+            let err = perform(
+                Op::Rename {
+                    path: file.clone(),
+                    name: name.to_string(),
+                },
+                Conflict::Replace,
+            )
+            .expect_err(&format!("{name:?} is not a name"));
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{name:?}");
+        }
+        assert!(file.exists(), "the item stayed where it was");
+        assert!(!dir.join("sub").join("moved.txt").exists());
+        assert!(!outside.exists(), "the item never left the folder");
+
+        let done = perform(
+            Op::Rename {
+                path: file,
+                name: "a:b.txt".into(),
+            },
+            Conflict::Replace,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![dir.join("a:b.txt")]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_move_from_two_folders_undoes_to_both() {
+        let dir = temp_dir("two-parents");
+        let one = dir.join("one");
+        let two = dir.join("two");
+        let into = dir.join("dest");
+        for folder in [&one, &two, &into] {
+            fs::create_dir_all(folder).unwrap();
+        }
+        touch(&one.join("a.txt"), "a");
+        touch(&two.join("b.txt"), "b");
+
+        let done = perform(
+            Op::Move {
+                items: vec![one.join("a.txt"), two.join("b.txt")],
+                into: into.clone(),
+            },
+            Conflict::KeepBoth,
+        )
+        .unwrap();
+        assert_eq!(done.results.len(), 2);
+
+        let undo = done.undo.expect("a move from two folders is undoable");
+        perform(undo, Conflict::Replace).unwrap();
+        assert_eq!(fs::read_to_string(one.join("a.txt")).unwrap(), "a");
+        assert_eq!(fs::read_to_string(two.join("b.txt")).unwrap(), "b");
+        assert_eq!(fs::read_dir(&into).unwrap().count(), 0);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn put_back_restores_the_name_the_trash_took() {
+        if !crate::trash_reachable() {
+            return;
+        }
+        let dir = temp_dir("put-back");
+        let file = dir.join("collide.txt");
+        touch(&file, "first");
+        let first = perform(Op::Trash(vec![file.clone()]), Conflict::Replace).unwrap();
+
+        touch(&file, "second");
+        let second = perform(Op::Trash(vec![file.clone()]), Conflict::Replace).unwrap();
+        assert_ne!(
+            second.results[0].file_name(),
+            file.file_name(),
+            "the Trash renames what collides in it"
+        );
+
+        let undo = second.undo.expect("trash undoes with a put back");
+        let back = perform(undo, Conflict::Replace).unwrap();
+        assert_eq!(back.results, vec![file.clone()]);
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "second",
+            "put back restores the name the item had"
+        );
+
+        purge(&first.results);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undo_never_overwrites_what_arrived_since() {
+        let dir = temp_dir("undo-arrived");
+        let (from, into) = (dir.join("from"), dir.join("into"));
+        fs::create_dir_all(&from).unwrap();
+        fs::create_dir_all(&into).unwrap();
+        touch(&from.join("a.txt"), "moved");
+        let done = perform(
+            Op::Move {
+                items: vec![from.join("a.txt")],
+                into,
+            },
+            Conflict::KeepBoth,
+        )
+        .unwrap();
+        touch(&from.join("a.txt"), "arrived since");
+
+        perform(done.undo.unwrap(), Conflict::Replace).unwrap();
+        assert_eq!(
+            fs::read_to_string(from.join("a.txt")).unwrap(),
+            "arrived since",
+            "undo overwrote a newer file"
+        );
+        assert_eq!(fs::read_to_string(from.join("a 2.txt")).unwrap(), "moved");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_replace_that_fails_keeps_the_moved_item() {
+        let dir = temp_dir("replace-fails-move");
+        let (from, into) = (dir.join("from"), dir.join("into"));
+        fs::create_dir_all(&from).unwrap();
+        fs::create_dir_all(&into).unwrap();
+        touch(&from.join("a.txt"), "new");
+        touch(&into.join("a.txt"), "old");
+        let locked = into.join("a.txt");
+        lock(&locked);
+
+        let _ = perform(
+            Op::Move {
+                items: vec![from.join("a.txt")],
+                into,
+            },
+            Conflict::Replace,
+        );
+        let kept = |path: &Path| fs::read_to_string(path).ok();
+        let (left, landed) = (kept(&from.join("a.txt")), kept(&locked));
+        let _ = unlock(&locked, true);
+        assert!(
+            left.as_deref() == Some("new") || landed.as_deref() == Some("new"),
+            "the moved item is gone: from={left:?} into={landed:?}"
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn deep_path(root: &Path, levels: usize) -> PathBuf {
+        (1..=levels).fold(root.to_path_buf(), |path, i| path.join(format!("d{i}")))
+    }
+
+    #[test]
+    fn a_name_taken_past_path_max_is_kept() {
+        let dir = temp_dir("deep-taken");
+        let tree = dir.join("Deep");
+        deep_tree(&tree, 300);
+        deep_sh(&tree, 300, "echo old > x.txt");
+        touch(&dir.join("x.txt"), "new");
+
+        perform(
+            Op::Move {
+                items: vec![dir.join("x.txt")],
+                into: deep_path(&tree, 300),
+            },
+            Conflict::KeepBoth,
+        )
+        .unwrap();
+        assert_eq!(
+            deep_sh(&tree, 300, "cat x.txt"),
+            "old",
+            "the item already there was overwritten"
+        );
+        assert_eq!(deep_sh(&tree, 300, "cat 'x 2.txt'"), "new");
+
+        remove_deep(&dir);
+    }
+
+    #[test]
+    fn a_case_only_rename_past_path_max_keeps_the_item() {
+        let dir = temp_dir("deep-case");
+        let tree = dir.join("Deep");
+        deep_tree(&tree, 300);
+
+        perform(
+            Op::Rename {
+                path: deep_path(&tree, 300).join("leaf.txt"),
+                name: "LEAF.txt".into(),
+            },
+            Conflict::KeepBoth,
+        )
+        .unwrap();
+        assert_eq!(
+            deep_sh(&tree, 300, "cat LEAF.txt"),
+            "leaf",
+            "the renamed item is gone"
+        );
+
+        remove_deep(&dir);
+    }
+
+    fn deep_sh(root: &Path, levels: usize, script: &str) -> String {
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "cd \"$1\" && for i in $(seq 1 $2); do cd d$i || exit 1; done && {script}"
+            ))
+            .arg("sh")
+            .arg(root)
+            .arg(levels.to_string())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{script}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn deep_tree(root: &Path, levels: usize) {
+        let ok = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(
+                "mkdir -p \"$1\" && cd \"$1\" && for i in $(seq 1 $2); do mkdir d$i && cd d$i || exit 1; done && echo leaf > leaf.txt",
+            )
+            .arg("sh")
+            .arg(root)
+            .arg(levels.to_string())
+            .status()
+            .unwrap();
+        assert!(ok.success(), "could not build the fixture");
+    }
+
+    /// `remove_dir_all` holds a descriptor per level, more than `FewDescriptors` leaves.
+    fn remove_deep(dir: &Path) {
+        let ok = std::process::Command::new("rm")
+            .args(["-rf".as_ref(), dir.as_os_str()])
+            .status()
+            .unwrap();
+        assert!(ok.success(), "could not remove the fixture");
+    }
+
+    struct FewDescriptors(libc::rlimit);
+
+    impl FewDescriptors {
+        fn new() -> FewDescriptors {
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
+            let few = libc::rlimit {
+                rlim_cur: limit.rlim_cur.min(128),
+                rlim_max: limit.rlim_max,
+            };
+            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &few) };
+            FewDescriptors(limit)
+        }
+    }
+
+    impl Drop for FewDescriptors {
+        fn drop(&mut self) {
+            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &self.0) };
+        }
+    }
+
+    #[test]
+    fn a_tree_deeper_than_a_path_transfers_whole() {
+        let dir = temp_dir("deep");
+        let src = dir.join("src");
+        let dst = dir.join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        let tree = src.join("Deep");
+        deep_tree(&tree, 300);
+        touch(&tree.join("beside.txt"), "beside");
+        std::os::unix::fs::symlink("beside.txt", tree.join("link")).unwrap();
+
+        let few = FewDescriptors::new();
+        let done = perform(
+            Op::Copy {
+                items: vec![tree.clone()],
+                into: dst.clone(),
+            },
+            Conflict::KeepBoth,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![dst.join("Deep")]);
+        assert_eq!(deep_sh(&dst.join("Deep"), 300, "cat leaf.txt"), "leaf");
+        assert_eq!(
+            fs::read_link(dst.join("Deep").join("link")).unwrap(),
+            Path::new("beside.txt"),
+            "the link came over as a link"
+        );
+        assert_eq!(
+            deep_sh(&tree, 300, "cat leaf.txt"),
+            "leaf",
+            "the source is still whole"
+        );
+
+        perform(
+            Op::Rename {
+                path: dst.join("Deep"),
+                name: "Moved".into(),
+            },
+            Conflict::KeepBoth,
+        )
+        .unwrap();
+        assert_eq!(deep_sh(&dst.join("Moved"), 300, "cat leaf.txt"), "leaf");
+        drop(few);
+
+        remove_deep(&dir);
+    }
+
+    #[test]
+    fn a_deep_copy_that_fails_keeps_what_landed_for_its_undo() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipping: root walks into a directory whatever its mode says");
+            return;
+        }
+        let dir = temp_dir("deep-fails");
+        let dst = dir.join("dst");
+        fs::create_dir_all(&dst).unwrap();
+        let tree = dir.join("Deep");
+        deep_tree(&tree, 300);
+        deep_sh(&tree, 249, "chmod 000 d250");
+
+        let error = perform(
+            Op::Copy {
+                items: vec![tree.clone()],
+                into: dst.clone(),
+            },
+            Conflict::KeepBoth,
+        )
+        .expect_err("a directory that cannot be read cannot be copied");
+        let unfinished = Unfinished::from_error(error).expect("the error says what landed");
+        // The walk can reach the unreadable folder before anything is copied, and then stops first.
+        let landed: Vec<PathBuf> = [dst.join("Deep")]
+            .into_iter()
+            .filter(|at| at.exists())
+            .collect();
+        assert_eq!(unfinished.done.results, landed);
+        assert!(
+            match &unfinished.done.undo {
+                Some(Op::Trash(items)) => !landed.is_empty() && items == &landed,
+                None => landed.is_empty(),
+                _ => false,
+            },
+            "what landed is undone whole: {:?}",
+            unfinished.done.undo
+        );
+        deep_sh(&tree, 249, "chmod 700 d250");
+        assert_eq!(
+            deep_sh(&tree, 300, "cat leaf.txt"),
+            "leaf",
+            "the source is still whole"
+        );
+
+        remove_deep(&dir);
+    }
+
+    #[test]
+    fn a_deep_refusal_is_worded_like_a_shallow_one() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipping: root walks into a directory whatever its mode says");
+            return;
+        }
+        let dir = temp_dir("deep-wording");
+        let dst = dir.join("dst");
+        fs::create_dir_all(&dst).unwrap();
+        let tree = dir.join("Deep");
+        deep_tree(&tree, 300);
+        deep_sh(&tree, 249, "chmod 000 d250");
+
+        let err = perform(
+            Op::Copy {
+                items: vec![tree.clone()],
+                into: dst,
+            },
+            Conflict::KeepBoth,
+        )
+        .expect_err("a directory that cannot be read cannot be copied");
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        let message = err.to_string();
+        assert!(message.contains("permission"), "{message}");
+        assert!(!message.contains("os error"), "{message}");
+
+        deep_sh(&tree, 249, "chmod 700 d250");
+        remove_deep(&dir);
+    }
+
+    #[test]
+    fn a_volume_refusal_names_the_volume_it_was_aimed_at() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipping: root is not refused by a volume's mode");
+            return;
+        }
+        let dir = temp_dir("volume");
+        let file = dir.join("m.txt");
+        touch(&file, "x");
+        let boot = volume_of(Path::new("/")).expect("the boot volume is mounted");
+
+        let err = perform(
+            Op::Copy {
+                items: vec![file],
+                into: PathBuf::from("/"),
+            },
+            Conflict::KeepBoth,
+        )
+        .expect_err("the system volume is read only");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "The item \u{201c}m.txt\u{201d} can't be copied because the volume \u{201c}{}\u{201d} is read only.",
+                boot.name
+            )
+        );
+        assert!(!Path::new("/m.txt").exists());
+
+        let full = refusal_message(Refusal::NoSpace, Some("m.txt"), &dir, false, u64::MAX)
+            .expect("the temporary folder is on a mounted volume");
+        assert!(
+            full.starts_with(&format!(
+                "There isn't enough space on \u{201c}{}\u{201d} to copy \u{201c}m.txt\u{201d}.",
+                volume_of(&dir).unwrap().name
+            )) && full.contains("You need an additional "),
+            "{full}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_locked_item_is_unlocked_and_removed() {
+        if !crate::trash_reachable() {
+            return;
+        }
+        let dir = temp_dir("locked");
+        let file = dir.join("locked.txt");
+        touch(&file, "locked");
+        lock(&file);
+        assert!(locked(&file));
+
+        let done = perform(Op::Trash(vec![file.clone()]), Conflict::Replace).unwrap();
+        assert!(!taken(&file), "the locked item left its folder");
+        let undo = done.undo.expect("a trash undoes with a put back");
+        let back = perform(undo, Conflict::Replace).unwrap();
+        assert_eq!(back.results, vec![file]);
+
+        let folder = dir.join("Folder");
+        fs::create_dir_all(&folder).unwrap();
+        touch(&folder.join("child.txt"), "child");
+        lock(&folder.join("child.txt"));
+        perform(
+            Op::DeleteImmediately(vec![folder.clone()]),
+            Conflict::Replace,
+        )
+        .unwrap();
+        assert!(!folder.exists(), "a locked child stopped nothing");
+
+        let _ = unlock(&dir, true);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_locked_item_moves_and_renames_and_stays_locked() {
+        let dir = temp_dir("locked-move");
+        let file = dir.join("locked.txt");
+        touch(&file, "locked");
+        lock(&file);
+        let into = dir.join("Folder");
+        fs::create_dir_all(&into).unwrap();
+
+        perform(
+            Op::Move {
+                items: vec![file.clone()],
+                into: into.clone(),
+            },
+            Conflict::KeepBoth,
+        )
+        .unwrap();
+        let moved = into.join("locked.txt");
+        assert!(locked(&moved), "the lock went with the item");
+
+        let renamed = into.join("renamed.txt");
+        perform(
+            Op::Rename {
+                path: moved,
+                name: "renamed.txt".into(),
+            },
+            Conflict::KeepBoth,
+        )
+        .unwrap();
+        assert!(locked(&renamed));
+
+        let _ = unlock(&dir, true);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_names_beside_the_original() {
+        let dir = temp_dir("duplicate");
+        let file = dir.join("doc.txt");
+        touch(&file, "content");
+
+        let done = perform(Op::Duplicate(vec![file.clone()]), Conflict::Replace).unwrap();
+        assert_eq!(done.results, vec![dir.join("doc copy.txt")]);
+
+        let again = perform(Op::Duplicate(vec![file]), Conflict::Replace).unwrap();
+        assert_eq!(again.results, vec![dir.join("doc copy 2.txt")]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_duplicate_trashes_the_copy() {
+        if !crate::trash_reachable() {
+            return;
+        }
+        let dir = temp_dir("duplicate-undo");
+        let file = dir.join("ngx-doc.txt");
+        touch(&file, "content");
+        let copy = dir.join("ngx-doc copy.txt");
+
+        let done = perform(Op::Duplicate(vec![file.clone()]), Conflict::Replace).unwrap();
+        assert_eq!(done.results, vec![copy.clone()]);
+        let undo = done.undo.expect("a duplicate can be undone");
+        assert!(matches!(undo, Op::Trash(_)), "the copy goes to the Trash");
+        let back = perform(undo, Conflict::Replace).unwrap();
+
+        assert!(!copy.exists(), "the copy is gone");
+        assert!(back.results[0].to_string_lossy().contains(".Trash"));
+        assert!(back.undo.is_some(), "the trashed copy can be put back");
+        assert!(file.exists());
+        crate::purge(&back.results);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remaining_keeps_only_what_is_still_in_place() {
+        let dir = temp_dir("remaining");
+        let (here, gone) = (dir.join("here.txt"), dir.join("gone.txt"));
+        touch(&here, "x");
+        let back = |item: &PathBuf| Restore {
+            item: item.clone(),
+            to: dir.join("to"),
+        };
+        let Some(Op::PutBack(left)) = remaining(Op::PutBack(vec![back(&gone), back(&here)])) else {
+            panic!("one item is still in the Trash");
+        };
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].item, here);
+        assert!(remaining(Op::Trash(vec![gone.clone()])).is_none());
+        let batch = Op::Batch(vec![
+            Op::Trash(vec![gone.clone()]),
+            Op::Trash(vec![here.clone(), gone]),
+        ]);
+        assert!(matches!(remaining(batch), Some(Op::Trash(items)) if items == [here]));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn member_groups() -> Vec<u32> {
+        let mut groups = vec![0; 64];
+        let count = unsafe { libc::getgroups(groups.len() as i32, groups.as_mut_ptr()) };
+        groups.truncate(count.max(0) as usize);
+        groups
+    }
+
+    #[test]
+    fn a_paste_exactly_keeps_the_group_a_plain_copy_takes_from_its_folder() {
+        let dir = temp_dir("exactly");
+        let (from, exact, plain) = (dir.join("from"), dir.join("exact"), dir.join("plain"));
+        for folder in [&from, &exact, &plain] {
+            fs::create_dir_all(folder).unwrap();
+        }
+        let file = from.join("doc.txt");
+        touch(&file, "content");
+        let fresh = fs::metadata(&plain).unwrap().gid();
+        let other = member_groups()
+            .into_iter()
+            .find(|gid| *gid != fresh)
+            .expect("the test user belongs to a second group");
+        std::os::unix::fs::lchown(&file, None, Some(other)).unwrap();
+
+        let kept = perform(
+            Op::CopyExactly {
+                items: vec![file.clone()],
+                into: exact,
+            },
+            Conflict::KeepBoth,
+        )
+        .unwrap();
+        let taken = perform(
+            Op::Copy {
+                items: vec![file],
+                into: plain,
+            },
+            Conflict::KeepBoth,
+        )
+        .unwrap();
+
+        assert_eq!(fs::metadata(&kept.results[0]).unwrap().gid(), other);
+        assert_eq!(fs::metadata(&taken.results[0]).unwrap().gid(), fresh);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_alias_is_a_bookmark_file_beside_its_target() {
+        let dir = temp_dir("alias");
+        let file = dir.join("doc.txt");
+        touch(&file, "content");
+
+        let done = perform(Op::MakeAlias(vec![file.clone()]), Conflict::Replace).unwrap();
+        assert_eq!(done.results, vec![dir.join("doc.txt alias")]);
+        let alias = &done.results[0];
+        assert!(fs::symlink_metadata(alias).unwrap().is_file());
+        let resolved = NSURL::URLByResolvingAliasFileAtURL_options_error(
+            &url(alias),
+            NSURLBookmarkResolutionOptions::WithoutUI,
+        )
+        .unwrap();
+        assert_eq!(path_from(&resolved), file.canonicalize().unwrap());
+
+        let again = perform(Op::MakeAlias(vec![file]), Conflict::Replace).unwrap();
+        assert_eq!(again.results, vec![dir.join("doc.txt alias 2")]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_folder_and_new_file_round_trip() {
+        let dir = temp_dir("new");
+        let folder = perform(
+            Op::NewFolder {
+                into: dir.clone(),
+                name: "untitled folder".into(),
+            },
+            Conflict::Replace,
+        )
+        .unwrap();
+        assert_eq!(folder.results, vec![dir.join("untitled folder")]);
+        assert!(dir.join("untitled folder").is_dir());
+
+        let again = perform(
+            Op::NewFolder {
+                into: dir.clone(),
+                name: "untitled folder".into(),
+            },
+            Conflict::Replace,
+        )
+        .unwrap();
+        assert_eq!(again.results, vec![dir.join("untitled folder 2")]);
+
+        let file = perform(
+            Op::NewFile {
+                into: dir.clone(),
+                name: "untitled.txt".into(),
+            },
+            Conflict::Replace,
+        )
+        .unwrap();
+        assert!(dir.join("untitled.txt").is_file());
+        assert_eq!(fs::metadata(&file.results[0]).unwrap().len(), 0);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trash_and_put_back() {
+        if !crate::trash_reachable() {
+            return;
+        }
+        let dir = temp_dir("trash");
+        let file = dir.join("throwaway.txt");
+        touch(&file, "gone soon");
+
+        let done = perform(Op::Trash(vec![file.clone()]), Conflict::Replace).unwrap();
+        assert!(!file.exists(), "the item left its folder");
+        assert!(done.results[0].to_string_lossy().contains(".Trash"));
+
+        let undo = done.undo.expect("trash undoes with a move back");
+        let back = perform(undo, Conflict::Replace).unwrap();
+        assert!(file.exists(), "put back restores the original path");
+        assert_eq!(back.results, vec![file]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compresses_a_file_the_way_finder_names_it() {
+        let dir = temp_dir("compress-file");
+        let file = dir.join("sample.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let done = perform(Op::Compress(vec![file]), Conflict::KeepBoth).unwrap();
+        let zip = dir.join("sample.txt.zip");
+        assert_eq!(done.results, vec![zip.clone()]);
+        assert!(zip.is_file());
+        let listing = std::process::Command::new("/usr/bin/unzip")
+            .args(["-Z1"])
+            .arg(&zip)
+            .output()
+            .unwrap();
+        let names = String::from_utf8_lossy(&listing.stdout);
+        assert!(names.lines().any(|line| line == "sample.txt"), "{names}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compresses_a_selection_into_one_archive() {
+        let dir = temp_dir("compress-many");
+        let file = dir.join("a.txt");
+        let folder = dir.join("b");
+        std::fs::write(&file, b"x").unwrap();
+        std::fs::create_dir(&folder).unwrap();
+        let done = perform(Op::Compress(vec![file, folder]), Conflict::KeepBoth).unwrap();
+        assert_eq!(done.results, vec![dir.join("Archive.zip")]);
+        let listing = std::process::Command::new("/usr/bin/unzip")
+            .args(["-Z1"])
+            .arg(dir.join("Archive.zip"))
+            .output()
+            .unwrap();
+        let names = String::from_utf8_lossy(&listing.stdout);
+        assert!(names.lines().any(|line| line == "a.txt"), "{names}");
+        assert!(names.lines().any(|line| line.starts_with("b/")), "{names}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_merge_leaves_what_was_already_there() {
+        if !crate::trash_reachable() {
+            return;
+        }
+        for is_move in [false, true] {
+            let dir = temp_dir(if is_move {
+                "merge-undo-move"
+            } else {
+                "merge-undo-copy"
+            });
+            let src = dir.join("src").join("Folder");
+            let dst_parent = dir.join("dest");
+            let dst = dst_parent.join("Folder");
+            fs::create_dir_all(src.join("nested")).unwrap();
+            fs::create_dir_all(dst.join("nested")).unwrap();
+            touch(&src.join("keep.txt"), "from src");
+            touch(&src.join("nested").join("child.txt"), "child");
+            touch(&dst.join("keep.txt"), "from dst");
+            touch(&dst.join("only-in-dst.txt"), "untouched");
+
+            let items = vec![src.clone()];
+            let into = dst_parent.clone();
+            let op = if is_move {
+                Op::Move { items, into }
+            } else {
+                Op::Copy { items, into }
+            };
+            let done = perform(op, Conflict::Merge).unwrap();
+            let back = perform(done.undo.expect("a merge undoes"), Conflict::KeepBoth).unwrap();
+
+            let read = |path: PathBuf| fs::read_to_string(path).ok();
+            assert_eq!(
+                read(dst.join("only-in-dst.txt")).as_deref(),
+                Some("untouched")
+            );
+            assert_eq!(read(dst.join("keep.txt")).as_deref(), Some("from dst"));
+            assert!(!dst.join("nested").join("child.txt").exists());
+            if is_move {
+                assert_eq!(read(src.join("keep.txt")).as_deref(), Some("from src"));
+                assert_eq!(
+                    read(src.join("nested").join("child.txt")).as_deref(),
+                    Some("child")
+                );
+            }
+            purge(
+                &back
+                    .results
+                    .into_iter()
+                    .filter(|p| !p.starts_with(&dir))
+                    .collect::<Vec<_>>(),
+            );
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_failed_compress_is_an_error() {
+        let dir = temp_dir("compress-fails");
+        let folder = dir.join("Unreadable");
+        fs::create_dir_all(&folder).unwrap();
+        let secret = folder.join("secret.txt");
+        touch(&secret, "secret");
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let done = perform(Op::Compress(vec![folder]), Conflict::KeepBoth);
+        assert!(done.is_err(), "ditto failed, so the archive is not done");
+        assert!(
+            !dir.join("Unreadable.zip").exists(),
+            "no partial archive is left"
+        );
+
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_replaced_item_goes_to_the_trash_under_its_own_name() {
+        if !crate::trash_reachable() {
+            return;
+        }
+        let dir = temp_dir("replaced-name");
+        let name = format!("replaced-{}.txt", std::process::id());
+        fs::create_dir_all(dir.join("a")).unwrap();
+        fs::create_dir_all(dir.join("b")).unwrap();
+        touch(&dir.join("a").join(&name), "new");
+        touch(&dir.join("b").join(&name), "old");
+
+        let done = perform(
+            Op::Copy {
+                items: vec![dir.join("a").join(&name)],
+                into: dir.join("b"),
+            },
+            Conflict::Replace,
+        )
+        .unwrap();
+        let trashed = displaced(&done.undo.unwrap());
+        assert_eq!(trashed.len(), 1);
+        assert_eq!(trashed[0].file_name().unwrap().to_string_lossy(), name);
+        assert_eq!(fs::read_to_string(&trashed[0]).unwrap(), "old");
+
+        purge(&trashed);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_never_follows_a_link_into_its_target() {
+        if !crate::trash_reachable() {
+            return;
+        }
+        let dir = temp_dir("merge-link");
+        let elsewhere = dir.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        touch(&elsewhere.join("mine.txt"), "mine");
+        let src = dir.join("src").join("Folder");
+        fs::create_dir_all(&src).unwrap();
+        touch(&src.join("keep.txt"), "from src");
+        fs::create_dir_all(dir.join("dest")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.join("dest").join("Folder")).unwrap();
+
+        let done = perform(
+            Op::Copy {
+                items: vec![src],
+                into: dir.join("dest"),
+            },
+            Conflict::Merge,
+        )
+        .unwrap();
+        assert!(
+            !elsewhere.join("keep.txt").exists(),
+            "the link's target is untouched"
+        );
+        assert!(
+            !fs::symlink_metadata(dir.join("dest").join("Folder"))
+                .unwrap()
+                .is_symlink()
+        );
+
+        purge(&displaced(&done.undo.unwrap()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trashing_a_locked_folder_keeps_the_locks_inside() {
+        if !crate::trash_reachable() {
+            return;
+        }
+        let dir = temp_dir("locked-folder");
+        let folder = dir.join("LockedFolder");
+        fs::create_dir_all(&folder).unwrap();
+        let child = folder.join("child.txt");
+        touch(&child, "child");
+        lock(&child);
+        lock(&folder);
+
+        let done = perform(Op::Trash(vec![folder]), Conflict::Replace).unwrap();
+        perform(done.undo.unwrap(), Conflict::KeepBoth).unwrap();
+        assert!(locked(&child), "the child's own lock survived the trip");
+
+        let _ = unlock(&dir, true);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn put_back_past_a_gone_item(dir: &Path) -> (PathBuf, io::Result<Done>) {
+        let kept = dir.join("kept.txt");
+        touch(&kept, "kept");
+        let trashed = perform(Op::Trash(vec![kept.clone()]), Conflict::Replace).unwrap();
+        let gone = Restore {
+            item: dir.join("gone.txt"),
+            to: dir.join("gone.txt"),
+        };
+        let home = Restore {
+            item: trashed.results[0].clone(),
+            to: kept.clone(),
+        };
+        (
+            kept,
+            perform(Op::PutBack(vec![gone, home]), Conflict::KeepBoth),
+        )
+    }
+
+    #[test]
+    fn a_put_back_keeps_going_past_an_item_that_refuses() {
+        if !crate::trash_reachable() {
+            return;
+        }
+        let dir = temp_dir("put-back-partial");
+        let (kept, back) = put_back_past_a_gone_item(&dir);
+        assert!(back.is_err(), "the item that refused is still reported");
+        assert_eq!(
+            fs::read_to_string(&kept).ok().as_deref(),
+            Some("kept"),
+            "the item after the one that refused still went back"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unfinished_put_back_names_only_what_refused() {
+        if !crate::trash_reachable() {
+            return;
+        }
+        let dir = temp_dir("put-back-left");
+        let (kept, back) = put_back_past_a_gone_item(&dir);
+        let error = back.unwrap_err();
+        let unfinished = Unfinished::from_error(error).expect("the error says what is left");
+        assert_eq!(unfinished.done.results, vec![kept]);
+        let Op::PutBack(left) = unfinished.left else {
+            panic!("a put back leaves a put back");
+        };
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].to, dir.join("gone.txt"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_put_back_beside_what_its_move_left_merges_into_it() {
+        let dir = temp_dir("put-back-merge");
+        let (left, landed) = (dir.join("Folder"), dir.join("dest").join("Folder"));
+        for folder in [left.join("inner"), landed.join("inner")] {
+            fs::create_dir_all(folder).unwrap();
+        }
+        touch(&left.join("inner").join("kept.txt"), "kept");
+        touch(&landed.join("moved.txt"), "moved");
+        touch(&landed.join("inner").join("also.txt"), "also");
+        let restore = Restore {
+            item: landed.clone(),
+            to: left.clone(),
+        };
+        perform(Op::PutBack(vec![restore]), Conflict::KeepBoth).unwrap();
+        for (name, text) in [
+            ("moved.txt", "moved"),
+            ("inner/also.txt", "also"),
+            ("inner/kept.txt", "kept"),
+        ] {
+            let read = fs::read_to_string(left.join(name)).ok();
+            assert_eq!(read.as_deref(), Some(text), "{name}");
+        }
+        assert!(!landed.exists(), "the carried half stayed");
+        assert!(!dir.join("Folder 2").exists(), "the halves stayed apart");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_put_back_over_a_namesake_keeps_both() {
+        let dir = temp_dir("put-back-both");
+        let (there, back) = (dir.join("Folder"), dir.join("dest").join("Folder"));
+        for folder in [&there, &back] {
+            fs::create_dir_all(folder).unwrap();
+        }
+        touch(&there.join("same.txt"), "there");
+        touch(&back.join("same.txt"), "back");
+        let restore = Restore {
+            item: back,
+            to: there.clone(),
+        };
+        perform(Op::PutBack(vec![restore]), Conflict::KeepBoth).unwrap();
+        assert_eq!(fs::read_to_string(there.join("same.txt")).unwrap(), "there");
+        let kept = fs::read_to_string(dir.join("Folder 2").join("same.txt")).unwrap();
+        assert_eq!(kept, "back");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn litter_in(dir: &Path) -> Vec<String> {
+        fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".finder-fs-"))
+            .collect()
+    }
+
+    #[test]
+    fn a_failed_compress_of_a_selection_leaves_no_staging_folder() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipping: root reads a file whatever its mode says");
+            return;
+        }
+        let dir = temp_dir("compress-staging");
+        let (ok, secret) = (dir.join("ok.txt"), dir.join("secret.txt"));
+        touch(&ok, "ok");
+        touch(&secret, "secret");
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let done = perform(
+            Op::Compress(vec![ok.clone(), secret.clone()]),
+            Conflict::KeepBoth,
+        );
+        let left = litter_in(&dir);
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
+        lock(&ok);
+        let locked = perform(Op::Compress(vec![ok.clone(), secret]), Conflict::KeepBoth);
+        let left_locked = litter_in(&dir);
+        unlock(&ok, false).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(done.is_err(), "an unreadable item fails the archive");
+        assert_eq!(left, Vec::<String>::new(), "the staging folder goes");
+        assert!(locked.is_ok(), "{locked:?}");
+        assert_eq!(
+            left_locked,
+            Vec::<String>::new(),
+            "a locked item's staged copy goes too"
+        );
+    }
+
+    #[test]
+    fn a_compress_that_cannot_stage_an_item_names_the_item() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipping: root reads a file whatever its mode says");
+            return;
+        }
+        let dir = temp_dir("compress-names");
+        let (ok, secret) = (dir.join("ok.txt"), dir.join("secret.txt"));
+        touch(&ok, "ok");
+        touch(&secret, "secret");
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let done = perform(Op::Compress(vec![ok, secret.clone()]), Conflict::KeepBoth);
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+
+        let message = done
+            .expect_err("an unreadable item fails the archive")
+            .to_string();
+        assert!(message.contains("\u{201c}secret.txt\u{201d}"), "{message}");
+        assert!(!message.contains(".finder-fs-"), "{message}");
+    }
+
+    #[test]
+    fn names_made_from_a_name_at_the_limit_still_fit() {
+        let dir = temp_dir("long-names");
+        let long = dir.join(format!("{}.txt", "x".repeat(NAME_MAX - 4)));
+        touch(&long, "long");
+        let wide = dir.join(format!("{}.txt", "\u{e9}".repeat(125)));
+        touch(&wide, "wide");
+
+        let both = free_path(&long);
+        let copy = perform(Op::Duplicate(vec![long.clone()]), Conflict::KeepBoth);
+        let alias = perform(Op::MakeAlias(vec![long]), Conflict::KeepBoth);
+        let wide_both = free_path(&wide);
+        let _ = fs::remove_dir_all(&dir);
+
+        let name = |path: &Path| path.file_name().unwrap().to_str().unwrap().to_string();
+        assert!(name(&both).ends_with(" 2.txt") && name(&both).len() <= NAME_MAX);
+        let copy = copy.expect("a duplicate of a 255-byte name lands");
+        assert!(
+            name(&copy.results[0]).ends_with(" copy.txt"),
+            "{:?}",
+            copy.results
+        );
+        assert!(name(&copy.results[0]).len() <= NAME_MAX);
+        let alias = alias.expect("an alias of a 255-byte name lands");
+        assert!(name(&alias.results[0]).ends_with(" alias"));
+        assert!(name(&wide_both).ends_with(" 2.txt") && name(&wide_both).len() <= NAME_MAX);
+    }
+
+    #[test]
+    fn a_move_onto_its_own_hard_link_elsewhere_still_moves() {
+        let dir = temp_dir("hard-link-move");
+        let (one, two) = (dir.join("one"), dir.join("two"));
+        fs::create_dir_all(&one).unwrap();
+        fs::create_dir_all(&two).unwrap();
+        touch(&one.join("a.txt"), "linked");
+        fs::hard_link(one.join("a.txt"), two.join("a.txt")).unwrap();
+
+        let done = perform(
+            Op::Move {
+                items: vec![one.join("a.txt")],
+                into: two.clone(),
+            },
+            Conflict::KeepBoth,
+        )
+        .unwrap();
+        let left = one.join("a.txt").exists();
+        let landed = fs::read_to_string(two.join("a 2.txt"));
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(!left, "the moved link left its folder");
+        assert_eq!(done.results, vec![two.join("a 2.txt")]);
+        assert_eq!(landed.unwrap(), "linked");
+    }
+}

@@ -1,0 +1,600 @@
+use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::{Arc, LazyLock, Mutex};
+
+use finder_fs::entry::{Entry, EntryKind};
+use finder_fs::kind;
+use finder_fs::volumes::{Standard, standard};
+use gpui::SharedString;
+use native_gpui::tokens::FileType;
+use objc2_app_kit::NSWorkspace;
+use objc2_foundation::NSString;
+
+use super::extra::{Extra, extra_of};
+use super::face::{Face, face_of};
+use super::format::{byte_string, reference_seconds};
+use super::paths::{intern, intern_path, join};
+use super::volumes::{special, volume_at};
+use crate::locations::SHARED;
+
+const WEIGHTS_HELD: usize = 4096;
+
+static WEIGHTS: LazyLock<Mutex<HashMap<(SharedString, u64), u64>>> = LazyLock::new(Mutex::default);
+
+#[derive(Clone)]
+pub(crate) struct Line {
+    pub(crate) key: SharedString,
+    pub(crate) row: Arc<Row>,
+    pub(crate) depth: usize,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) enum Column {
+    Name,
+    Kind,
+    Opened,
+    Added,
+    Modified,
+    Created,
+    Size,
+    Tags,
+    Version,
+    Comments,
+    Application,
+    SharedBy,
+}
+
+pub(crate) const SORT_KEYS: [Column; 8] = [
+    Column::Name,
+    Column::Kind,
+    Column::Opened,
+    Column::Added,
+    Column::Modified,
+    Column::Created,
+    Column::Size,
+    Column::Tags,
+];
+
+pub(crate) const SORT_TITLES: [&str; 8] = [
+    "Name",
+    "Kind",
+    "Date Last Opened",
+    "Date Added",
+    "Date Modified",
+    "Date Created",
+    "Size",
+    "Tags",
+];
+
+pub(crate) const GROUP_KEYS: [Column; 10] = [
+    Column::Name,
+    Column::Kind,
+    Column::Application,
+    Column::SharedBy,
+    Column::Opened,
+    Column::Added,
+    Column::Modified,
+    Column::Created,
+    Column::Size,
+    Column::Tags,
+];
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) struct Order {
+    pub(crate) group: Option<Column>,
+    pub(crate) sort: Column,
+    pub(crate) ascending: bool,
+}
+
+impl Column {
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Column::Name => "name",
+            Column::Kind => "kind",
+            Column::Opened => "dateLastOpened",
+            Column::Added => "dateAdded",
+            Column::Modified => "dateModified",
+            Column::Created => "dateCreated",
+            Column::Size => "size",
+            Column::Tags => "label",
+            Column::Version => "version",
+            Column::Comments => "comments",
+            Column::Application => "application",
+            Column::SharedBy => "shareOwner",
+        }
+    }
+
+    pub(crate) fn from_id(id: &str) -> Option<Self> {
+        (GROUP_KEYS.into_iter())
+            .chain([Column::Version, Column::Comments])
+            .find(|column| column.id() == id)
+    }
+
+    pub(crate) fn first_ascending(self) -> bool {
+        !self.dated() && self != Column::Size
+    }
+
+    pub(crate) fn dated(self) -> bool {
+        matches!(
+            self,
+            Column::Opened | Column::Added | Column::Modified | Column::Created
+        )
+    }
+
+    pub(crate) fn extra(self) -> bool {
+        matches!(
+            self,
+            Column::Opened | Column::Tags | Column::Version | Column::Comments | Column::SharedBy
+        )
+    }
+
+    pub(crate) fn offered_at(self, folder: &str) -> bool {
+        self != Column::SharedBy || folder == SHARED
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct Row {
+    pub(crate) name: SharedString,
+    pub(crate) display: SharedString,
+    pub(crate) path: SharedString,
+    pub(crate) size: SharedString,
+    pub(crate) bytes: u64,
+    pub(crate) modified_at: f64,
+    pub(crate) created_at: f64,
+    pub(crate) added_at: Option<f64>,
+    pub(crate) kind: SharedString,
+    pub(crate) uti: SharedString,
+    pub(crate) face: Face,
+    pub(crate) hidden: bool,
+    pub(crate) locked: bool,
+    pub(crate) opens: Option<&'static str>,
+    // Finder gives an alias no triangle, however its target opens.
+    pub(crate) discloses: bool,
+    pub(crate) dataless: bool,
+    pub(crate) readable: bool,
+    pub(crate) package: bool,
+    pub(crate) artwork: Option<FileType<'static>>,
+    pub(crate) extra: Option<Arc<Extra>>,
+    pub(crate) app: Option<SharedString>,
+}
+
+impl Row {
+    pub(crate) fn date(&self, column: Column) -> Option<f64> {
+        match column {
+            Column::Modified => Some(self.modified_at),
+            Column::Created => Some(self.created_at),
+            Column::Added => self.added_at,
+            Column::Opened => self.extra.as_ref()?.opened,
+            _ => None,
+        }
+    }
+
+    pub(crate) fn words(&self, column: Column) -> Option<&str> {
+        let extra = self.extra.as_deref();
+        match column {
+            Column::Kind => Some(&self.kind),
+            Column::Tags => extra?.tags.first().map(|(name, _)| &**name),
+            Column::Version => extra?.version.as_deref(),
+            Column::Comments => Some(&extra?.comment),
+            Column::Application => self.app.as_deref(),
+            Column::SharedBy => extra?.sharer_words(),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn is_folder(&self) -> bool {
+        self.discloses && self.face != Face::Volume
+    }
+
+    pub(crate) fn size_shown(&self, sizes: bool) -> SharedString {
+        if sizes || !self.is_folder() {
+            self.size.clone()
+        } else {
+            SharedString::new_static("--")
+        }
+    }
+}
+
+pub(crate) type Facts = (Option<u64>, Option<usize>);
+
+fn indexed_row(dir: &'static str, entry: &Entry) -> Row {
+    let facts = match entry.kind {
+        EntryKind::Directory => crate::fsearch::facts(&Path::new(dir).join(&entry.name)),
+        _ => (None, None),
+    };
+    row_of(dir, entry, facts)
+}
+
+// `iconForFile:` badges a folder the user can't open with the no-entry sign.
+fn own_icon(entry: &Entry) -> bool {
+    entry.package
+        || entry.kind == EntryKind::Symlink
+        || entry.alias
+        || entry.custom_icon
+        || !entry.readable
+}
+
+pub(crate) fn early_artwork(path: &str, entry: &Entry) -> Option<FileType<'static>> {
+    if own_icon(entry) {
+        return Some(FileType::Path(intern(path)));
+    }
+    if entry.kind == EntryKind::Directory {
+        return None;
+    }
+    let extension = entry.extension()?.to_ascii_lowercase();
+    Some(FileType::Extension(intern(&extension)))
+}
+
+fn artwork_of(entry: &Entry, path: &str, uti: &str, seen: Option<usize>) -> FileType<'static> {
+    if let Some(art) = early_artwork(path, entry) {
+        return art;
+    }
+    if entry.kind == EntryKind::Directory {
+        let full = entry.children.is_some_and(|held| held > 0) && seen.is_none_or(|seen| seen > 0);
+        return folder_kind(intern(path), full);
+    }
+    FileType::Uti(intern(uti))
+}
+
+pub(crate) fn is_trash(path: &str) -> bool {
+    standard(Standard::Trash).is_some_and(|trash| trash == Path::new(path))
+}
+
+fn folder_kind(path: &'static str, full: bool) -> FileType<'static> {
+    // `iconForFile:` on ~/.Trash answers with a plain folder.
+    if is_trash(path) {
+        return FileType::Named(if full { "NSTrashFull" } else { "NSTrashEmpty" });
+    }
+    match (special().contains(path), full) {
+        (true, true) => FileType::FullPath(path),
+        (true, false) => FileType::Path(path),
+        (false, true) => FileType::FullFolder,
+        (false, false) => FileType::Folder,
+    }
+}
+
+pub(crate) fn folder_artwork(path: &'static str, holds: bool) -> FileType<'static> {
+    let package = Path::new(path)
+        .file_name()
+        .is_some_and(|name| kind::is_package_name(&name.to_string_lossy()));
+    if package || crate::custom::custom_icon(&SharedString::new_static(path)) {
+        return FileType::Path(path);
+    }
+    let seen = crate::fsearch::visible(Path::new(path));
+    folder_kind(path, seen.map_or(holds, |seen| seen > 0))
+}
+
+fn target_of(path: &str) -> (Option<&'static str>, bool) {
+    let target = Path::new(path)
+        .is_dir()
+        .then(|| std::fs::canonicalize(path).ok())
+        .flatten();
+    let app = target
+        .as_ref()
+        .and_then(|target| target.file_name())
+        .is_some_and(|name| kind::is_package_name(&name.to_string_lossy()));
+    (
+        target.filter(|_| !app).map(|target| intern_path(&target)),
+        app,
+    )
+}
+
+pub(crate) fn weigh(path: &SharedString, modified: f64) -> u64 {
+    let key = (path.clone(), modified.to_bits());
+    if let Some(&bytes) = WEIGHTS.lock().unwrap().get(&key) {
+        return bytes;
+    }
+    let bytes = finder_fs::ops::walk_size(Path::new(&**path));
+    let mut weights = WEIGHTS.lock().unwrap();
+    if weights.len() >= WEIGHTS_HELD {
+        weights.clear();
+    }
+    weights.insert(key, bytes);
+    bytes
+}
+
+// A change deep inside a folder keeps the folder's date.
+pub(crate) fn unweigh(dirs: &[PathBuf]) {
+    let mut weights = WEIGHTS.lock().unwrap();
+    weights.retain(|(path, _), _| !dirs.iter().any(|dir| dir.starts_with(&**path)));
+}
+
+fn sized(row: &Row, bytes: u64) -> Arc<Row> {
+    Arc::new(Row {
+        size: byte_string(bytes).into(),
+        bytes,
+        ..row.clone()
+    })
+}
+
+// Finder weighs every package it lists, whatever "Calculate all sizes" says.
+pub(crate) fn weigh_packages(rows: &mut [Arc<Row>]) {
+    for row in rows
+        .iter_mut()
+        .filter(|row| row.package && row.size == "--")
+    {
+        *row = sized(row, weigh(&row.path, row.modified_at));
+    }
+}
+
+pub(crate) fn weighed_folders(rows: &mut [Arc<Row>]) {
+    let weights = WEIGHTS.lock().unwrap();
+    for row in rows
+        .iter_mut()
+        .filter(|row| row.is_folder() && row.size == "--")
+    {
+        if let Some(&bytes) = weights.get(&(row.path.clone(), row.modified_at.to_bits())) {
+            *row = sized(row, bytes);
+        }
+    }
+}
+
+pub(crate) fn kind_at(path: &str, entry: &Entry) -> kind::Kind {
+    match entry.kind {
+        EntryKind::Directory | EntryKind::Symlink if !entry.package => kind::kind_of(entry),
+        EntryKind::File if entry.alias || entry.executable && entry.extension().is_none() => {
+            kind::kind_of(entry)
+        }
+        _ => kind::kind_of_path(Path::new(path)),
+    }
+}
+
+pub(crate) fn bytes_of(entry: &Entry, size: Option<u64>) -> Option<u64> {
+    if entry.kind == EntryKind::Directory {
+        size.filter(|bytes| *bytes > 0 || entry.package)
+    } else {
+        Some(entry.size)
+    }
+}
+
+pub(crate) fn modified_at(entry: &Entry) -> f64 {
+    reference_seconds(entry.modified)
+}
+
+pub(crate) fn facts_of(entry: &Entry, folders: &HashMap<String, Facts>) -> Facts {
+    match entry.kind {
+        EntryKind::Directory => folders.get(&entry.name).copied().unwrap_or_default(),
+        _ => (None, None),
+    }
+}
+
+fn row_of(dir: &'static str, entry: &Entry, (size, seen): Facts) -> Row {
+    let path = join(dir, &entry.name);
+    let kind = kind_at(&path, entry);
+    let bytes = bytes_of(entry, size);
+    let (opens, app) = match entry.kind {
+        EntryKind::Symlink => target_of(&path),
+        _ => (entry.is_dir().then(|| intern(&path)), false),
+    };
+    Row {
+        name: entry.name.clone().into(),
+        display: finder_fs::name::shown(Path::new(dir), &entry.name, entry.ext_hidden).into(),
+        size: bytes.map_or("--".into(), |bytes| byte_string(bytes).into()),
+        bytes: bytes.unwrap_or(0),
+        modified_at: modified_at(entry),
+        created_at: reference_seconds(entry.created),
+        added_at: entry.added.map(reference_seconds),
+        kind: (&kind.label).into(),
+        uti: (&kind.uti).into(),
+        face: if app {
+            Face::Program
+        } else {
+            face_of(&kind.uti)
+        },
+        hidden: entry.hidden,
+        locked: entry.locked,
+        opens,
+        discloses: entry.is_dir(),
+        dataless: entry.dataless,
+        readable: entry.readable,
+        package: entry.package,
+        artwork: Some(artwork_of(entry, &path, &kind.uti, seen)),
+        extra: None,
+        app: None,
+        path: path.into(),
+    }
+}
+
+pub(crate) fn rows_of<'a>(
+    dir: &'static str,
+    entries: impl IntoIterator<Item = &'a Entry>,
+    folders: &HashMap<String, Facts>,
+    extras: bool,
+) -> Vec<Arc<Row>> {
+    let mut comments = if extras {
+        finder_fs::ds_store::comments(Path::new(dir))
+    } else {
+        HashMap::new()
+    };
+    entries
+        .into_iter()
+        .map(|entry| {
+            let mut row = row_of(dir, entry, facts_of(entry, folders));
+            if extras {
+                let comment = comments.remove(&entry.name);
+                row.extra = Some(extra_of(&row.path, row.package, comment));
+            }
+            Arc::new(row)
+        })
+        .collect()
+}
+
+pub(crate) fn read_extras(rows: &mut [Arc<Row>]) {
+    let mut comments: HashMap<PathBuf, HashMap<String, String>> = HashMap::new();
+    let local = |row: &Arc<Row>| row.extra.is_none() && !crate::remote::is_remote(&row.path);
+    for row in rows.iter_mut().filter(|row| local(row)) {
+        let path = Path::new(&*row.path);
+        let comment = path.parent().zip(path.file_name()).and_then(|(dir, name)| {
+            if !comments.contains_key(dir) {
+                comments.insert(dir.to_path_buf(), finder_fs::ds_store::comments(dir));
+            }
+            comments.get_mut(dir)?.remove(name.to_str()?)
+        });
+        *row = Arc::new(Row {
+            extra: Some(extra_of(&row.path, row.package, comment)),
+            ..(**row).clone()
+        });
+    }
+}
+
+pub(crate) fn read_sharers(rows: &mut [Arc<Row>]) {
+    read_extras(rows);
+    for row in rows {
+        let row = Arc::make_mut(row);
+        if let Some(extra) = &mut row.extra {
+            Arc::make_mut(extra).shared_by = finder_fs::meta::sharer(Path::new(&*row.path));
+        }
+    }
+}
+
+pub(crate) fn hit_row(path: &Path, entry: &Entry) -> Arc<Row> {
+    Arc::new(indexed_row(path.parent().map_or("/", intern_path), entry))
+}
+
+fn mdfind(args: &[&OsStr]) -> String {
+    Command::new("/usr/bin/mdfind")
+        .args(args)
+        .output()
+        .map(|found| String::from_utf8_lossy(&found.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+pub(crate) fn tagged_rows(tag: &str, limit: usize) -> Vec<Arc<Row>> {
+    let query = if tag.is_empty() {
+        "kMDItemUserTags == '*'".to_string()
+    } else {
+        let escaped: String = tag
+            .chars()
+            .flat_map(|c| {
+                matches!(c, '\\' | '\'' | '*' | '?')
+                    .then_some('\\')
+                    .into_iter()
+                    .chain([c])
+            })
+            .collect();
+        format!("kMDItemUserTags == '{escaped}'")
+    };
+    let found = mdfind(&["-onlyin".as_ref(), "/".as_ref(), query.as_ref()]);
+    let mut rows = rows_at(found.lines().take(limit));
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    rows
+}
+
+pub(crate) fn recent_rows(home: &Path, limit: usize) -> Vec<Arc<Row>> {
+    const QUERY: &str = r#"(kMDItemLastUsedDate = "*") && ((kMDItemContentTypeTree = public.content) || (kMDItemContentTypeTree = "com.microsoft.*"cdw) || (kMDItemContentTypeTree = public.archive))"#;
+    let found = mdfind(&[
+        "-onlyin".as_ref(),
+        home.as_ref(),
+        "-attr".as_ref(),
+        "kMDItemLastUsedDate".as_ref(),
+        QUERY.as_ref(),
+    ]);
+    // mdfind prints every date in UTC, so the text sorts as the time does.
+    let mut used: Vec<(&str, &str)> = found
+        .lines()
+        .filter_map(|line| line.split_once("   kMDItemLastUsedDate = "))
+        .collect();
+    used.sort_by(|a, b| b.1.cmp(a.1));
+    rows_at(used.into_iter().take(limit).map(|(path, _)| path))
+}
+
+pub(crate) fn rows_at<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<Arc<Row>> {
+    let mut wanted: HashMap<&'static str, HashSet<String>> = HashMap::new();
+    for path in paths {
+        let path = Path::new(path);
+        if let (Some(dir), Some(name)) = (path.parent(), path.file_name()) {
+            wanted
+                .entry(intern_path(dir))
+                .or_default()
+                .insert(name.to_string_lossy().into_owned());
+        }
+    }
+    wanted
+        .into_iter()
+        .flat_map(|(dir, names)| {
+            let entries = finder_fs::list::list_dir(Path::new(dir)).unwrap_or_default();
+            entries
+                .into_iter()
+                .filter(move |entry| names.contains(&entry.name))
+                .map(move |entry| Arc::new(indexed_row(dir, &entry)))
+        })
+        .collect()
+}
+
+fn volume_row(id: &'static str) -> Option<Row> {
+    let volume = volume_at(id)?;
+    // A share that stopped answering would hold the whole Computer listing.
+    let meta = (!volume.network)
+        .then(|| std::fs::metadata(id).ok())
+        .flatten();
+    let date = |at: Option<std::time::SystemTime>| at.map_or(0., reference_seconds);
+    Some(Row {
+        name: volume.name.into(),
+        display: volume.name.into(),
+        path: id.into(),
+        size: byte_string(volume.capacity).into(),
+        bytes: volume.capacity,
+        modified_at: date(meta.as_ref().and_then(|meta| meta.modified().ok())),
+        created_at: date(meta.as_ref().and_then(|meta| meta.created().ok())),
+        added_at: None,
+        kind: "Volume".into(),
+        uti: "public.volume".into(),
+        face: Face::Volume,
+        hidden: false,
+        locked: false,
+        opens: Some(id),
+        discloses: true,
+        dataless: false,
+        readable: true,
+        package: false,
+        artwork: Some(FileType::Path(id)),
+        extra: None,
+        app: None,
+    })
+}
+
+pub(crate) fn icloud_rows() -> Vec<Arc<Row>> {
+    finder_fs::icloud::app_folders()
+        .into_iter()
+        .filter_map(|folder| {
+            let dir = intern_path(folder.documents.parent()?);
+            let entry = finder_fs::list::list_dir(Path::new(dir))
+                .ok()?
+                .into_iter()
+                .find(|entry| entry.name == "Documents")?;
+            let mut row = indexed_row(dir, &entry);
+            let app = folder.app().and_then(|id| {
+                NSWorkspace::sharedWorkspace()
+                    .URLForApplicationWithBundleIdentifier(&NSString::from_str(&id))?
+                    .path()
+            });
+            if let Some(app) = app {
+                row.artwork = Some(FileType::Path(intern(&app.to_string())));
+            }
+            row.name = folder.name.clone().into();
+            row.display = folder.name.into();
+            Some(Arc::new(row))
+        })
+        .collect()
+}
+
+pub(crate) fn path_line(id: &'static str) -> Option<Line> {
+    if crate::remote::is_remote(id) {
+        return Some(crate::remote::line(id));
+    }
+    let row = match volume_row(id) {
+        Some(row) => Arc::new(row),
+        None => {
+            let path = Path::new(id);
+            hit_row(path, &finder_fs::list::entry_at(path).ok()?)
+        }
+    };
+    Some(Line {
+        key: row.path.clone(),
+        row,
+        depth: 0,
+    })
+}

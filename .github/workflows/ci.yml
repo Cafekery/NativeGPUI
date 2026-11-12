@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ hashFiles('Cargo.lock') }}
+      - run: rustup update stable && rustup default stable && rustup component add rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo build --release --examples
+      - run: cargo build --release --examples --features private-api
+      - run: cargo build --release -p founder
+      - run: cargo test --release --lib
+      - run: cargo test --release -p finder-fs -p fsearch -p founder-cli -p finder-sftp
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+      - run: ./scripts/surface.sh
+
+  release:
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: macos-26
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+          key: release-${{ hashFiles('Cargo.lock') }}
+      - run: rustup update stable && rustup default stable
+      - run: cargo about --version || cargo install cargo-about --locked --features cli
+      - run: ./founder/scripts/release.sh
+      - run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest dist/Founder.zip dist/Founder.zip.sha256 \
+            --target "$GITHUB_SHA" \
+            --title "Found'er" \
+            --notes "Latest build of Found'er from main (${GITHUB_SHA::7}). Unsigned: move it to Applications, open it, then allow it under System Settings > Privacy & Security."
+        env:
+          GH_TOKEN: ${{ github.token }}

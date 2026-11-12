@@ -1,0 +1,48 @@
+Drain an autorelease pool around the launch work that 0003 runs before `run`
+
+This change applies to zed-industries/zed 90d8514059561f0e44af0a32e84e1c329cef3232
+after patches/0001–0006.
+
+What it does:
+- 0003 runs `finishLaunching`, the app's finish-launching callback and
+  `show_initial_windows` before `app.run()`, inside the pool `run` opens,
+  which drains only when `run` returns. Anything autoreleased there stayed
+  retained until the app quit. A window the callback opened was never
+  freed after it closed: it stayed in the window server and in
+  `orderedWindows`, so `window_stack` kept handing back its dead handle.
+- That work now runs in its own pool, drained before `app.run()`, as
+  `applicationDidFinishLaunching:` is inside AppKit's per-event pool.
+- Measured on macOS 27 at a9ed59c with the Finder demo's Quit and Keep
+  Windows restore (a window opened in the callback), closing the restored
+  window: without this patch its window and child panel stayed in
+  CGWindowList in 2 of 2 runs of the shipped git build and 2 of 2
+  non-incremental path builds; with it they were freed in 2 of 2. An
+  incremental build of the same source freed them without the patch, so
+  whether the window lands in the pool depends on codegen. Not re-run
+  on a Mac for this re-apply.
+
+Re-apply on a roll: git apply --3way patches/0007-launch-callback-pool.patch
+---
+diff --git a/src/platform.rs b/src/platform.rs
+index 62ee9a8..cd6ac99 100644
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -591,6 +591,10 @@ impl Platform for MacPlatform {
+             // when it has already happened; the delegate's
+             // `did_finish_launching` still installs its observers when the
+             // event lands, and finds no callback left to run.
++            // Its own pool: the outer one drains only when `run` returns, and
++            // anything autoreleased here, a window the callback opens
++            // included, would stay retained until the app quits.
++            let launch_pool = NSAutoreleasePool::new(nil);
+             crate::launch_trace::phase("finishLaunching_begin");
+             app.finishLaunching();
+             crate::launch_trace::phase("finishLaunching_end");
+@@ -601,6 +605,7 @@ impl Platform for MacPlatform {
+                 crate::launch_trace::phase("app_callback_end");
+                 crate::window::show_initial_windows();
+             }
++            launch_pool.drain();
+             app.run();
+             pool.drain();
+ 

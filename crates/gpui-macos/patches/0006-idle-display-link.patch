@@ -1,0 +1,233 @@
+Stop an idle window's display link; gpui's frame waker restarts it
+
+This change applies to zed-industries/zed 90d8514059561f0e44af0a32e84e1c329cef3232
+after patches/0001–0005.
+
+What it does:
+- MacWindow implements `PlatformWindow::frame_waker` and `schedule_frame`,
+  gpui's hooks for platforms that stop requesting frames for idle
+  windows. The invalidator calls the waker whenever a window becomes
+  dirty and whenever frame demand arises without dirt (next-frame
+  callbacks, a throttled frame, a window dirtied again mid-draw);
+  `schedule_frame` follows every effect flush that leaves a window dirty
+  or owing a present. Either marks a frame requested. A window whose
+  display link is idle restarts it and ticks on the next main-queue
+  turn, unless an input event presented within the last 8 ms.
+- A tick whose frame neither presented nor asked for another stops the
+  link. Presenting keeps it, so gpui's one second of presents after
+  high-rate input still lands every refresh.
+- A CVDisplayLink started within ~3 ms of its next callback slot skips
+  it and first fires a refresh later; ticking at once keeps a background
+  update from landing a refresh late.
+- `examples/idle_frame.rs` (fork-owned, not in this file) checks both:
+  an idle panel's main thread stays asleep, and a notify from a
+  background task draws before the display link's next tick would have.
+
+Applied cleanly onto 90d8514 after 0001–0005. display_link.rs keeps
+is_running after the frame journal's signal.take in stop. Host time
+stays objc2_core_video::CVGetCurrentHostTime / CVGetHostClockFrequency
+(#65058); this patch does not touch those calls. window.rs frame()
+still stops the idle link and still passes signal_at / signal_source
+from WindowFrameSource::take_signal. #65059's display-changed callback
+is outside this hunk. rustfmt (1.98.1, edition 2024) makes no further
+changes.
+
+Re-apply on a roll: git apply --3way patches/0006-idle-display-link.patch
+---
+diff --git a/src/display_link.rs b/src/display_link.rs
+index 81b1b5e..6df1282 100644
+--- a/src/display_link.rs
++++ b/src/display_link.rs
+@@ -343,6 +343,10 @@ impl WindowFrameSource {
+         }
+         self.signal.take();
+     }
++
++    pub fn is_running(&self) -> bool {
++        self.registration.is_some()
++    }
+ }
+ 
+ impl Drop for WindowFrameSource {
+diff --git a/src/window.rs b/src/window.rs
+index 61b1b46..f969819 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -672,6 +672,8 @@ struct MacWindowState {
+     renderer: renderer::Renderer,
+     /// When an input event last drew a frame, so the display link's tick can stand aside.
+     last_input_frame: Instant,
++    frame_requested: bool,
++    presented: bool,
+     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
+     event_callback: Option<Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>>,
+     activate_callback: Option<Box<dyn FnMut(bool)>>,
+@@ -869,6 +871,12 @@ impl MacWindowState {
+         }
+     }
+ 
++    fn display_link_running(&self) -> bool {
++        self.frame_source
++            .as_ref()
++            .is_some_and(WindowFrameSource::is_running)
++    }
++
+     fn is_maximized(&self) -> bool {
+         fn rect_to_size(rect: NSRect) -> Size<Pixels> {
+             let NSSize { width, height } = rect.size;
+@@ -1204,6 +1212,8 @@ impl MacWindow {
+                     false,
+                 ),
+                 last_input_frame: Instant::now(),
++                frame_requested: false,
++                presented: false,
+                 request_frame_callback: None,
+                 event_callback: None,
+                 activate_callback: None,
+@@ -2127,6 +2137,19 @@ impl PlatformWindow for MacWindow {
+         }
+     }
+ 
++    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
++        let window_state = Arc::downgrade(&self.0);
++        Some(Rc::new(move || {
++            if let Some(window_state) = window_state.upgrade() {
++                request_frame(&window_state);
++            }
++        }))
++    }
++
++    fn schedule_frame(&self) {
++        request_frame(&self.0);
++    }
++
+     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
+         self.0.as_ref().lock().request_frame_callback = Some(callback);
+     }
+@@ -2237,6 +2260,7 @@ impl PlatformWindow for MacWindow {
+             .then(|| crate::launch_trace::Span::new("first_Window_present"));
+         let mut this = self.0.lock();
+         this.renderer.draw(scene);
++        this.presented = true;
+         // Metal presented-handler is in gpui_apple (not forked). Count this
+         // draw as a committed drawable so 250ms / three-draw safety can
+         // release on_first_present without lying about scanout.
+@@ -3474,47 +3498,87 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
+ 
+ extern "C" fn step(view: *mut c_void) {
+     // A tick right after an input-driven frame has nothing new to show; the frame the input
+-    // drew is what keeps the display at full rate. In a live resize every step draws through
+-    // `displayLayer:` inside AppKit's own transaction, and a tick's present between two steps
+-    // only costs a drawable.
+-    let in_live_resize: BOOL = unsafe { msg_send![view as id, inLiveResize] };
+-    if in_live_resize == YES {
+-        return;
+-    }
++    // drew is what keeps the display at full rate.
+     let window_state = unsafe { get_window_state(&*(view as id)) };
+-    if window_state.lock().last_input_frame.elapsed() < Duration::from_millis(8) {
+-        return;
++    if window_state.lock().last_input_frame.elapsed() >= Duration::from_millis(8) {
++        tick(view);
++    }
++}
++
++fn tick(view: *mut c_void) {
++    // In a live resize every step draws through `displayLayer:` inside AppKit's own
++    // transaction, and a tick's present between two steps only costs a drawable.
++    let in_live_resize: BOOL = unsafe { msg_send![view as id, inLiveResize] };
++    if in_live_resize == NO && !frame(view) {
++        unsafe { get_window_state(&*(view as id)) }
++            .lock()
++            .stop_display_link();
+     }
+-    frame(view);
+ }
+ 
+ /// One frame: gpui draws and presents, and the transaction carrying the drawable and every
+-/// AppKit change made alongside it is committed now, not when the run loop next idles.
+-fn frame(view: *mut c_void) {
++/// AppKit change made alongside it is committed now, not when the run loop next idles. Returns
++/// whether gpui wants the next tick: it presented, or asked for another frame.
++fn frame(view: *mut c_void) -> bool {
+     let view = view as id;
+     let window_state = unsafe { get_window_state(&*view) };
+     let mut lock = window_state.lock();
++    let Some(mut callback) = lock.request_frame_callback.take() else {
++        return true;
++    };
++    lock.frame_requested = false;
++    lock.presented = false;
++    let (signal_at, signal_source) = lock
++        .frame_source
++        .as_ref()
++        .and_then(WindowFrameSource::take_signal)
++        .map_or(
++            (None, FrameRequestSource::NativeCallback),
++            |(at, source)| (Some(at), source),
++        );
++    drop(lock);
++    callback(RequestFrameOptions {
++        signal_at,
++        signal_source,
++        ..Default::default()
++    });
++    let mut lock = window_state.lock();
++    lock.request_frame_callback = Some(callback);
++    let busy = lock.frame_requested || lock.presented;
++    drop(lock);
++    unsafe {
++        let _: () = msg_send![class!(CATransaction), flush];
++    }
++    busy
++}
+ 
+-    if let Some(mut callback) = lock.request_frame_callback.take() {
+-        let (signal_at, signal_source) = lock
+-            .frame_source
+-            .as_ref()
+-            .and_then(WindowFrameSource::take_signal)
+-            .map_or(
+-                (None, FrameRequestSource::NativeCallback),
+-                |(at, source)| (Some(at), source),
+-            );
+-        drop(lock);
+-        callback(RequestFrameOptions {
+-            signal_at,
+-            signal_source,
+-            ..Default::default()
+-        });
+-        window_state.lock().request_frame_callback = Some(callback);
+-        unsafe {
+-            let _: () = msg_send![class!(CATransaction), flush];
+-        }
++/// gpui wants a frame. An idle window restarts its display link and ticks now: a CVDisplayLink
++/// started within ~3 ms of a vsync first fires a refresh later.
++fn request_frame(window_state: &Arc<Mutex<MacWindowState>>) {
++    let mut lock = window_state.lock();
++    lock.frame_requested = true;
++    if lock.closed.load(Ordering::Acquire) || lock.display_link_running() {
++        return;
++    }
++    lock.start_display_link();
++    if !lock.display_link_running() {
++        return;
+     }
++    drop(lock);
++    let window_state = Arc::downgrade(window_state);
++    DispatchQueue::main().exec_async(move || {
++        let Some(window_state) = window_state.upgrade() else {
++            return;
++        };
++        let lock = window_state.lock();
++        let just_drew =
++            lock.presented && lock.last_input_frame.elapsed() < Duration::from_millis(8);
++        if !lock.closed.load(Ordering::Acquire) && !just_drew {
++            let view = lock.native_view.as_ptr() as *mut c_void;
++            drop(lock);
++            tick(view);
++        }
++    });
+ }
+ 
+ extern "C" fn valid_attributes_for_marked_text(_: &Object, _: Sel) -> id {
