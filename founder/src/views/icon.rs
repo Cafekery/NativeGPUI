@@ -370,15 +370,16 @@ fn sort_order(lines: &[Line], column: Column) -> Vec<usize> {
         ascending: column.first_ascending(),
     };
     crate::read::sort_rows(&mut rows, by, true, true);
-    let order: HashMap<*const Row, usize> = rows
+    // Keyed by path, not pointer: sort_rows reads extras into fresh Arcs, so pointers no longer match.
+    let order: HashMap<&str, usize> = rows
         .iter()
         .enumerate()
-        .map(|(at, row)| (Arc::as_ptr(row), at))
+        .map(|(at, row)| (row.path.as_ref(), at))
         .collect();
     lines
         .iter()
         .enumerate()
-        .map(|(index, line)| order.get(&Arc::as_ptr(&line.row)).copied().unwrap_or(index))
+        .map(|(index, line)| order.get(line.row.path.as_ref()).copied().unwrap_or(index))
         .collect()
 }
 
