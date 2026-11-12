@@ -1482,3 +1482,48 @@ impl FinderDemo {
         Some(next.0.clone())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::UNIX_EPOCH;
+
+    use finder_fs::entry::{Entry, EntryKind};
+
+    use super::*;
+
+    fn line(name: &str, size: u64, age: u64) -> Line {
+        let entry = Entry {
+            name: name.into(),
+            kind: EntryKind::File,
+            size,
+            modified: UNIX_EPOCH + Duration::from_secs(age),
+            created: UNIX_EPOCH,
+            added: None,
+            hidden: false,
+            package: false,
+            ext_hidden: false,
+            alias: false,
+            custom_icon: false,
+            locked: false,
+            dataless: false,
+            readable: true,
+            executable: false,
+            file_id: 0,
+            children: None,
+        };
+        let row = crate::data::hit_row(&Path::new("/tmp/found").join(name), &entry);
+        Line {
+            key: row.path.clone(),
+            row,
+            depth: 0,
+        }
+    }
+
+    #[test]
+    fn tiles_rank_by_the_chosen_column() {
+        let lines = [line("a", 1, 30), line("b", 3, 10), line("c", 2, 20)];
+        assert_eq!(sort_order(&lines, Column::Name), [0, 1, 2]);
+        assert_eq!(sort_order(&lines, Column::Size), [2, 0, 1]);
+        assert_eq!(sort_order(&lines, Column::Modified), [0, 2, 1]);
+    }
+}
