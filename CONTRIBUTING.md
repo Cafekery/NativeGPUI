@@ -73,6 +73,16 @@ security delete-keychain ~/Library/Keychains/nativegpui-dev.keychain-db
 * One concern per commit.
 * No AI or tool attribution trailers.
 
+## Releases
+
+A release is `v<version>`, where `version` is in `founder/Cargo.toml`. To make one:
+
+* Bump `version` in `founder/Cargo.toml`, with `Cargo.lock`.
+* Add a `## <version>` section at the top of `founder/CHANGELOG.md`: short bullets, written for users. `./founder/scripts/notes.sh <version>` prints it.
+* Push to `main`. CI builds the app and publishes `v<version>` with that section as its notes.
+
+A push that doesn't change the version publishes nothing. CI fails before building if the section is missing or empty.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the MIT license in [LICENSE](LICENSE). Changes under `crates/gpui-macos` are Apache-2.0, like the rest of that crate.
