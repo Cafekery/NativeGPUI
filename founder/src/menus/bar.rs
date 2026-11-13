@@ -329,7 +329,7 @@ pub(crate) fn remember(demo: &FinderDemo, cx: &App) {
         back: demo.at > 0,
         forward: demo.at + 1 < demo.history.len(),
         busy: !demo.jobs.is_empty(),
-        preview: demo.preview,
+        preview: demo.preview && !demo.preview_stray(),
         path_bar: demo.path_bar_shown,
         status_bar: demo.status_bar_shown,
         options: crate::options::shown(cx),
@@ -1144,10 +1144,7 @@ impl FinderDemo {
                 }
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &TogglePreview, _, cx| {
-                this.show_preview(!this.preview);
-                cx.notify();
-            }))
+            .on_action(cx.listener(|this, _: &TogglePreview, _, cx| this.toggle_preview(cx)))
             .on_action(cx.listener(|this, _: &TogglePathBar, _, cx| {
                 this.path_bar_shown = !this.path_bar_shown;
                 crate::prefs::set_shows_path_bar(this.path_bar_shown);

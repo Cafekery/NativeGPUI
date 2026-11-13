@@ -109,7 +109,7 @@ const PREVIEW: Tool = (
     "sidebar.right",
     "Preview",
     "Show or hide the Preview pane",
-    |this, _, _| this.show_preview(!this.preview),
+    |this, _, cx| this.toggle_preview(cx),
 );
 const ICLOUD: Tool = (
     "com.apple.finder.AddP",

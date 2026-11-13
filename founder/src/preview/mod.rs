@@ -22,8 +22,8 @@ use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::{ClassType, msg_send};
 use objc2_app_kit::{
     NSApplication, NSApplicationDidUnhideNotification, NSColor, NSPanel, NSWindow,
-    NSWindowDidResizeNotification, NSWindowOrderingMode, NSWindowStyleMask,
-    NSWindowWillCloseNotification,
+    NSWindowDidMoveNotification, NSWindowDidResizeNotification, NSWindowOrderingMode,
+    NSWindowStyleMask, NSWindowWillCloseNotification,
 };
 use objc2_foundation::{
     MainThreadMarker, NSNotification, NSNotificationCenter, NSPoint, NSRect, NSRunLoop, NSSize,
@@ -49,7 +49,7 @@ const DIVIDER_GRAB: f32 = 3.;
 pub(crate) struct PreviewWindow {
     handle: WindowHandle<PreviewPane>,
     window: Retained<NSWindow>,
-    follow: [Retained<ProtocolObject<dyn NSObjectProtocol>>; 2],
+    follow: [Retained<ProtocolObject<dyn NSObjectProtocol>>; 3],
     pane: EntityId,
     handed: Rc<Handed>,
 }
@@ -96,9 +96,25 @@ fn pane_frame(parent: &NSWindow, metrics: SidebarMetrics) -> NSRect {
     )
 }
 
+fn stray(parent: &NSWindow, pane: &NSWindow) -> bool {
+    parent.isVisible()
+        && (!pane.isVisible()
+            || pane
+                .parentWindow()
+                .is_none_or(|owner| !std::ptr::eq(&*owner, parent)))
+}
+
+fn off(parent: &NSWindow, pane: &NSWindow, metrics: SidebarMetrics) -> bool {
+    stray(parent, pane) || !near(pane.frame(), pane_frame(parent, metrics))
+}
+
 /// Read when applied: a window manager moves the window between a draw and a deferred placement.
 fn place(parent: &NSWindow, pane: &NSWindow, sidebar: &NativeSidebar) {
     let frame = pane_frame(parent, sidebar.metrics());
+    if stray(parent, pane) {
+        parent.removeChildWindow(pane);
+        attach(parent, pane);
+    }
     if !near(pane.frame(), frame) {
         pane.setFrame_display(frame, true);
     }
@@ -114,7 +130,7 @@ fn follow_parent(
     parent: &NSWindow,
     pane: &Retained<NSWindow>,
     sidebar: &NativeSidebar,
-) -> [Retained<ProtocolObject<dyn NSObjectProtocol>>; 2] {
+) -> [Retained<ProtocolObject<dyn NSObjectProtocol>>; 3] {
     let (host, card, sidebar) = (Weak::new(parent), pane.clone(), sidebar.clone());
     let resized = StackBlock::new(move |_: NonNull<NSNotification>| {
         if let Some(host) = host.load() {
@@ -145,6 +161,12 @@ fn follow_parent(
                 None,
                 None,
                 &unhidden,
+            ),
+            center.addObserverForName_object_queue_usingBlock(
+                Some(NSWindowDidMoveNotification),
+                Some(pane),
+                None,
+                &resized,
             ),
         ]
     }
@@ -300,6 +322,9 @@ fn open_preview_window(
             .ok()?;
         let window = window?;
         window.setStyleMask(NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel);
+        // After the style mask: no drag may carry the pane away from its window.
+        window.setMovable(false);
+        window.setMovableByWindowBackground(false);
         window.setHasShadow(false);
         // gpui takes drops on every window; this one has nowhere to put them.
         window.unregisterDraggedTypes();
@@ -332,6 +357,25 @@ fn open_preview_window(
 }
 
 impl FinderDemo {
+    pub(crate) fn preview_stray(&self) -> bool {
+        match (&self.preview_window, &self.host, &self.sidebar) {
+            (Some(pane), Some(parent), _) => self.preview_shown() && stray(parent, &pane.window),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn toggle_preview(&mut self, cx: &mut Context<Self>) {
+        if self.preview_stray() {
+            self.preview_opening = false;
+            if let Some(pane) = self.preview_window.take() {
+                cx.defer(move |cx| pane.close(cx));
+            }
+        } else {
+            self.show_preview(!self.preview);
+        }
+        cx.notify();
+    }
+
     pub(crate) fn show_preview(&mut self, shown: bool) {
         if shown && !self.preview && self.view != COLUMN_VIEW {
             self.preview_gallery = self.view == GALLERY_VIEW;
@@ -391,7 +435,7 @@ impl FinderDemo {
         match &self.preview_window {
             Some(pane) => {
                 if let (Some(parent), Some(sidebar)) = (&self.host, &self.sidebar) {
-                    if !near(pane.window.frame(), pane_frame(parent, metrics)) {
+                    if off(parent, &pane.window, metrics) {
                         // Off this draw: resizing from inside the parent's frame loses the size change.
                         let (parent, window, sidebar) =
                             (parent.clone(), pane.window.clone(), sidebar.clone());
