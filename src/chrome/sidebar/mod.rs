@@ -43,10 +43,10 @@ use crate::tokens::{self, SystemColor};
 use self::cell::{SidebarCell, row_view, tint_rows};
 pub use self::cell::{system_symbol, system_template};
 use self::diff::{SavedState, apply_diff, expand_groups, plan_diff, reveal};
-pub use self::dragdrop::drag_files;
 use self::dragdrop::{
     ROW_PASTEBOARD_TYPE, accept_row_drop, row_pasteboard_item, validate_row_drop,
 };
+pub use self::dragdrop::{drag_files, drag_files_deletable};
 use self::model::{Model, Node};
 
 pub const BADGE_GAP: f64 = 6.0;

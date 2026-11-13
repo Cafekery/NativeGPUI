@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use gpui::Window;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
-use objc2::{AnyThread, MainThreadOnly, define_class, msg_send};
+use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSApplication, NSDragOperation, NSDraggingContext, NSDraggingInfo, NSDraggingItem,
     NSDraggingSession, NSDraggingSource, NSOutlineView, NSOutlineViewDropOnItemIndex,
@@ -261,6 +261,20 @@ pub(super) fn accept_row_drop(
 }
 
 pub fn drag_files(window: &mut Window, paths: &[PathBuf]) -> bool {
+    begin_drag(window, paths, None)
+}
+
+/// Like [`drag_files`], and offers Delete to other apps, which the Dock's Trash needs;
+/// `on_delete` runs when the session ends that way, and the caller then trashes the files.
+pub fn drag_files_deletable(
+    window: &mut Window,
+    paths: &[PathBuf],
+    on_delete: impl FnOnce() + 'static,
+) -> bool {
+    begin_drag(window, paths, Some(Box::new(on_delete)))
+}
+
+fn begin_drag(window: &mut Window, paths: &[PathBuf], on_delete: Option<Delete>) -> bool {
     let Some(mtm) = MainThreadMarker::new() else {
         return false;
     };
@@ -291,7 +305,7 @@ pub fn drag_files(window: &mut Window, paths: &[PathBuf]) -> bool {
     if items.is_empty() {
         return false;
     }
-    let source = FileDragSource::new(mtm);
+    let source = FileDragSource::new(mtm, on_delete);
     view.beginDraggingSessionWithItems_event_source(
         &NSArray::from_retained_slice(&items),
         &event,
@@ -302,6 +316,8 @@ pub fn drag_files(window: &mut Window, paths: &[PathBuf]) -> bool {
     true
 }
 
+type Delete = Box<dyn FnOnce()>;
+
 thread_local! {
     static DRAG_SOURCE: RefCell<Option<Retained<FileDragSource>>> = const { RefCell::new(None) };
 }
@@ -310,21 +326,56 @@ define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGSidebarFileDragSource"]
+    #[ivars = RefCell<Option<Delete>>]
     struct FileDragSource;
 
     unsafe impl NSObjectProtocol for FileDragSource {}
 
     unsafe impl NSDraggingSource for FileDragSource {
-        // Finder moves a dragged file itself; this source deletes nothing, whatever the answer.
         #[unsafe(method(draggingSession:sourceOperationMaskForDraggingContext:))]
-        fn operation_mask(&self, _: &NSDraggingSession, _: NSDraggingContext) -> NSDragOperation {
-            NSDragOperation::Generic | NSDragOperation::Move | NSDragOperation::Copy
+        fn operation_mask(&self, _: &NSDraggingSession, context: NSDraggingContext) -> NSDragOperation {
+            source_mask(context, self.ivars().borrow().is_some())
+        }
+
+        // A receiver moves a file itself; only a drop on the Dock's Trash ends with Delete and leaves the removal to us.
+        #[unsafe(method(draggingSession:endedAtPoint:operation:))]
+        fn ended(&self, _: &NSDraggingSession, _: NSPoint, operation: NSDragOperation) {
+            let delete = self.ivars().borrow_mut().take();
+            if let Some(delete) = delete.filter(|_| operation == NSDragOperation::Delete) {
+                delete();
+            }
         }
     }
 );
 
+fn source_mask(context: NSDraggingContext, deletable: bool) -> NSDragOperation {
+    let mask = NSDragOperation::Generic | NSDragOperation::Move | NSDragOperation::Copy;
+    if deletable && context == NSDraggingContext::OutsideApplication {
+        mask | NSDragOperation::Delete
+    } else {
+        mask
+    }
+}
+
 impl FileDragSource {
-    fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        unsafe { msg_send![Self::alloc(mtm), init] }
+    fn new(mtm: MainThreadMarker, on_delete: Option<Delete>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(RefCell::new(on_delete));
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delete_goes_only_to_other_apps_and_only_when_offered() {
+        let kept = NSDragOperation::Generic | NSDragOperation::Move | NSDragOperation::Copy;
+        let outside = NSDraggingContext::OutsideApplication;
+        let within = NSDraggingContext::WithinApplication;
+        assert_eq!(source_mask(outside, false), kept);
+        assert_eq!(source_mask(within, false), kept);
+        assert_eq!(source_mask(within, true), kept);
+        assert_eq!(source_mask(outside, true), kept | NSDragOperation::Delete);
     }
 }
