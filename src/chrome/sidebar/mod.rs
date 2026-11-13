@@ -406,6 +406,7 @@ struct Inspector {
     footer: Retained<NSVisualEffectView>,
     resized: Rc<Cell<Option<f64>>>,
     sliding: Rc<Cell<bool>>,
+    shut: Rc<Cell<bool>>,
     observer: Retained<ProtocolObject<dyn NSObjectProtocol>>,
 }
 
@@ -522,16 +523,18 @@ fn observe_inspector(
     view: &NSView,
     resized: &Rc<Cell<Option<f64>>>,
     sliding: &Rc<Cell<bool>>,
+    shut: &Rc<Cell<bool>>,
 ) -> Retained<ProtocolObject<dyn NSObjectProtocol>> {
     let (item, view) = (item.retain(), view.retain());
-    let (resized, sliding) = (resized.clone(), sliding.clone());
-    observe_divider(split, move |dragged| {
+    let (resized, sliding, shut) = (resized.clone(), sliding.clone(), shut.clone());
+    observe_divider(split, move |_| {
         if sliding.get() {
             return;
         }
         if !item.isCollapsed() {
             resized.set(Some(view.frame().size.width));
-        } else if dragged.is_some() {
+        } else if !shut.get() {
+            // A collapse nobody asked for is the user's drag.
             resized.set(Some(0.));
         }
     })
@@ -799,19 +802,22 @@ impl NativeSidebar {
                 self.0.views.split.addSplitViewItem(&item);
                 let resized = Rc::new(Cell::new(None));
                 let sliding = Rc::new(Cell::new(false));
+                let shut = Rc::new(Cell::new(false));
                 let observer =
-                    observe_inspector(&self.0.views.split, &item, &view, &resized, &sliding);
+                    observe_inspector(&self.0.views.split, &item, &view, &resized, &sliding, &shut);
                 slot.insert(Inspector {
                     item,
                     controller,
                     footer,
                     resized,
                     sliding,
+                    shut,
                     observer,
                 })
             }
         };
         let collapse = thickness.is_none();
+        inspector.shut.set(collapse);
         let settled = inspector.item.isCollapsed() == collapse;
         if settled && !created {
             return;
