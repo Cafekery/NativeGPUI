@@ -356,6 +356,15 @@ fn open_preview_window(
     });
 }
 
+/// A saved width outside what the divider allows, or none at all, is a bad one.
+pub(crate) fn usable(width: f32) -> f32 {
+    if width.is_finite() {
+        width.clamp(MIN_W, MAX_W)
+    } else {
+        PREVIEW_W
+    }
+}
+
 impl FinderDemo {
     pub(crate) fn preview_stray(&self) -> bool {
         match (&self.preview_window, &self.host, &self.sidebar) {
@@ -393,7 +402,7 @@ impl FinderDemo {
             let gallery = self.view == GALLERY_VIEW;
             if gallery != self.preview_gallery {
                 self.preview_gallery = gallery;
-                self.preview_w = crate::prefs::pane_width(gallery).unwrap_or(PREVIEW_W);
+                self.preview_w = usable(crate::prefs::pane_width(gallery).unwrap_or(PREVIEW_W));
                 sidebar.set_inspector_thickness(px(self.preview_w));
             }
             // AppKit lays the divider on a whole point, half a point off the width asked for.
@@ -404,7 +413,7 @@ impl FinderDemo {
                     cx.notify();
                 }
                 Some(width) if (width - self.preview_w).abs() > 0.5 => {
-                    self.preview_w = width.round();
+                    self.preview_w = usable(width.round());
                     crate::prefs::set_pane_width(gallery, self.preview_w);
                     cx.notify();
                 }
@@ -484,5 +493,25 @@ impl FinderDemo {
             handed.stand_in.set(None);
             App::notify(cx, pane.pane);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_saved_width_is_held_to_what_the_divider_allows() {
+        assert_eq!(usable(0.), MIN_W);
+        assert_eq!(usable(3.), MIN_W);
+        assert_eq!(usable(-40.), MIN_W);
+        assert_eq!(usable(300.), 300.);
+        assert_eq!(usable(9000.), MAX_W);
+    }
+
+    #[test]
+    fn a_width_that_is_not_a_number_falls_back_to_the_default() {
+        assert_eq!(usable(f32::NAN), PREVIEW_W);
+        assert_eq!(usable(f32::INFINITY), PREVIEW_W);
     }
 }

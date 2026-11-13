@@ -271,7 +271,9 @@ impl FinderDemo {
             type_filter: None,
             type_filter_seen_match: false,
             preview: prefs::preview(view),
-            preview_w: prefs::pane_width(view == GALLERY_VIEW).unwrap_or(PREVIEW_W),
+            preview_w: preview::usable(
+                prefs::pane_width(view == GALLERY_VIEW).unwrap_or(PREVIEW_W),
+            ),
             preview_gallery: view == GALLERY_VIEW,
             preview_window: None,
             preview_opening: false,
