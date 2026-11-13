@@ -443,6 +443,24 @@ impl FinderDemo {
         true
     }
 
+    fn drag_files(&self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let trash = finder_fs::volumes::standard(finder_fs::volumes::Standard::Trash);
+        if !trashable(&paths, trash.as_deref()) {
+            return native_gpui::sidebar::drag_files(window, &paths);
+        }
+        let (this, app, doomed) = (cx.weak_entity(), cx.to_async(), paths.clone());
+        native_gpui::sidebar::drag_files_deletable(window, &paths, move || {
+            app.spawn(async move |cx| {
+                this.update(cx, |this, cx| {
+                    this.deselect();
+                    this.run_op(Op::Trash(doomed), After::Nothing, cx)
+                })
+                .ok();
+            })
+            .detach();
+        })
+    }
+
     pub(crate) fn hand_off_drag<D: Grabbed>(
         &mut self,
         event: &DragMoveEvent<D>,
@@ -459,8 +477,8 @@ impl FinderDemo {
         let handed = if keys.iter().any(|key| crate::remote::is_remote(key)) {
             self.drag_out(&keys, window, cx)
         } else {
-            let paths: Vec<PathBuf> = keys.iter().map(|key| PathBuf::from(key.as_ref())).collect();
-            native_gpui::sidebar::drag_files(window, &paths)
+            let paths = keys.iter().map(|key| PathBuf::from(key.as_ref())).collect();
+            self.drag_files(paths, window, cx)
         };
         if handed {
             cx.stop_active_drag(window);
@@ -586,5 +604,35 @@ fn same_volume(item: &Path, into: &Path) -> bool {
     match (std::fs::symlink_metadata(item), std::fs::metadata(into)) {
         (Ok(item), Ok(into)) => item.dev() == into.dev(),
         _ => false,
+    }
+}
+
+fn trashable(paths: &[PathBuf], trash: Option<&Path>) -> bool {
+    !paths.iter().any(|path| {
+        trash.is_some_and(|trash| path.starts_with(trash))
+            || path.components().any(|part| part.as_os_str() == ".Trashes")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trashable;
+    use std::path::{Path, PathBuf};
+
+    fn paths(list: &[&str]) -> Vec<PathBuf> {
+        list.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn items_already_in_a_trash_are_not_offered_to_it() {
+        let trash = Some(Path::new("/Users/me/.Trash"));
+        assert!(trashable(&paths(&["/Users/me/a", "/Volumes/D/b"]), trash));
+        assert!(!trashable(
+            &paths(&["/Users/me/a", "/Users/me/.Trash/b"]),
+            trash
+        ));
+        assert!(!trashable(&paths(&["/Volumes/D/.Trashes/501/b"]), trash));
+        assert!(trashable(&paths(&["/Users/me/.Trashed/b"]), trash));
+        assert!(trashable(&paths(&["/Users/me/a"]), None));
     }
 }
